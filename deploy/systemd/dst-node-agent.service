@@ -1,0 +1,23 @@
+[Unit]
+Description=DST Incus node agent
+After=network-online.target incus.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dst-node
+Group=dst-node
+SupplementaryGroups=incus-admin
+WorkingDirectory=/opt/dst-orchestrator
+EnvironmentFile=/etc/dst-orchestrator/node-agent.env
+Environment=INCUS_CONF=/etc/dst-orchestrator/incus-node
+ExecStart=/opt/dst-orchestrator/.venv/bin/python -m node_agent.main
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+# Project map
+
+- app/main.py — composition root, HTTP API, auth/CSRF boundary and background loops.
+- app/config.py — environment parsing and production fail-fast validation.
+- app/models.py — SQLAlchemy models/enums and DB invariants.
+- app/domain/state.py — allowed Account/Runtime/Node transitions.
+- app/services/accounts.py — account/runtime generation commands and read models.
+- app/services/jobs.py — durable enqueue, SKIP LOCKED claim, attempts and retry.
+- app/services/leases.py — atomic Node slot reservation/recovery.
+- app/services/executor.py — infrastructure job handlers.
+- app/services/scheduler.py — desired-state decisions.
+- app/services/reconciler.py — provider observation only.
+- app/services/watchdog.py — stale node/runtime/process detection.
+- app/services/auth.py, secrets.py, agents.py — credential boundaries.
+- app/providers — mock, Incus and RuntimeView abstractions.
+- node_agent — Linux NODE resource/Incus heartbeat.
+- runtime_agent — display/process/readiness supervisor and isolated plugin-based worker bridge.
+- migrations — Alembic schema history.
+- tests — unit, API, integration, concurrency and provider suites.
+- deploy — systemd, environment and nginx examples.
+- scripts — development launch, preflight and backup/restore.

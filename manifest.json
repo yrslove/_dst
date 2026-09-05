@@ -1,0 +1,12 @@
+{
+  "name": "dst_orchestrator_mvp",
+  "version": "1.0.0",
+  "purpose": "Steam/DST runtime control-plane foundation",
+  "gameplay_worker": "NOOP",
+  "providers": [
+    "mock",
+    "incus_cli",
+    "runtime_view_disabled",
+    "runtime_view_mock"
+  ]
+}

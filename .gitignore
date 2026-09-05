@@ -1,0 +1,12 @@
+.env
+.data/
+*.sqlite
+*.sqlite3
+*.db
+dev_master.key
+__pycache__/
+.pytest_cache/
+.venv/
+*.py[cod]
+.coverage
+htmlcov/

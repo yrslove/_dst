@@ -1,0 +1,27 @@
+[Unit]
+Description=DST runtime supervisor agent
+After=network-online.target graphical.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=dst
+Group=dst
+RuntimeDirectory=dst-runtime
+RuntimeDirectoryMode=0700
+WorkingDirectory=/opt/dst-orchestrator
+EnvironmentFile=/etc/dst-runtime/agent.env
+ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/dst-runtime /home/dst
+
+[Install]
+WantedBy=graphical.target

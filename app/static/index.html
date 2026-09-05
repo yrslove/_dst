@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DST Orchestrator</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="scanline" aria-hidden="true"></div>
+<header class="topbar">
+  <div class="brand-lockup">
+    <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+    <div>
+      <p class="eyebrow">DST / ORCHESTRATOR</p>
+      <h1>Runtime control plane</h1>
+      <p class="subtitle"><i class="status-dot"></i> <span id="environment">connecting</span> <span>//</span> protocol <span id="protocol">—</span></p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <span id="systemState" class="system-state"><i class="status-dot"></i> CHECKING</span>
+    <button id="addBtn" class="primary" disabled><span class="button-icon">+</span> Добавить аккаунт</button>
+    <button id="logoutBtn" class="muted hidden">Выйти</button>
+  </div>
+</header>
+<main>
+  <section class="summary" aria-label="Сводка">
+    <div class="metric metric-accent"><span class="metric-index">01</span><b id="accountCount">0</b><span>аккаунтов</span></div>
+    <div class="metric"><span class="metric-index">02</span><b id="runningCount">0</b><span>running</span></div>
+    <div class="metric"><span class="metric-index">03</span><b id="errorCount">0</b><span>требуют внимания</span></div>
+    <div class="metric"><span class="metric-index">04</span><b id="jobCount">0</b><span>active jobs</span></div>
+  </section>
+
+  <div class="title">
+    <div><p class="section-kicker">01 / ACCOUNTS</p><h2>Аккаунты</h2></div>
+    <button class="muted" id="refresh"><span class="refresh-icon">↻</span> Обновить</button>
+  </div>
+  <section id="accounts" class="accounts"></section>
+
+  <div class="title"><div><p class="section-kicker">02 / INFRASTRUCTURE</p><h2>Nodes</h2></div></div>
+  <section id="nodes" class="table"></section>
+
+  <div class="title"><div><p class="section-kicker">03 / DURABLE COMMANDS</p><h2>Jobs</h2></div></div>
+  <section id="jobs" class="table"></section>
+
+  <div class="title">
+    <div><p class="section-kicker">04 / ACTIVITY LOG</p><h2>События</h2></div>
+    <div id="eventFilters" class="filters">
+      <button class="muted active" data-filter="">ALL</button>
+      <button class="muted" data-filter="ERROR">ERROR</button>
+      <button class="muted" data-filter="ACCOUNT">ACCOUNT</button>
+      <button class="muted" data-filter="RUNTIME">RUNTIME</button>
+      <button class="muted" data-filter="NODE">NODE</button>
+    </div>
+  </div>
+  <section id="events" class="table"></section>
+</main>
+
+<dialog id="loginDialog" class="auth-dialog">
+  <form id="loginForm">
+    <div><p class="section-kicker">SECURE SESSION</p><h3>Вход администратора</h3></div>
+    <label>Username<input name="username" value="admin" required autocomplete="username"></label>
+    <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+    <button type="submit" class="primary">Войти</button>
+    <p id="loginError" class="error"></p>
+  </form>
+</dialog>
+
+<dialog id="accountDialog">
+  <form id="accountForm">
+    <div class="title"><div><p class="section-kicker">NEW CONFIGURATION</p><h3>Добавить аккаунт</h3></div><button type="button" class="muted" id="closeAccount">Закрыть</button></div>
+    <label>Название<input name="label" placeholder="Account 001" required></label>
+    <label>Steam username<input name="steam_username" required autocomplete="off"></label>
+    <label>Steam password<input name="steam_password" type="password" autocomplete="new-password"></label>
+    <label>Email<input name="email" type="email"></label>
+    <label>Email password<input name="email_password" type="password" autocomplete="new-password"></label>
+    <label>Klei email<input name="klei_email" type="email"></label>
+    <label>Network profile<input name="network_profile" placeholder="default"></label>
+    <label>Заметки<textarea name="notes" rows="3"></textarea></label>
+    <p class="hint">Provisioning выполняется durable job. После него runtime остаётся NEEDS_LOGIN до ручной авторизации и VERIFY.</p>
+    <button type="submit" class="primary">Создать и поставить в очередь</button>
+    <p id="accountError" class="error"></p>
+  </form>
+</dialog>
+<script src="/static/app.js"></script>
+</body>
+</html>
+
