@@ -8,7 +8,11 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
+from app.runtime.display import GRAPHICAL_ENVIRONMENT_KEYS
+from app.subprocess_env import sanitized_subprocess_environment
+
 Clock = Callable[[], float]
+BeforeStart = Callable[[], None]
 
 
 @dataclass(slots=True)
@@ -51,6 +55,7 @@ class ProcessSupervisor:
         clock: Clock = time.monotonic,
         popen=subprocess.Popen,
         environment: dict[str, str] | None = None,
+        before_start: BeforeStart | None = None,
     ):
         if not command:
             raise ValueError("process command must not be empty")
@@ -66,16 +71,47 @@ class ProcessSupervisor:
         self.clock = clock
         self._popen = popen
         self.environment = dict(environment or {})
+        self.before_start = before_start
         self._process: subprocess.Popen | None = None
+        self._started_monotonic: float | None = None
         self._next_start_at = 0.0
         self.status = ManagedProcess(name=name)
         self._restart_times: list[float] = []
 
     @property
     def alive(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        if self._process is None:
+            return False
+        return self._process.poll() is None or self._process_group_alive()
+
+    def _process_group_alive(self) -> bool:
+        if (
+            os.name != "posix"
+            or self.status.process_group is None
+            or not isinstance(self._process, subprocess.Popen)
+        ):
+            return False
+        try:
+            os.killpg(self.status.process_group, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    @property
+    def running_for(self) -> float:
+        if not self.alive or self._started_monotonic is None:
+            return 0.0
+        return max(0.0, self.clock() - self._started_monotonic)
 
     def request_start(self) -> None:
+        if not self.status.desired:
+            self._restart_times.clear()
+            self._next_start_at = 0.0
+            self.status.restart_count = 0
+            self.status.exhausted = False
+            self.status.started_at = None
         self.status.desired = True
         if (
             self._process is None
@@ -87,12 +123,19 @@ class ProcessSupervisor:
     def _spawn(self, *, is_restart: bool) -> None:
         if is_restart:
             self.status.restart_count += 1
-        self.status.started_at = datetime.now(timezone.utc).isoformat()
         try:
-            environment = os.environ.copy()
+            if self.before_start:
+                self.before_start()
+            self._started_monotonic = self.clock()
+            self.status.started_at = datetime.now(timezone.utc).isoformat()
+            environment = sanitized_subprocess_environment()
+            if self.environment:
+                for name in GRAPHICAL_ENVIRONMENT_KEYS:
+                    environment.pop(name, None)
             environment.update(self.environment)
             self._process = self._popen(
                 list(self.command),
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
@@ -100,13 +143,21 @@ class ProcessSupervisor:
                 env=environment,
             )
         except OSError:
+            self._process = None
+            self._started_monotonic = None
+            self.status.started_at = None
             self.status.pid = None
+            self.status.process_group = None
             self.status.exit_code = 127
             self.status.last_exit_at = datetime.now(timezone.utc).isoformat()
             self._register_failure()
             return
         self.status.pid = self._process.pid
-        self.status.process_group = self._process.pid if os.name == "posix" else None
+        self.status.process_group = (
+            self._process.pid
+            if os.name == "posix" and isinstance(self._process, subprocess.Popen)
+            else None
+        )
         self.status.exit_code = None
 
     def _register_failure(self) -> None:
@@ -129,20 +180,27 @@ class ProcessSupervisor:
     def tick(self) -> ManagedProcess:
         if self._process is not None:
             exit_code = self._process.poll()
-            if exit_code is None:
-                if self.status.started_at:
-                    started = datetime.fromisoformat(self.status.started_at).timestamp()
-                    if (
-                        time.time() - started
-                        >= self.restart_policy.reset_after_stable_seconds
-                    ):
-                        self._restart_times.clear()
-                        self.status.restart_count = 0
+            if exit_code is None or self._process_group_alive():
+                if exit_code is not None:
+                    # A launcher may exit while descendants remain in the session.
+                    # The process group is still the supervised workload and must
+                    # not be duplicated by a restart.
+                    self.status.exit_code = exit_code
+                    self.status.pid = None
+                if (
+                    self._started_monotonic is not None
+                    and self.clock() - self._started_monotonic
+                    >= self.restart_policy.reset_after_stable_seconds
+                ):
+                    self._restart_times.clear()
+                    self.status.restart_count = 0
                 return self.status
             self.status.exit_code = exit_code
             self.status.pid = None
             self.status.last_exit_at = datetime.now(timezone.utc).isoformat()
             self._process = None
+            self._started_monotonic = None
+            self.status.process_group = None
             self._register_failure()
         if (
             self.status.desired
@@ -153,24 +211,53 @@ class ProcessSupervisor:
             self._spawn(is_restart=True)
         return self.status
 
-    def shutdown(self, timeout: float = 10) -> ManagedProcess:
+    def shutdown(self, timeout: float = 10, kill_timeout: float = 2) -> ManagedProcess:
         self.status.desired = False
-        if self._process is not None and self._process.poll() is None:
-            if os.name == "posix" and isinstance(self._process, subprocess.Popen):
-                os.killpg(self._process.pid, signal.SIGTERM)
-            else:
-                self._process.terminate()
+        process = self._process
+        if process is None:
+            self.status.pid = None
+            self.status.process_group = None
+            self.status.started_at = None
+            self._started_monotonic = None
+            return self.status
+
+        def send(sig: signal.Signals) -> None:
             try:
-                self._process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                if os.name == "posix" and isinstance(self._process, subprocess.Popen):
-                    os.killpg(self._process.pid, signal.SIGKILL)
+                if (
+                    os.name == "posix"
+                    and self.status.process_group is not None
+                    and isinstance(process, subprocess.Popen)
+                ):
+                    os.killpg(self.status.process_group, sig)
+                elif sig == signal.SIGTERM:
+                    process.terminate()
                 else:
-                    self._process.kill()
-                self._process.wait(timeout=5)
-        if self._process is not None:
-            self.status.exit_code = self._process.poll()
-        self.status.pid = None
-        self.status.process_group = None
-        self._process = None
+                    process.kill()
+            except ProcessLookupError:
+                pass
+
+        def wait_until_stopped(seconds: float) -> bool:
+            deadline = time.monotonic() + max(0.0, seconds)
+            while self.alive and time.monotonic() < deadline:
+                time.sleep(0.02)
+            process.poll()
+            return not self.alive
+
+        try:
+            if self.alive:
+                send(signal.SIGTERM)
+                if not wait_until_stopped(timeout):
+                    send(signal.SIGKILL)
+                    if not wait_until_stopped(kill_timeout):
+                        raise subprocess.TimeoutExpired(self.command, kill_timeout)
+            else:
+                process.poll()
+        finally:
+            self.status.exit_code = process.poll()
+            if not self.alive:
+                self.status.pid = None
+                self.status.process_group = None
+                self.status.started_at = None
+                self._process = None
+                self._started_monotonic = None
         return self.status

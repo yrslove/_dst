@@ -9,6 +9,7 @@ Required properties:
 - ENVIRONMENT=production;
 - PostgreSQL DATABASE_URL using psycopg;
 - RUNTIME_PROVIDER=incus;
+- CURRENT_IMAGE_VERIFIED=true only after the named Incus image passes real-node validation;
 - externally generated Fernet key;
 - long random admin password;
 - HTTPS ORCHESTRATOR_PUBLIC_URL;
@@ -26,7 +27,15 @@ sudo systemctl enable --now dst-orchestrator
 curl --fail http://127.0.0.1:8080/health/ready
 ~~~
 
-Reference unit uses one uvicorn process because background components are embedded. PostgreSQL locking protects jobs and account lifecycle execution, but run a single scheduler/executor deployment until scheduler leadership and distributed login rate limiting are explicitly introduced.
+Reference unit uses one uvicorn process because background components are embedded.
+PostgreSQL advisory/row locks and scheduler leadership protect lifecycle work, but the
+production topology intentionally remains one control-plane process until a
+multi-process deployment is validated end to end.
+
+If `RUNTIME_XAUTHORITY` is configured, it must be an absolute path inside the runtime.
+Bootstrap passes it to every graphical component and the generated default Xvfb
+command uses the same file with `-auth`; provisioning that file/cookie remains an
+image responsibility.
 
 ## TLS reverse proxy
 

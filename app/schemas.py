@@ -105,6 +105,20 @@ class WorkerModeRequest(BaseModel):
     mode: Literal["DISABLED", "OBSERVE", "ACTIVE"]
 
 
+class RebuildRuntimeRequest(BaseModel):
+    image_version: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @field_validator("image_version")
+    @classmethod
+    def strip_image_version(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
 class ResourceMetrics(BaseModel):
     cpu_percent: float | None = None
     load_1: float | None = None

@@ -18,7 +18,9 @@ authenticated admin + CSRF
 There is no permanent public VNC/xpra URL. Tokens are not put in URLs or logs.
 The session model records admin user, runtime, token hash, backend/session ID, mode,
 status, creation/expiry/access/close times, and bounded error details. Canonical states
-are CREATING, ACTIVE, EXPIRED, CLOSED, and ERROR.
+are CREATING, ACTIVE, CLOSING, EXPIRED, CLOSED, and ERROR.
+The xpra backend reserves and persists its opaque cleanup ID before starting xpra or
+adding the Incus proxy, so interrupted setup remains recoverable after process death.
 
 xpra uses `shadow`, not a second X server. Steam, DST, capture, input, and VIEW share
 the same `DisplayEnvironment` (normally `DISPLAY=:99`). The xpra listener is bound to
@@ -31,6 +33,10 @@ VIEW_ONLY leaves worker state unchanged. INTERACTIVE queues durable PAUSE and wi
 transport until heartbeat confirms that input ownership was revoked. Pause releases
 all held keys/buttons immediately in the worker process. Closing an interactive session
 does not resume automation; the operator must use RESUME WORKER explicitly.
+
+Create, close, replacement, and TTL cleanup share the account-scoped lifecycle lock.
+A replacement is not created until prior CLOSING cleanup is confirmed, and stopping or
+deactivating the runtime revokes the session instead of retaining a stale ACTIVE view.
 
 ## Failure behavior
 

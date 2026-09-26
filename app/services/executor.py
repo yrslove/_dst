@@ -23,6 +23,7 @@ from app.models import (
     Job,
     JobKind,
     Run,
+    RuntimeImage,
     RuntimeInstance,
     RuntimeState,
     WorkerStatus,
@@ -114,7 +115,7 @@ class JobExecutor:
                 JobKind.REBUILD_RUNTIME: self._rebuild,
                 JobKind.VERIFY_RUNTIME: self._verify,
                 JobKind.MOVE_RUNTIME: self._move,
-                JobKind.BOOTSTRAP_RUNTIME: self._bootstrap,
+                JobKind.BOOTSTRAP_RUNTIME: self._bootstrap_job,
             }.get(job.kind)
             if handler is None:
                 raise ControlPlaneError(f"unknown job kind: {job.kind}")
@@ -189,6 +190,7 @@ class JobExecutor:
             node = session.get(Node, runtime.node_id)
             if node is None:
                 raise KeyError(runtime.node_id)
+            image = session.get(RuntimeImage, runtime.image_version)
             return RuntimeDescriptor(
                 id=runtime.id,
                 account_id=runtime.account_id,
@@ -199,6 +201,11 @@ class JobExecutor:
                 image_version=runtime.image_version,
                 runtime_generation=runtime.runtime_generation,
                 network_profile=runtime.network_profile,
+                image_source_ref=(
+                    image.source_ref
+                    if image is not None and image.provider == runtime.provider
+                    else None
+                ),
             )
 
     def _provision(self, job: Job) -> None:
@@ -220,7 +227,6 @@ class JobExecutor:
             descriptor.image_version, descriptor.provider
         )
         status = self.provider.ensure(descriptor, correlation_id=job.request_id)
-        self._bootstrap(job)
         with self.db.transaction(immediate=True) as session:
             self._assert_owned(session, job)
             runtime = session.get(RuntimeInstance, job.runtime_id)
@@ -267,6 +273,7 @@ class JobExecutor:
                 )
         config = RuntimeAgentConfig(
             runtime_id=descriptor.id,
+            runtime_generation=descriptor.runtime_generation,
             account_id=descriptor.account_id,
             node_id=descriptor.node_id,
             runtime_token=token,
@@ -274,11 +281,38 @@ class JobExecutor:
             protocol_version=self.settings.agent_protocol_version,
             heartbeat_interval=5,
             display=self.settings.runtime_display,
+            xauthority=self.settings.runtime_xauthority,
             worker_plugin=self.settings.runtime_worker_plugin,
+            steam_enabled=self.settings.runtime_auto_launch_steam,
+            dst_enabled=self.settings.runtime_auto_launch_dst,
+            steam_command=self.settings.runtime_steam_command,
+            dst_command=self.settings.runtime_dst_command,
+            display_readiness_timeout=(
+                self.settings.runtime_display_readiness_timeout_seconds
+            ),
+            steam_readiness_timeout=(
+                self.settings.runtime_steam_readiness_timeout_seconds
+            ),
+            dst_readiness_timeout=self.settings.runtime_dst_readiness_timeout_seconds,
         )
         RuntimeBootstrapService(self.db, self.provider).bootstrap(
             descriptor, config, correlation_id=job.request_id
         )
+
+    def _bootstrap_job(self, job: Job) -> None:
+        """Safely consume legacy standalone bootstrap jobs.
+
+        Current bootstrap is part of START because Incus exec requires a running
+        instance. Older deployments may still have durable BOOTSTRAP_RUNTIME rows.
+        A stopped instance defers work to its next SETUP/START; a running one can
+        complete the resumable phases immediately.
+        """
+        assert job.runtime_id is not None
+        status = self.provider.inspect(
+            self._descriptor(job.runtime_id), correlation_id=job.request_id
+        )
+        if status.state == RuntimeState.RUNNING:
+            self._bootstrap(job)
 
     def _start(self, job: Job) -> None:
         assert job.runtime_id is not None
@@ -305,6 +339,10 @@ class JobExecutor:
             raise ProviderError(
                 f"provider returned unexpected START state {status.state}"
             )
+        # Incus exec is only valid for a running instance. Bootstrap is
+        # versioned/idempotent, so normal starts are also able to finish a
+        # previously interrupted setup or apply a rotated runtime token.
+        self._bootstrap(job)
         now = utcnow()
         with self.db.transaction(immediate=True) as session:
             self._assert_owned(session, job)
@@ -390,7 +428,7 @@ class JobExecutor:
                     0,
                     int(
                         (
-                            now - run.started_at.replace(tzinfo=now.tzinfo)
+                            now - ensure_utc(run.started_at)
                         ).total_seconds()
                     ),
                 )
@@ -461,6 +499,12 @@ class JobExecutor:
     def _rebuild(self, job: Job) -> None:
         assert job.runtime_id is not None
         old = self._descriptor(job.runtime_id)
+        # Validate before inspect/stop/deactivation. This is intentionally also
+        # enforced at command admission, but durable jobs may predate that check.
+        RuntimeImageService(self.db).require_verified(
+            str(job.payload.get("image_version") or self.settings.current_image_version),
+            old.provider,
+        )
         if job.payload.get("new_runtime_id"):
             self._finish_rebuild(job, old, int(job.payload["new_runtime_id"]))
             return
@@ -544,7 +588,6 @@ class JobExecutor:
             descriptor.image_version, descriptor.provider
         )
         self.provider.ensure(descriptor, correlation_id=job.request_id)
-        self._bootstrap_for_runtime(job, new_id)
         with self.db.transaction(immediate=True) as session:
             self._assert_owned(session, job)
             runtime = session.get(RuntimeInstance, new_id)
@@ -567,33 +610,6 @@ class JobExecutor:
                     "image_version": runtime.image_version,
                 },
             )
-
-    def _bootstrap_for_runtime(self, job: Job, runtime_id: int) -> None:
-        """Bootstrap a rebuild generation while retaining the durable parent job."""
-        descriptor = self._descriptor(runtime_id)
-        with self.db.session() as session:
-            runtime = session.get(RuntimeInstance, runtime_id)
-            assert runtime is not None and runtime.runtime_token_enc
-            token = SecretsService(self.settings).decrypt(runtime.runtime_token_enc)
-            if not token:
-                raise VerificationRequired(
-                    "runtime bootstrap token cannot be decrypted"
-                )
-        RuntimeBootstrapService(self.db, self.provider).bootstrap(
-            descriptor,
-            RuntimeAgentConfig(
-                runtime_id=descriptor.id,
-                account_id=descriptor.account_id,
-                node_id=descriptor.node_id,
-                runtime_token=token,
-                orchestrator_url=self.settings.orchestrator_public_url,
-                protocol_version=self.settings.agent_protocol_version,
-                heartbeat_interval=5,
-                display=self.settings.runtime_display,
-                worker_plugin=self.settings.runtime_worker_plugin,
-            ),
-            correlation_id=job.request_id,
-        )
 
     def _move(self, job: Job) -> None:
         assert job.runtime_id is not None
@@ -644,6 +660,22 @@ class JobExecutor:
                     AccountState.DISABLED,
                 }:
                     transition_account(account, AccountState.NEEDS_ATTENTION)
+            elif (
+                job.kind == JobKind.REBUILD_RUNTIME
+                and code == ErrorCode.RUNTIME_IMAGE_NOT_VERIFIED
+                and not job.payload.get("new_runtime_id")
+            ):
+                # Rejected before provider side effects: preserve the healthy old
+                # generation instead of poisoning it with an ERROR state.
+                pass
+            elif job.kind == JobKind.BOOTSTRAP_RUNTIME and runtime.state in {
+                RuntimeState.NEEDS_LOGIN,
+                RuntimeState.READY,
+                RuntimeState.STOPPED,
+            }:
+                # A legacy bootstrap job performs no mutation while stopped.
+                # Inspection outages must not turn a safe stopped runtime ERROR.
+                pass
             elif code != ErrorCode.NEEDS_LOGIN:
                 if runtime.state not in {RuntimeState.DESTROYED, RuntimeState.ERROR}:
                     try:

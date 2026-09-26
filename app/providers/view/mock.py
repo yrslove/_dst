@@ -28,7 +28,11 @@ class DisabledRuntimeViewProvider(RuntimeViewProvider):
         )
 
     def create_session(
-        self, runtime: RuntimeDescriptor, display: DisplayEnvironment
+        self,
+        runtime: RuntimeDescriptor,
+        display: DisplayEnvironment,
+        *,
+        backend_session_id: str | None = None,
     ) -> ViewStatus:
         self.prepare_runtime(runtime, display)
         raise AssertionError("unreachable")
@@ -58,9 +62,13 @@ class MockRuntimeViewProvider(RuntimeViewProvider):
         )
 
     def create_session(
-        self, runtime: RuntimeDescriptor, display: DisplayEnvironment
+        self,
+        runtime: RuntimeDescriptor,
+        display: DisplayEnvironment,
+        *,
+        backend_session_id: str | None = None,
     ) -> ViewStatus:
-        session_id = f"mock-view-{uuid.uuid4().hex}"
+        session_id = backend_session_id or f"mock-view-{uuid.uuid4().hex}"
         self.sessions.add(session_id)
         return ViewStatus("ACTIVE", session_id)
 

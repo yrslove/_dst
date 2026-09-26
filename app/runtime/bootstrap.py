@@ -15,18 +15,26 @@ SYSTEMD_UNIT = """[Unit]
 Description=DST runtime supervisor agent
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=simple
 User=dst
 Group=dst
+RuntimeDirectory=dst-runtime
+RuntimeDirectoryMode=0700
 EnvironmentFile=/etc/dst-runtime/agent.env
 WorkingDirectory=/opt/dst-orchestrator
 ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=30
+TimeoutStopSec=45
 NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/dst-runtime /home/dst
 
 [Install]
 WantedBy=multi-user.target
@@ -79,6 +87,12 @@ class RuntimeBootstrapService:
                 raise BootstrapFailed(
                     "runtime bootstrap version is newer than this control plane"
                 )
+            if runtime.bootstrap_version < self.version:
+                return None
+            if runtime.bootstrap_phase and runtime.bootstrap_phase not in {
+                str(phase) for phase in BootstrapPhase
+            }:
+                raise BootstrapFailed("runtime contains an unknown bootstrap phase")
             return (
                 BootstrapPhase(runtime.bootstrap_phase)
                 if runtime.bootstrap_phase
@@ -101,7 +115,10 @@ class RuntimeBootstrapService:
             },
         )
         if phase == BootstrapPhase.RUNTIME_CREATED:
-            self.provider.ensure(runtime, correlation_id=correlation_id)
+            # Provisioning owns creation. Bootstrap runs only after the instance
+            # has started, so repeating ensure() here would blur the exactly-once
+            # provision boundary and could invoke destructive provider logic.
+            self.provider.inspect(runtime, correlation_id=correlation_id)
         elif phase == BootstrapPhase.BASE_CONFIG_APPLIED:
             self.provider.execute(
                 runtime,
@@ -109,10 +126,16 @@ class RuntimeBootstrapService:
                 correlation_id=correlation_id,
             )
         elif phase == BootstrapPhase.AGENT_FILES_INSTALLED:
-            # Runtime image owns package installation; this validates its expected path.
+            # Runtime image owns package installation; validate the exact paths used
+            # by ExecStart instead of an unrelated compatibility launcher.
             self.provider.execute(
                 runtime,
-                ("/usr/bin/test", "-x", "/usr/local/bin/dst-runtime-agent"),
+                ("/usr/bin/test", "-x", "/opt/dst-orchestrator/.venv/bin/python"),
+                correlation_id=correlation_id,
+            )
+            self.provider.execute(
+                runtime,
+                ("/usr/bin/test", "-r", "/opt/dst-orchestrator/runtime_agent/main.py"),
                 correlation_id=correlation_id,
             )
         elif phase == BootstrapPhase.AGENT_CONFIGURED:
@@ -136,15 +159,20 @@ class RuntimeBootstrapService:
                 ("/bin/systemctl", "daemon-reload"),
                 correlation_id=correlation_id,
             )
-            self.provider.execute(
-                runtime,
-                ("/bin/systemctl", "enable", "dst-runtime-agent.service"),
-                correlation_id=correlation_id,
-            )
         elif phase == BootstrapPhase.DISPLAY_CONFIGURED:
             self.provider.execute(
                 runtime,
-                ("/usr/bin/install", "-d", "-m", "0755", "/run/dst-runtime"),
+                (
+                    "/usr/bin/install",
+                    "-d",
+                    "-o",
+                    "dst",
+                    "-g",
+                    "dst",
+                    "-m",
+                    "0700",
+                    "/run/dst-runtime",
+                ),
                 correlation_id=correlation_id,
             )
         elif phase in {
@@ -154,6 +182,21 @@ class RuntimeBootstrapService:
             # Presence only: readiness remains an agent-reported, real-node concern.
             self.provider.execute(
                 runtime, ("/usr/bin/true",), correlation_id=correlation_id
+            )
+        elif phase == BootstrapPhase.BOOTSTRAP_COMPLETE:
+            # Start only after every prerequisite is committed. Repeating this
+            # operation after a partial failure is safe and refreshes changed env.
+            self.provider.execute(
+                runtime,
+                ("/bin/systemctl", "enable", "dst-runtime-agent.service"),
+                correlation_id=correlation_id,
+            )
+            # `start` is a no-op for an existing service, but token rotation and
+            # configuration repair require the new EnvironmentFile to be loaded.
+            self.provider.execute(
+                runtime,
+                ("/bin/systemctl", "restart", "dst-runtime-agent.service"),
+                correlation_id=correlation_id,
             )
 
     def _record(

@@ -10,6 +10,12 @@ from app.runtime.display import DisplayEnvironment
 class ViewUnavailable(RuntimeError):
     code = "REMOTE_VIEW_UNAVAILABLE"
 
+    def __init__(
+        self, message: str, *, backend_session_id: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.backend_session_id = backend_session_id
+
 
 class ViewBackendUnavailable(ViewUnavailable):
     code = "REMOTE_VIEW_BACKEND_UNAVAILABLE"
@@ -31,6 +37,12 @@ class ViewStatus:
 class RuntimeViewProvider(ABC):
     name = "unknown"
 
+    def reserve_session(
+        self, runtime: RuntimeDescriptor, display: DisplayEnvironment
+    ) -> str | None:
+        """Return a side-effect-free durable ID when setup needs crash cleanup."""
+        return None
+
     @abstractmethod
     def prepare_runtime(
         self, runtime: RuntimeDescriptor, display: DisplayEnvironment
@@ -38,7 +50,11 @@ class RuntimeViewProvider(ABC):
 
     @abstractmethod
     def create_session(
-        self, runtime: RuntimeDescriptor, display: DisplayEnvironment
+        self,
+        runtime: RuntimeDescriptor,
+        display: DisplayEnvironment,
+        *,
+        backend_session_id: str | None = None,
     ) -> ViewStatus: ...
 
     @abstractmethod

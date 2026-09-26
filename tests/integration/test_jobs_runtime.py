@@ -12,6 +12,7 @@ from app.models import (
     RuntimeState,
     utcnow,
 )
+from app.services.runtime_images import RuntimeImageService
 from tests.helpers import create_account, make_ready
 
 
@@ -114,6 +115,12 @@ def test_scheduler_skips_disabled_account(client, app):
 
 def test_rebuild_preserves_account_and_increments_generation(client, app):
     account = make_ready(client, app, "rebuild")
+    RuntimeImageService(app.state.db).ensure_configured(
+        version="dst-base-v2",
+        provider="mock",
+        source_ref="mock",
+        verified=True,
+    )
     queued = client.post(
         f"/api/v1/accounts/{account['id']}/rebuild",
         json={"image_version": "dst-base-v2"},
@@ -128,6 +135,24 @@ def test_rebuild_preserves_account_and_increments_generation(client, app):
     assert current["state"] == "NEEDS_LOGIN"
     assert len(history) == 2
     assert sum(1 for item in history if item["active"]) == 1
+
+
+def test_rebuild_rejects_unverified_image_before_touching_runtime(client, app):
+    account = make_ready(client, app, "rebuild-unverified")
+    jobs_before = len(client.get("/api/v1/jobs").json())
+
+    response = client.post(
+        f"/api/v1/accounts/{account['id']}/rebuild",
+        json={"image_version": "unverified-image"},
+    )
+
+    assert response.status_code == 409
+    assert len(client.get("/api/v1/jobs").json()) == jobs_before
+    current = client.get(f"/api/v1/accounts/{account['id']}").json()
+    history = client.get(f"/api/v1/accounts/{account['id']}/runtime-history").json()
+    assert current["runtime_id"] == account["runtime_id"]
+    assert current["state"] == "STOPPED"
+    assert len(history) == 1 and history[0]["active"]
 
 
 def test_expired_job_lease_is_reclaimed(client, app):

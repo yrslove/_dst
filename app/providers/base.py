@@ -16,6 +16,7 @@ class RuntimeDescriptor:
     image_version: str
     runtime_generation: int
     network_profile: str | None = None
+    image_source_ref: str | None = None
 
 
 @dataclass(slots=True)

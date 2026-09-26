@@ -2,11 +2,12 @@
   "name": "dst_orchestrator_mvp",
   "version": "1.0.0",
   "purpose": "Steam/DST runtime control-plane foundation",
-  "gameplay_worker": "NOOP",
+  "gameplay_worker": "DST_PLUGIN_WITH_NOOP_FALLBACK",
   "providers": [
     "mock",
     "incus_cli",
     "runtime_view_disabled",
-    "runtime_view_mock"
+    "runtime_view_mock",
+    "runtime_view_xpra"
   ]
 }

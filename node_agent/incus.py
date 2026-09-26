@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import subprocess
 
+from app.subprocess_env import sanitized_subprocess_environment
+
 
 def incus_available() -> bool:
     try:
         result = subprocess.run(
             ["incus", "info"],
+            env=sanitized_subprocess_environment(),
             capture_output=True,
             text=True,
             timeout=10,
@@ -22,6 +25,7 @@ def active_runtime_count() -> int:
     try:
         result = subprocess.run(
             ["incus", "list", "--format", "json"],
+            env=sanitized_subprocess_environment(),
             capture_output=True,
             text=True,
             timeout=10,

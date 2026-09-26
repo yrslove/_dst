@@ -22,6 +22,7 @@ from app.models import (
     NodeResourceSnapshot,
     NodeStatus,
     Run,
+    RuntimeImage,
     RuntimeInstance,
     RuntimeState,
     WorkerStatus,
@@ -31,6 +32,7 @@ from app.schemas import AccountCreate
 from app.services.jobs import ACTIVE_JOB_STATUSES, JobQueue
 from app.services.leases import occupied_runtime_ids
 from app.services.records import add_audit, add_event
+from app.services.runtime_images import RuntimeImageNotVerified
 from app.services.secrets import SecretsService
 from app.services.security import ensure_utc, generate_token, hash_token
 
@@ -296,6 +298,23 @@ class AccountService:
             }:
                 runtime.command_version += 1
                 if kind == JobKind.REBUILD_RUNTIME:
+                    image_version = (payload or {}).get("image_version")
+                    if image_version is None:
+                        image_version = self.settings.current_image_version
+                    if not isinstance(image_version, str) or not image_version:
+                        raise RuntimeImageNotVerified(
+                            "rebuild requires a valid runtime image version"
+                        )
+                    image = session.get(RuntimeImage, image_version)
+                    if (
+                        image is None
+                        or image.provider != runtime.provider
+                        or not image.verified
+                    ):
+                        raise RuntimeImageNotVerified(
+                            "selected runtime image is not verified for this provider"
+                        )
+                    payload = {**(payload or {}), "image_version": image_version}
                     runtime.desired_state = DesiredState.STOPPED
 
             key = (
@@ -691,24 +710,47 @@ class AccountService:
     ) -> str:
         token = generate_token()
         with self.db.transaction(immediate=True) as session:
-            runtime = session.get(RuntimeInstance, runtime_id)
+            statement = select(RuntimeInstance).where(RuntimeInstance.id == runtime_id)
+            if not self.db.is_sqlite:
+                statement = statement.with_for_update()
+            runtime = session.scalar(statement)
             if runtime is None:
                 raise KeyError(runtime_id)
+            if not runtime.active or runtime.state not in {
+                RuntimeState.NEEDS_LOGIN,
+                RuntimeState.READY,
+                RuntimeState.STOPPED,
+            }:
+                raise AccountBusyError(
+                    "runtime token rotation requires a stopped, active runtime"
+                )
+            active_job = session.scalar(
+                select(Job.id).where(
+                    Job.runtime_id == runtime.id,
+                    Job.status.in_([str(item) for item in ACTIVE_JOB_STATUSES]),
+                )
+            )
+            if active_job is not None:
+                raise AccountBusyError(
+                    f"runtime token rotation requires job {active_job} to finish"
+                )
             runtime.token_hash = hash_token(token)
             runtime.runtime_token_enc = self.secrets.encrypt(token)
-            # Re-running bootstrap starts at AGENT_CONFIGURED and reinjects the
-            # replacement token through the provider's secret file channel.
-            runtime.bootstrap_phase = "AGENT_FILES_INSTALLED"
-            self.jobs.enqueue_in_session(
-                session,
-                kind=JobKind.BOOTSTRAP_RUNTIME,
-                account_id=runtime.account_id,
-                runtime_id=runtime.id,
-                node_id=runtime.node_id,
-                request_id=request_id,
-                idempotency_key=f"bootstrap:{runtime.id}:token:{runtime.command_version + 1}",
-                priority=70,
-            )
+            # The next SETUP/START resumes at AGENT_CONFIGURED while the
+            # instance is running; Incus cannot exec bootstrap commands in a
+            # stopped container.
+            if runtime.bootstrap_phase in {
+                "AGENT_CONFIGURED",
+                "AGENT_SERVICE_INSTALLED",
+                "DISPLAY_CONFIGURED",
+                "STEAM_RUNTIME_PREPARED",
+                "DST_RUNTIME_PREPARED",
+                "BOOTSTRAP_COMPLETE",
+            }:
+                runtime.bootstrap_phase = "AGENT_FILES_INSTALLED"
+            runtime.bootstrap_completed_at = None
+            runtime.bootstrap_error_code = None
+            runtime.bootstrap_error_message = None
             runtime.command_version += 1
             add_audit(
                 session,

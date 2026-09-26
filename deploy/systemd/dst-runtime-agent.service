@@ -1,6 +1,6 @@
 [Unit]
 Description=DST runtime supervisor agent
-After=network-online.target graphical.target
+After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=300
 StartLimitBurst=3
@@ -16,7 +16,7 @@ EnvironmentFile=/etc/dst-runtime/agent.env
 ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=30
+TimeoutStopSec=45
 NoNewPrivileges=true
 PrivateTmp=false
 ProtectSystem=strict
@@ -24,4 +24,4 @@ ProtectHome=read-only
 ReadWritePaths=/run/dst-runtime /home/dst
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target

@@ -95,6 +95,7 @@ class JobStatus(StrEnum):
 class RemoteViewStatus(StrEnum):
     CREATING = "CREATING"
     ACTIVE = "ACTIVE"
+    CLOSING = "CLOSING"
     EXPIRED = "EXPIRED"
     CLOSED = "CLOSED"
     ERROR = "ERROR"

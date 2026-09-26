@@ -20,6 +20,7 @@ from app.models import (
     NodeStatus,
     RuntimeHeartbeat,
     RuntimeInstance,
+    RuntimeState,
     WorkerCommand,
     WorkerRun,
     WorkerStatus,
@@ -102,6 +103,13 @@ class AgentService:
                 raise AuthenticationRequired("invalid runtime agent token")
             if not runtime.active:
                 raise AuthenticationRequired("runtime generation is inactive")
+            if runtime.state not in {
+                RuntimeState.STARTING,
+                RuntimeState.RUNNING,
+                RuntimeState.STOPPING,
+                RuntimeState.STALE,
+            }:
+                raise AuthenticationRequired("runtime is not accepting heartbeats")
             runtime.last_heartbeat_at = now
             runtime.agent_version = payload.agent_version
             latest = session.scalar(
@@ -137,7 +145,9 @@ class AgentService:
             if requested_mode not in {"DISABLED", "OBSERVE", "ACTIVE"}:
                 requested_mode = "DISABLED"
             gate_error = None
-            if requested_mode == "ACTIVE" and runtime.verified_at is None:
+            if requested_mode == "ACTIVE" and (
+                runtime.verified_at is None or runtime.state != RuntimeState.RUNNING
+            ):
                 requested_mode = "DISABLED"
                 gate_error = "WORKER_DISABLED"
             values = {
@@ -214,7 +224,10 @@ class AgentService:
                         WorkerCommand.status.in_(["PENDING", "DELIVERED"]),
                     )
                     .order_by(WorkerCommand.id)
-                    .limit(16)
+                    # Worker lifecycle commands are stateful. Deliver exactly one
+                    # unresolved command so STOP/RESUME and PAUSE/RESUME cannot
+                    # race each other inside the isolated worker process.
+                    .limit(1)
                 )
             )
             for command in commands:
@@ -222,7 +235,8 @@ class AgentService:
                 command.delivered_at = now
             response = {
                 "ok": True,
-                "runtime_verified": runtime.verified_at is not None,
+                "runtime_verified": runtime.verified_at is not None
+                and runtime.state == RuntimeState.RUNNING,
                 "commands": [
                     {"id": item.id, "command": item.command, "payload": item.payload}
                     for item in commands

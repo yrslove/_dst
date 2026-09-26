@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -18,26 +17,59 @@ class SteamState(StrEnum):
 
 
 class SteamProcess:
-    def __init__(self, supervisor: ProcessSupervisor, readiness_file: Path):
+    def __init__(
+        self,
+        supervisor: ProcessSupervisor,
+        readiness_file: Path,
+        *,
+        needs_login_file: Path | None = None,
+        readiness_timeout_seconds: float = 120,
+    ):
         self.supervisor, self.readiness_file, self._state = (
             supervisor,
             readiness_file,
             SteamState.STOPPED,
         )
+        self.needs_login_file = needs_login_file
+        self.readiness_timeout_seconds = readiness_timeout_seconds
+        self._terminal_error = False
+        previous_before_start = supervisor.before_start
+
+        def reset_markers() -> None:
+            if previous_before_start:
+                previous_before_start()
+            for marker in (self.readiness_file, self.needs_login_file):
+                if marker is not None:
+                    marker.unlink(missing_ok=True)
+
+        supervisor.before_start = reset_markers
 
     def prepare(self):
         return self._state
 
     def start(self):
+        if self._terminal_error:
+            return SteamState.ERROR
         self.supervisor.request_start()
         self._state = SteamState.STARTING
         return self._state
 
     def status(self):
+        if self._terminal_error:
+            return SteamState.ERROR
         if self.supervisor.status.exhausted:
             return SteamState.ERROR
         if self.supervisor.alive:
-            return SteamState.READY if self._ready_marker() else SteamState.RUNNING
+            if self._fresh_marker(self.needs_login_file):
+                return SteamState.NEEDS_LOGIN
+            if self._ready_marker() and self.supervisor.alive:
+                return SteamState.READY
+            if self.supervisor.running_for >= self.readiness_timeout_seconds:
+                self.supervisor.shutdown(timeout=3)
+                self._terminal_error = True
+                self._state = SteamState.ERROR
+                return self._state
+            return SteamState.RUNNING
         return self._state
 
     def wait_ready(self):
@@ -52,14 +84,17 @@ class SteamProcess:
         return self.supervisor.status.as_dict()
 
     def _ready_marker(self):
-        started_at = self.supervisor.status.started_at
-        if not started_at:
+        return self._fresh_marker(self.readiness_file)
+
+    def _fresh_marker(self, marker: Path | None):
+        if marker is None:
+            return False
+        if not self.supervisor.status.started_at:
             return False
         try:
-            return (
-                self.readiness_file.is_file()
-                and self.readiness_file.stat().st_mtime
-                >= datetime.fromisoformat(started_at).timestamp()
-            )
+            # before_start unlinks every marker synchronously for each spawn.
+            # Existence is therefore generation-bound and avoids false negatives
+            # on filesystems with coarse timestamp precision.
+            return marker.is_file()
         except OSError:
             return False

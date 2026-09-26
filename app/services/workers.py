@@ -3,7 +3,13 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from app.db import Database
-from app.models import RuntimeInstance, WorkerCommand, WorkerStatus, utcnow
+from app.models import (
+    RuntimeInstance,
+    RuntimeState,
+    WorkerCommand,
+    WorkerStatus,
+    utcnow,
+)
 from app.services.records import add_audit
 
 
@@ -37,6 +43,15 @@ class WorkerControlService:
             if runtime is None:
                 raise WorkerControlError("active runtime not found")
             values = dict(payload or {})
+            safety_command = command in {"PAUSE", "STOP"}
+            if runtime.state != RuntimeState.RUNNING and not (
+                safety_command
+                and runtime.state
+                in {RuntimeState.STARTING, RuntimeState.STOPPING, RuntimeState.STALE}
+            ):
+                raise WorkerControlError(
+                    f"worker command is unavailable while runtime is {runtime.state}"
+                )
             if command == "SET_MODE":
                 mode = values.get("mode")
                 if mode not in {"DISABLED", "OBSERVE", "ACTIVE"}:

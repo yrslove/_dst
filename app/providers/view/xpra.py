@@ -7,6 +7,7 @@ import re
 import shutil
 import socket
 import subprocess
+import time
 import uuid
 
 from app.providers.base import ProviderError, RuntimeDescriptor, RuntimeProvider
@@ -17,6 +18,7 @@ from app.providers.view.base import (
     ViewUnavailable,
 )
 from app.runtime.display import DisplayEnvironment
+from app.subprocess_env import sanitized_subprocess_environment
 
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _SAFE_DISPLAY = re.compile(r":[0-9]{1,4}(?:\.[0-9]+)?")
@@ -74,6 +76,21 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
         )
 
     @staticmethod
+    def _runtime_argv(
+        display: DisplayEnvironment, *command: str
+    ) -> tuple[str, ...]:
+        environment = [f"DISPLAY={display.display}"]
+        if display.xauthority:
+            environment.append(f"XAUTHORITY={display.xauthority}")
+        if display.xdg_runtime_dir:
+            environment.append(f"XDG_RUNTIME_DIR={display.xdg_runtime_dir}")
+        if display.dbus_session_bus_address:
+            environment.append(
+                f"DBUS_SESSION_BUS_ADDRESS={display.dbus_session_bus_address}"
+            )
+        return ("/usr/bin/env", *environment, *command)
+
+    @staticmethod
     def _decode(value: str) -> dict:
         try:
             padding = "=" * (-len(value) % 4)
@@ -84,6 +101,28 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
             raise ViewUnavailable("invalid xpra backend session identifier")
         return payload
 
+    @classmethod
+    def _validated_payload(cls, value: str) -> dict:
+        payload = cls._decode(value)
+        target = payload.get("target")
+        device = payload.get("device")
+        display = payload.get("display")
+        port = payload.get("port")
+        if (
+            not isinstance(target, str)
+            or not _SAFE_NAME.fullmatch(target)
+            or not isinstance(device, str)
+            or not device.startswith("view-")
+            or not _SAFE_NAME.fullmatch(device)
+            or not isinstance(display, str)
+            or not _SAFE_DISPLAY.fullmatch(display)
+            or not isinstance(port, int)
+            or isinstance(port, bool)
+            or not 1 <= port <= 65535
+        ):
+            raise ViewUnavailable("invalid xpra backend session identifier")
+        return payload
+
     def _incus(
         self, *args: str, allow_failure: bool = False
     ) -> subprocess.CompletedProcess:
@@ -91,6 +130,7 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
         try:
             result = subprocess.run(
                 ["incus", *args],
+                env=sanitized_subprocess_environment(),
                 timeout=20,
                 capture_output=True,
                 text=True,
@@ -117,43 +157,155 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
                 "xpra backend requires an Incus runtime and a canonical X display"
             )
         try:
-            probe = self.runtime_provider.execute(
+            xpra_probe = self.runtime_provider.execute(
+                runtime, ("xpra", "--version"), timeout=10
+            )
+            display_probe = self.runtime_provider.execute(
                 runtime,
                 (
-                    "sh",
-                    "-lc",
-                    f"command -v xpra >/dev/null && test -S /tmp/.X11-unix/X{display.display[1:].split('.')[0]}",
+                    "test",
+                    "-S",
+                    f"/tmp/.X11-unix/X{display.display[1:].split('.')[0]}",
                 ),
                 timeout=10,
             )
         except ProviderError as exc:
             raise ViewBackendUnavailable("xpra runtime probe failed") from exc
-        if int(probe.raw.get("exit_code", 1)) != 0:
+        if any(
+            int(probe.raw.get("exit_code", 1)) != 0
+            for probe in (xpra_probe, display_probe)
+        ):
             raise ViewBackendUnavailable(
                 "xpra or the runtime display socket is unavailable"
             )
 
-    def create_session(
+    def _cleanup_backend(self, target: str, device: str, display: str) -> None:
+        failure: ViewUnavailable | None = None
+        try:
+            removed = self._incus(
+                "config", "device", "remove", target, device, allow_failure=True
+            )
+            if not self._idempotent_cleanup_result(removed):
+                failure = ViewUnavailable(
+                    "Incus view proxy cleanup could not be confirmed"
+                )
+        except ViewUnavailable as exc:
+            failure = exc
+        try:
+            stopped = self._incus(
+                "exec",
+                target,
+                "--",
+                "xpra",
+                "stop",
+                display,
+                "--socket-dir=/run/dst-runtime/xpra",
+                allow_failure=True,
+            )
+            if not self._idempotent_cleanup_result(stopped):
+                failure = failure or ViewUnavailable(
+                    "xpra shadow cleanup could not be confirmed"
+                )
+        except ViewUnavailable as exc:
+            failure = failure or exc
+        if failure:
+            raise failure
+
+    @staticmethod
+    def _idempotent_cleanup_result(result: subprocess.CompletedProcess) -> bool:
+        if result.returncode == 0:
+            return True
+        message = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+        return any(
+            marker in message
+            for marker in (
+                "not found",
+                "does not exist",
+                "doesn't exist",
+                "not running",
+                "no matching session",
+            )
+        )
+
+    def reserve_session(
         self, runtime: RuntimeDescriptor, display: DisplayEnvironment
-    ) -> ViewStatus:
+    ) -> str:
+        self._require_host()
+        selected_remote = runtime.incus_remote or self.incus_remote
+        if selected_remote not in {"", "local"}:
+            raise ViewBackendUnavailable(
+                "xpra loopback transport currently requires a control plane colocated with the Incus Node"
+            )
+        if runtime.provider != "incus" or not _SAFE_DISPLAY.fullmatch(display.display):
+            raise ViewBackendUnavailable(
+                "xpra backend requires an Incus runtime and a canonical X display"
+            )
         host_port = self._free_loopback_port()
         nonce = uuid.uuid4().hex[:12]
         device = f"view-{nonce}"
         target = self._target(runtime.external_id, runtime.incus_remote)
-        launch = (
-            "install -d -m 0700 /run/dst-runtime/xpra && "
-            f"xpra shadow {display.display} --daemon=yes --exit-with-client=no "
-            f"--bind-tcp=127.0.0.1:{self.container_port} --html=on --auth=none --tcp-auth=none "
-            "--socket-dir=/run/dst-runtime/xpra"
+        backend_id = self._encode(
+            {
+                "target": target,
+                "device": device,
+                "port": host_port,
+                "display": display.display,
+                "nonce": nonce,
+            }
         )
-        command = ("sh", "-lc", launch)
+        if len(backend_id) > 255:
+            raise ViewUnavailable(
+                "xpra backend session identifier exceeds storage limit"
+            )
+        return backend_id
+
+    def create_session(
+        self,
+        runtime: RuntimeDescriptor,
+        display: DisplayEnvironment,
+        *,
+        backend_session_id: str | None = None,
+    ) -> ViewStatus:
+        backend_id = backend_session_id or self.reserve_session(runtime, display)
+        payload = self._validated_payload(backend_id)
+        target = self._target(runtime.external_id, runtime.incus_remote)
+        if payload["target"] != target or payload["display"] != display.display:
+            raise ViewUnavailable("xpra reservation does not match runtime session")
+        host_port = int(payload["port"])
+        device = str(payload["device"])
         try:
-            started = self.runtime_provider.execute(runtime, command, timeout=20)
+            installed = self.runtime_provider.execute(
+                runtime,
+                ("install", "-d", "-m", "0700", "/run/dst-runtime/xpra"),
+                timeout=10,
+            )
+            started = self.runtime_provider.execute(
+                runtime,
+                self._runtime_argv(
+                    display,
+                    "xpra",
+                    "shadow",
+                    display.display,
+                    "--daemon=yes",
+                    "--exit-with-client=no",
+                    f"--bind-tcp=127.0.0.1:{self.container_port}",
+                    "--html=on",
+                    "--auth=none",
+                    "--tcp-auth=none",
+                    "--socket-dir=/run/dst-runtime/xpra",
+                ),
+                timeout=20,
+            )
         except ProviderError as exc:
+            self._cleanup_or_defer(target, device, display.display, backend_id)
             raise ViewBackendUnavailable(
                 "xpra failed to shadow the runtime display"
             ) from exc
-        if int(started.raw.get("exit_code", 1)) != 0:
+        if any(
+            int(result.raw.get("exit_code", 1)) != 0
+            for result in (installed, started)
+        ):
+            self._cleanup_or_defer(target, device, display.display, backend_id)
             raise ViewBackendUnavailable("xpra failed to shadow the runtime display")
         try:
             self._incus(
@@ -167,45 +319,33 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
                 f"connect=tcp:127.0.0.1:{self.container_port}",
             )
         except Exception:
-            self._incus(
-                "exec",
-                target,
-                "--",
-                "xpra",
-                "stop",
-                display.display,
-                allow_failure=True,
-            )
+            self._cleanup_or_defer(target, device, display.display, backend_id)
             raise
-        backend_id = self._encode(
-            {
-                "target": target,
-                "device": device,
-                "port": host_port,
-                "display": display.display,
-                "nonce": nonce,
-            }
-        )
-        if len(backend_id) > 255:
-            self._incus(
-                "config", "device", "remove", target, device, allow_failure=True
-            )
-            self._incus(
-                "exec",
-                target,
-                "--",
-                "xpra",
-                "stop",
-                display.display,
-                allow_failure=True,
-            )
-            raise ViewUnavailable(
-                "xpra backend session identifier exceeds storage limit"
-            )
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", host_port), timeout=0.25):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            self._cleanup_or_defer(target, device, display.display, backend_id)
+            raise ViewBackendUnavailable("xpra loopback transport did not become ready")
         return ViewStatus("ACTIVE", backend_id, upstream=("127.0.0.1", host_port))
 
+    def _cleanup_or_defer(
+        self, target: str, device: str, display: str, backend_id: str
+    ) -> None:
+        try:
+            self._cleanup_backend(target, device, display)
+        except ViewUnavailable as exc:
+            raise ViewBackendUnavailable(
+                "xpra setup failed and backend cleanup is pending",
+                backend_session_id=backend_id,
+            ) from exc
+
     def status(self, backend_session_id: str) -> ViewStatus:
-        payload = self._decode(backend_session_id)
+        payload = self._validated_payload(backend_session_id)
         self._require_host()
         try:
             with socket.create_connection(
@@ -225,16 +365,8 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
             )
 
     def close_session(self, backend_session_id: str) -> None:
-        payload = self._decode(backend_session_id)
-        target, device, display = (
-            payload.get("target"),
-            payload.get("device"),
-            payload.get("display"),
-        )
-        if not all(isinstance(item, str) for item in (target, device, display)):
-            raise ViewUnavailable("invalid xpra backend session identifier")
-        self._incus("config", "device", "remove", target, device, allow_failure=True)
-        self._incus("exec", target, "--", "xpra", "stop", display, allow_failure=True)
+        payload = self._validated_payload(backend_session_id)
+        self._cleanup_backend(payload["target"], payload["device"], payload["display"])
 
     def cleanup_expired_sessions(self, backend_session_ids: list[str]) -> None:
         for value in backend_session_ids:

@@ -145,6 +145,25 @@ class Reconciler:
                     )
                 # Preserve STALE/ERROR until a fresh authenticated readiness report
                 # is explicitly verified; provider liveness is not runtime health.
+                if runtime.state not in {
+                    RuntimeState.RUNNING,
+                    RuntimeState.STALE,
+                    RuntimeState.ERROR,
+                }:
+                    if runtime.state == RuntimeState.DESTROYING:
+                        transition_runtime(runtime, RuntimeState.ERROR)
+                    else:
+                        transition_runtime(runtime, RuntimeState.STALE)
+                    runtime.last_error_code = ErrorCode.UNKNOWN
+                    runtime.last_error_message = (
+                        "Provider reports a running instance without active lifecycle work"
+                    )
+                    if (
+                        account
+                        and account.enabled
+                        and account.status != AccountState.NEEDS_ATTENTION
+                    ):
+                        transition_account(account, AccountState.NEEDS_ATTENTION)
             elif actual == RuntimeState.STOPPED:
                 for lease in leases:
                     lease.released_at = now

@@ -76,14 +76,31 @@ def test_agent_details_are_bounded_and_secrets_redacted(client, app):
     account = create_account(client, "safe-agent-details")
     assert app.state.executor.execute_next()
     token = client.post(f"/api/v1/runtimes/{account['runtime_id']}/token/rotate").json()["token"]
+    assert client.post(f"/api/v1/accounts/{account['id']}/setup").status_code == 202
+    assert app.state.executor.execute_next()
     payload = heartbeat_payload(account["runtime_id"])
     payload["details"] = {"token": "must-not-store", "nested": {"password_hint": "nope"}, "noise": "x" * 1000}
     assert client.post("/api/v1/runtime-agent/heartbeat", headers={"Authorization": f"Bearer {token}"}, json=payload).status_code == 200
     with app.state.db.session() as session:
         details = session.get(WorkerStatus, account["runtime_id"]).details
-        assert details["token"] == "[REDACTED]"
-        assert details["nested"]["password_hint"] == "[REDACTED]"
-        assert len(details["noise"]) == 500
+        diagnostics = details["diagnostics"]
+        assert diagnostics["token"] == "[REDACTED]"
+        assert diagnostics["nested"]["password_hint"] == "[REDACTED]"
+        assert len(diagnostics["noise"]) == 500
+
+
+def test_stopped_runtime_rejects_even_valid_heartbeat(client, app):
+    account = create_account(client, "stopped-agent")
+    assert app.state.executor.execute_next()
+    token = client.post(f"/api/v1/runtimes/{account['runtime_id']}/token/rotate").json()["token"]
+    response = client.post(
+        "/api/v1/runtime-agent/heartbeat",
+        headers={"Authorization": f"Bearer {token}"},
+        json=heartbeat_payload(account["runtime_id"]),
+    )
+    assert response.status_code == 401
+    with app.state.db.session() as session:
+        assert session.get(RuntimeInstance, account["runtime_id"]).last_heartbeat_at is None
 
 
 def test_node_heartbeat_records_resources(client, app):

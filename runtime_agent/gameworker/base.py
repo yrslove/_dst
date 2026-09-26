@@ -17,7 +17,41 @@ class WorkerContext:
     )
     runtime_verified: bool = False
     state: str = "WORKER_IDLE"
-    metadata: dict = field(default_factory=dict)
+    metadata: tuple[()] = ()
+    runtime_generation: int = 1
+
+    def __post_init__(self) -> None:
+        if self.account_id < 1 or self.runtime_id < 1 or self.runtime_generation < 1:
+            raise ValueError("worker context identifiers must be positive")
+        if self.metadata == {}:
+            object.__setattr__(self, "metadata", ())
+        elif self.metadata:
+            raise ValueError("worker context metadata is not allowed across IPC")
+
+
+class Observation(Protocol):
+    """Neutral Stage 1 boundary implemented by live and future replay inputs."""
+
+    timestamp: str
+    observed_monotonic: float
+    observation_generation: int
+    source_frame_id: str
+    runtime_generation: int
+    worker_generation: int
+    validity: str
+
+    @property
+    def game_available(self) -> bool: ...
+
+    @property
+    def valid(self) -> bool: ...
+
+    @property
+    def confidence(self) -> float: ...
+
+    def is_fresh(self, now_monotonic: float | None = None) -> bool: ...
+
+    def as_dict(self) -> dict: ...
 
 
 @dataclass(slots=True)
@@ -48,6 +82,7 @@ class WorkerReport:
 class GameWorker(Protocol):
     def prepare(self, context: WorkerContext) -> WorkerReport: ...
     def on_game_ready(self, context: WorkerContext) -> WorkerReport: ...
+    def on_game_lost(self) -> WorkerReport: ...
     def tick(self, context: WorkerContext) -> WorkerReport: ...
     def pause(self) -> WorkerReport: ...
     def resume(self) -> WorkerReport: ...

@@ -4,6 +4,7 @@ import logging
 import signal
 import threading
 
+from app.subprocess_env import purge_sensitive_environment
 from node_agent.capabilities import discover
 from node_agent.config import NodeAgentSettings
 from node_agent.heartbeat import send_heartbeat
@@ -20,7 +21,9 @@ def _stop(*_args) -> None:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO)
+    stop_event.clear()
     settings = NodeAgentSettings.from_env()
+    purge_sensitive_environment()
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     while not stop_event.is_set():

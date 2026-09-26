@@ -319,4 +319,91 @@ q("#accountForm").addEventListener("submit", async event => {
   }
 });
 
+// Compact data refresh for the control-plane layout.
+async function load() {
+  if (!csrfToken) return;
+  try {
+    const query = eventFilter === "ERROR"
+      ? "?limit=50&level=ERROR"
+      : eventFilter ? `?limit=50&entity=${eventFilter}` : "?limit=50";
+    const [accounts, nodes, jobs, events, version] = await Promise.all([
+      api("/accounts"),
+      api("/nodes"),
+      api("/jobs?limit=50"),
+      api(`/events${query}`),
+      api("/system/version")
+    ]);
+    q("#accountCount").textContent = accounts.length;
+    q("#runningCount").textContent = accounts.filter(item => item.state === "RUNNING").length;
+    q("#errorCount").textContent = accounts.filter(item => ["ERROR", "STALE"].includes(item.state) || item.status === "NEEDS_ATTENTION").length;
+    q("#jobCount").textContent = jobs.filter(item => ["PENDING", "LEASED", "RUNNING", "RETRY"].includes(item.status)).length;
+    q("#accounts").innerHTML = accounts.length ? accounts.map(accountCard).join("") : '<div class="empty">Нет аккаунтов.</div>';
+    q("#nodes").innerHTML = nodes.length ? nodes.map(nodeRow).join("") : '<div class="empty">Нет нод.</div>';
+    q("#jobs").innerHTML = jobs.length ? jobs.map(jobRow).join("") : '<div class="empty">Нет задач.</div>';
+    q("#events").innerHTML = events.length ? events.map(eventRow).join("") : '<div class="empty">Нет событий.</div>';
+    q("#protocol").textContent = version.agent_protocol_version;
+    q("#environment").textContent = `app ${version.app_version} / schema ${version.schema_version}`;
+    q("#systemState").textContent = "SYSTEM READY";
+  } catch (error) {
+    if (error.status === 401) return showLogin();
+    q("#systemState").textContent = "DEGRADED";
+  }
+}
+
+// Compact renderers for the control-plane layout.
+function bytes(value) {
+  if (value === null || value === undefined) return "—";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let size = Number(value);
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  return `${size.toFixed(unit > 1 ? 1 : 0)} ${units[unit]}`;
+}
+
+function accountCard(account) {
+  const health = account.runtime_health || {};
+  const heartbeat = account.last_heartbeat_at ? new Date(account.last_heartbeat_at).toLocaleString() : "never";
+  const error = account.last_error_code
+    ? `<div class="error account-error"><strong>${esc(account.last_error_code)}</strong> — ${esc(account.last_error_message)}</div>`
+    : "";
+  return `<article class="account">
+    <div><strong>#${account.id} ${esc(account.label)}</strong><div class="meta">${esc(account.steam_username)} · ${esc(account.external_id)} · gen ${account.runtime_generation}</div></div>
+    <div><div class="state ${esc(account.state)}">${esc(account.state)}</div><div class="meta">${esc(account.status)} · desired ${esc(account.desired_state)}</div></div>
+    <div><div>${esc(account.node_name)} <span class="pill">${esc(account.node_status)}</span></div><div class="meta">Steam ${account.steam_running ? "on" : "off"} · DST ${account.dst_running ? "on" : "off"} · ${esc(heartbeat)}</div></div>
+    <div class="meta account-detail">Worker ${esc(account.worker_plugin)} · ${esc(account.worker_mode)} · ${esc(account.worker_state)} · last action ${esc(account.worker_last_action || "—")}${account.worker_error_code ? ` · ${esc(account.worker_error_code)}` : ""}</div>
+    <div class="meta account-detail">Container ${esc(health.container || account.state)} · Agent ${esc(health.agent || "OFFLINE")} · Display ${esc(health.display || "UNKNOWN")} · Steam ${esc(health.steam || "UNKNOWN")} · DST ${esc(health.dst || "UNKNOWN")} · Worker ${esc(health.worker || "NOOP")} · image ${esc(account.image_version)} · bootstrap v${esc(account.bootstrap_version)} ${esc(account.bootstrap_phase || "PENDING")}</div>
+    <div class="actions">${accountActions(account)}</div>
+    ${error}
+  </article>`;
+}
+
+function nodeRow(node) {
+  const resource = node.resources || {};
+  const actions = node.maintenance
+    ? `<button class="muted" data-node="${node.id}" data-node-action="exit-maintenance">EXIT MAINTENANCE</button>`
+    : `<button class="muted" data-node="${node.id}" data-node-action="drain">DRAIN</button><button class="muted" data-node="${node.id}" data-node-action="maintenance">MAINTENANCE</button>`;
+  return `<div class="row node-row">
+    <div><strong>${esc(node.name)}</strong><div class="meta">${esc(node.status)} · ${esc(node.provider)}</div></div>
+    <span>${node.active_slots}/${node.max_active_slots} slots</span>
+    <span>CPU ${resource.cpu_percent ?? "—"}% · RAM ${bytes(resource.ram_used_bytes)} / ${bytes(resource.ram_total_bytes)} · GPU ${resource.gpu_present === true ? "yes" : resource.gpu_present === false ? "no" : "unknown"}</span>
+    <div class="actions">${actions}</div>
+  </div>`;
+}
+
+function jobRow(job) {
+  return `<div class="row job-row">
+    <strong>#${job.id} ${esc(job.kind)}</strong>
+    <span class="state ${esc(job.status)}">${esc(job.status)}</span>
+    <span>attempt ${job.attempt_count}/${job.max_attempts} · account ${job.account_id ?? "—"} · ${esc(job.last_error_code || "")}</span>
+  </div>`;
+}
+
+function eventRow(event) {
+  return `<div class="row event-row">
+    <span>${esc(new Date(event.created_at).toLocaleString())}</span>
+    <strong class="${event.level === "ERROR" ? "error" : ""}">${esc(event.kind)}</strong>
+    <span>${esc(event.message)}</span>
+  </div>`;
+}
+
 session();

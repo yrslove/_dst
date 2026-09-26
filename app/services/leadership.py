@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.db import Database
 from app.models import SchedulerLeadership, utcnow
+from app.services.security import ensure_utc
 
 logger = logging.getLogger("scheduler.leadership")
 
@@ -54,7 +55,9 @@ class SchedulerLeadershipService:
                     extra={"event": "scheduler.leader_acquired"},
                 )
                 return True
-            expired = record.lease_until is None or record.lease_until <= now
+            expired = (
+                record.lease_until is None or ensure_utc(record.lease_until) <= now
+            )
             if record.holder_id == self.holder_id or expired:
                 if record.holder_id != self.holder_id:
                     record.fencing_token += 1
@@ -83,7 +86,7 @@ class SchedulerLeadershipService:
                 and record.holder_id == self.holder_id
                 and record.fencing_token == self._token
                 and record.lease_until
-                and record.lease_until > utcnow()
+                and ensure_utc(record.lease_until) > utcnow()
             )
 
     def release(self) -> None:

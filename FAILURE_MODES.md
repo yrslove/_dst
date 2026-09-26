@@ -60,9 +60,16 @@ Account и старая runtime history сохраняются. Новая gener
 - Deadman timeout releases tracked keys/buttons independently of the main tick.
 - Worker crash consumes only the worker restart budget. DST and Incus are untouched.
 - DST/display disappearance pauses worker ownership; Runtime Agent remains supervisor.
+- Every worker spawn receives fresh bounded IPC channels and a monotonic generation;
+  stale status/ACK payloads are ignored and pending commands resolve as WORKER_CRASHED.
+- Periodic status cannot evict terminal ACKs. ACK-channel saturation terminates the
+  child so commands receive a deterministic crash outcome instead of disappearing.
+- A full command queue cannot drop safety revocation: the current worker generation is
+  force-stopped and any restart inherits paused/unverified/game-lost parent state.
 
 ## Remote view failures
 
 Missing xpra/Incus/X socket returns REMOTE_VIEW_BACKEND_UNAVAILABLE and persists ERROR,
 never ACTIVE. Interactive sessions remain CREATING until PAUSED is confirmed. Expired
-sessions are closed in DB and their ephemeral proxy/xpra backend is removed best-effort.
+sessions retain a durable cleanup state until the ephemeral proxy/xpra removal is
+confirmed (including an idempotent already-absent result).

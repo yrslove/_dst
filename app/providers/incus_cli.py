@@ -16,6 +16,7 @@ from app.providers.base import (
     RuntimeDescriptor,
     RuntimeProvider,
 )
+from app.subprocess_env import sanitized_subprocess_environment
 
 logger = logging.getLogger("provider.incus")
 
@@ -54,6 +55,7 @@ class IncusCLIProvider(RuntimeProvider):
             try:
                 process = subprocess.run(
                     ["incus", *args],
+                    env=sanitized_subprocess_environment(),
                     text=True,
                     capture_output=True,
                     input=input_text,
@@ -88,7 +90,11 @@ class IncusCLIProvider(RuntimeProvider):
     ) -> ProviderStatus:
         if not self._exists(runtime):
             try:
-                base = runtime.image_version or self.settings.incus_base_instance
+                base = (
+                    runtime.image_source_ref
+                    or runtime.image_version
+                    or self.settings.incus_base_instance
+                )
                 if base and self._exists(runtime, base):
                     self._run(
                         "copy",

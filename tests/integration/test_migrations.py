@@ -15,13 +15,19 @@ def test_migration_round_trip(tmp_path):
     db = Database(url)
     inspector = inspect(db.engine)
     assert "jobs" in inspector.get_table_names()
-    assert "verified_at" not in {
+    assert "worker_commands" not in inspector.get_table_names()
+    assert "worker_plugin" not in {
+        column["name"] for column in inspector.get_columns("worker_status")
+    }
+    assert "verified_at" in {
         column["name"] for column in inspector.get_columns("runtime_instances")
     }
     db.dispose()
     command.upgrade(config, "head")
     db = Database(url)
-    assert "verified_at" in {
-        column["name"] for column in inspect(db.engine).get_columns("runtime_instances")
+    inspector = inspect(db.engine)
+    assert "worker_commands" in inspector.get_table_names()
+    assert "worker_plugin" in {
+        column["name"] for column in inspector.get_columns("worker_status")
     }
     db.dispose()

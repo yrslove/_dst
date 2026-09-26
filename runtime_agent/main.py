@@ -6,11 +6,15 @@ import shutil
 import signal
 import threading
 
+from app.runtime.display import GRAPHICAL_ENVIRONMENT_KEYS
+from app.subprocess_env import purge_sensitive_environment
 from runtime_agent.config import RuntimeAgentSettings
-from runtime_agent.display import DisplayManager
+from runtime_agent.display import DisplayEnvironment, DisplayManager
 from runtime_agent.heartbeat import send_heartbeat
 from runtime_agent.process_supervisor import ProcessSupervisor
 from runtime_agent.processes import DSTProcess, SteamProcess
+from runtime_agent.processes.dst import DSTState
+from runtime_agent.processes.steam import SteamState
 from runtime_agent.worker_bridge import WorkerBridge
 
 logger = logging.getLogger("runtime_agent")
@@ -32,17 +36,30 @@ def _stop(*_args) -> None:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO)
+    stop_event.clear()
     settings = RuntimeAgentSettings.from_env()
     # Settings retains the runtime bearer in parent memory. Child processes inherit
     # no control-plane or account credentials through os.environ.
+    purge_sensitive_environment()
     for name in _CHILD_ENVIRONMENT_SECRETS:
         os.environ.pop(name, None)
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     display = DisplayManager(
-        backend=settings.display_backend, xvfb_command=settings.xvfb_command
+        backend=settings.display_backend,
+        environment=DisplayEnvironment(
+            settings.display,
+            settings.xdg_runtime_dir,
+            settings.dbus_session_bus_address,
+            settings.xauthority,
+        ),
+        xvfb_command=settings.xvfb_command,
+        readiness_timeout_seconds=settings.display_readiness_timeout_seconds,
     )
     process_environment = display.environment.as_environ()
+    for name in GRAPHICAL_ENVIRONMENT_KEYS:
+        os.environ.pop(name, None)
+    os.environ.update(process_environment)
     steam = ProcessSupervisor(
         "steam",
         settings.steam_command,
@@ -64,9 +81,20 @@ def main() -> int:
         display.environment,
         settings.worker_config,
         max_restarts=settings.max_restarts,
+        restart_backoff_seconds=settings.restart_backoff_seconds,
+        runtime_generation=settings.runtime_generation,
     )
-    steam_process = SteamProcess(steam, settings.steam_ready_file)
-    dst_process = DSTProcess(dst, settings.dst_ready_file)
+    steam_process = SteamProcess(
+        steam,
+        settings.steam_ready_file,
+        needs_login_file=settings.steam_needs_login_file,
+        readiness_timeout_seconds=settings.steam_readiness_timeout_seconds,
+    )
+    dst_process = DSTProcess(
+        dst,
+        settings.dst_ready_file,
+        readiness_timeout_seconds=settings.dst_readiness_timeout_seconds,
+    )
     phase = "BOOTING"
     worker_initialized = False
     worker_report = worker.tick()
@@ -83,27 +111,41 @@ def main() -> int:
                     if display.status() not in {"UNSUPPORTED", "ERROR"}
                     else "NEEDS_ATTENTION"
                 )
+                if display.status() in {"UNSUPPORTED", "ERROR"}:
+                    dst.shutdown(timeout=3)
+                    steam.shutdown(timeout=3)
             else:
                 phase = "DISPLAY_READY"
                 if settings.auto_launch_steam:
                     steam_process.start()
                     steam.tick()
                     phase = "STEAM_STARTING"
-                    if steam.status.exhausted:
+                    steam_state = steam_process.status()
+                    if steam_state in {SteamState.ERROR, SteamState.NEEDS_LOGIN}:
                         phase = "NEEDS_ATTENTION"
-                    elif settings.steam_needs_login_file.is_file():
-                        # A future validated Linux probe may write this marker. It is
-                        # deliberately separate from crashes and never restarts Steam.
-                        phase = "NEEDS_ATTENTION"
-                    elif steam_process.wait_ready():
+                        dst.shutdown(timeout=3)
+                    elif steam_state == SteamState.READY:
                         phase = "STEAM_READY"
                         if settings.auto_launch_dst:
                             dst_process.start()
                             dst.tick()
                             phase = "DST_STARTING"
-                            if dst.status.exhausted:
+                            dst_state = dst_process.status()
+                            if dst_state == DSTState.ERROR:
                                 phase = "NEEDS_ATTENTION"
-                            elif dst_process.wait_ready():
+                            elif dst_state == DSTState.READY:
+                                # Close the probe/process-exit window before publishing
+                                # GAME_READY or granting worker ownership.
+                                steam.tick()
+                                dst.tick()
+                                steam_state = steam_process.status()
+                                dst_state = dst_process.status()
+                            if (
+                                steam_state == SteamState.READY
+                                and dst_state == DSTState.READY
+                                and steam.alive
+                                and dst.alive
+                            ):
                                 game_ready_now = True
                                 phase = "GAME_READY"
                                 if not worker_initialized:
@@ -112,6 +154,11 @@ def main() -> int:
                                     if not settings.worker_config.autostart:
                                         worker.pause()
                                 worker_report = worker.tick()
+                    else:
+                        # A Steam restart invalidates the downstream game launch.
+                        # Stop DST now so a fresh Steam readiness cycle cannot run
+                        # concurrently with the previous game process.
+                        dst.shutdown(timeout=3)
             if worker_initialized and not game_ready_now:
                 worker.on_game_lost()
                 worker_initialized = False
@@ -144,23 +191,32 @@ def main() -> int:
                     "worker_plugin": worker_report.plugin,
                     "worker_version": worker_report.version,
                     "worker_config_version": worker_report.config_version,
-                    "worker_process_isolated": settings.worker_plugin == "dst",
+                    "worker_process_isolated": True,
                 },
             )
             worker.set_runtime_verified(bool(response.get("runtime_verified", False)))
             worker.apply_commands(response.get("commands", []))
             stop_event.wait(settings.heartbeat_seconds)
     finally:
-        worker.shutdown()
-        dst.shutdown()
-        steam.shutdown()
-        display.stop()
+        cleanup_steps = (
+            ("worker", worker.shutdown),
+            ("dst", lambda: dst.shutdown(timeout=3)),
+            ("steam", lambda: steam.shutdown(timeout=3)),
+            ("display", lambda: display.stop(timeout=3)),
+        )
+        for component, cleanup in cleanup_steps:
+            try:
+                result = cleanup()
+                if component == "worker":
+                    worker_report = result
+            except Exception:
+                logger.exception("runtime cleanup failed for %s", component)
         send_heartbeat(
             settings,
             phase="SHUTTING_DOWN",
             steam_running=False,
             dst_running=False,
-            healthy=True,
+            healthy=False,
             details={
                 "worker": worker_report.as_dict(),
                 "worker_command_results": worker.acknowledgements(),

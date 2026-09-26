@@ -6,6 +6,8 @@ from pathlib import Path
 
 import psutil
 
+from app.subprocess_env import sanitized_subprocess_environment
+
 
 def _gpu() -> dict:
     result = {
@@ -21,6 +23,7 @@ def _gpu() -> dict:
                 "--query-gpu=utilization.gpu,memory.used,memory.total",
                 "--format=csv,noheader,nounits",
             ],
+            env=sanitized_subprocess_environment(),
             capture_output=True,
             text=True,
             timeout=5,

@@ -6,7 +6,7 @@ Control plane для управления persistent Steam/DST runtime на Linu
 Account -> active RuntimeInstance generation -> Node -> RuntimeProvider -> Incus
 ~~~
 
-Account — бизнес-сущность и переживает rebuild. RuntimeInstance — versioned инфраструктурная сущность. DSTGameWorker реализован как безопасно отключённый по умолчанию subprocess; NoopGameWorker сохранён как fallback. Linux/input/vision validation ещё не выполнена.
+Account — бизнес-сущность и переживает rebuild. RuntimeInstance — versioned инфраструктурная сущность. DSTGameWorker и fallback NoopGameWorker используют единый generation-bound subprocess lifecycle; gameplay безопасно отключён по умолчанию. Linux/input/vision validation ещё не выполнена.
 
 ## Реализовано
 
@@ -37,9 +37,9 @@ Copy-Item .env.example .env
 .\scripts\run_dev.ps1
 ~~~
 
-Development defaults используют mock provider, SQLite и admin password change-me. Они намеренно запрещены Settings.validate() в production.
+Development defaults используют mock provider, SQLite и admin password 123. Они намеренно запрещены Settings.validate() в production.
 
-Открыть http://127.0.0.1:8080, войти как admin / change-me. Создание Account ставит PROVISION_RUNTIME в очередь. После provisioning lifecycle имеет явную ручную последовательность: `SETUP` запускает контейнер в рамках обычного slot lease, оператор завершает вход и проверяет Steam/DST, runtime agent отправляет свежий authenticated `GAME_READY` heartbeat, затем `VERIFY` фиксирует готовность. `START` до VERIFY отклоняется. После VERIFY runtime остаётся RUNNING до STOP; это намеренно не интерпретируется как готовность только по состоянию Incus.
+Открыть http://127.0.0.1:8080, войти как admin / 123. Создание Account ставит PROVISION_RUNTIME в очередь. После provisioning lifecycle имеет явную ручную последовательность: `SETUP` запускает контейнер в рамках обычного slot lease, оператор завершает вход и проверяет Steam/DST, runtime agent отправляет свежий authenticated `GAME_READY` heartbeat, затем `VERIFY` фиксирует готовность. `START` до VERIFY отклоняется. После VERIFY runtime остаётся RUNNING до STOP; это намеренно не интерпретируется как готовность только по состоянию Incus.
 
 ## Production
 

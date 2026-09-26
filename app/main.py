@@ -42,6 +42,7 @@ from app.schemas import (
     LoginRequest,
     MoveRuntimeRequest,
     NodeHeartbeatRequest,
+    RebuildRuntimeRequest,
     RuntimeHeartbeatRequest,
     ViewAccessRequest,
     ViewSessionCreate,
@@ -128,7 +129,9 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
         db,
         view_provider,
         ttl_seconds=settings.view_session_ttl_seconds,
-        display=DisplayEnvironment(settings.runtime_display),
+        display=DisplayEnvironment(
+            settings.runtime_display, xauthority=settings.runtime_xauthority
+        ),
         workers=worker_controls,
     )
     leadership = SchedulerLeadershipService(
@@ -193,6 +196,7 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        stop_event.clear()
         tasks: list[asyncio.Task] = []
         if settings.background_workers:
             tasks = [
@@ -226,12 +230,16 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
                     name="view-cleanup",
                 ),
             ]
-        yield
-        stop_event.set()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.to_thread(leadership.release)
-        db.dispose()
+        try:
+            yield
+        finally:
+            stop_event.set()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.to_thread(leadership.release)
+            finally:
+                db.dispose()
 
     app = FastAPI(
         title="DST Runtime Orchestrator",
@@ -504,12 +512,12 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
         return queue_action(account_id, JobKind.VERIFY_RUNTIME, request)
 
     @app.post("/api/v1/accounts/{account_id}/rebuild")
-    async def rebuild_account(account_id: int, request: Request):
-        data = (
-            await request.json()
-            if request.headers.get("content-type", "").startswith("application/json")
-            else {}
-        )
+    def rebuild_account(
+        account_id: int,
+        request: Request,
+        payload: RebuildRuntimeRequest | None = None,
+    ):
+        data = payload.model_dump(exclude_none=True) if payload else {}
         return queue_action(account_id, JobKind.REBUILD_RUNTIME, request, data)
 
     @app.post("/api/v1/accounts/{account_id}/move")
@@ -600,11 +608,17 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
     @app.post("/api/v1/runtimes/{runtime_id}/token/rotate")
     def rotate_runtime_token(runtime_id: int, request: Request):
         user = require_admin(request, csrf=True)
-        token = accounts.rotate_runtime_token(
-            runtime_id,
-            actor=user.username,
-            request_id=request.state.request_id,
-        )
+        try:
+            token = accounts.rotate_runtime_token(
+                runtime_id,
+                actor=user.username,
+                request_id=request.state.request_id,
+            )
+        except AccountBusyError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "RUNTIME_BUSY", "message": str(exc)},
+            )
         return {"runtime_id": runtime_id, "token": token, "shown_once": True}
 
     @app.post("/api/v1/runtimes/{runtime_id}/view-sessions", status_code=201)
@@ -662,6 +676,11 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
                     "message": "view session not found",
                 },
             )
+        except ViewUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": str(exc.code), "message": str(exc)},
+            )
         return {"ok": True}
 
     @app.post("/api/v1/view-sessions/{view_session_id}/access")
@@ -714,7 +733,7 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
             if key.lower()
             in {"accept", "accept-language", "content-type", "user-agent"}
         }
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=False) as client:
             upstream = await client.request(
                 request.method,
                 f"http://{host}:{port}/{path}{query}",
@@ -780,8 +799,31 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
                             await websocket.send_text(message)
 
                 async with asyncio.timeout(remaining):
-                    await asyncio.gather(client_to_upstream(), upstream_to_client())
-        except Exception:  # noqa: BLE001 - websocket peers can raise backend-specific errors
+                    relays = {
+                        asyncio.create_task(
+                            client_to_upstream(), name="view-client-to-upstream"
+                        ),
+                        asyncio.create_task(
+                            upstream_to_client(), name="view-upstream-to-client"
+                        ),
+                    }
+                    try:
+                        done, pending = await asyncio.wait(
+                            relays, return_when=asyncio.FIRST_COMPLETED
+                        )
+                        for task in pending:
+                            task.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        for task in done:
+                            task.result()
+                    finally:
+                        for task in relays:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*relays, return_exceptions=True)
+        except Exception:
+            logger.debug("view websocket relay ended", exc_info=True)
+        finally:
             try:
                 await websocket.close()
             except RuntimeError:

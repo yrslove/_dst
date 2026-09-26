@@ -58,6 +58,7 @@ ALLOWED_TRANSITIONS: dict[WorkerState, set[WorkerState]] = {
         WorkerState.DISABLED,
         WorkerState.ERROR,
         WorkerState.PAUSED,
+        WorkerState.SHUTTING_DOWN,
     },
     WorkerState.WAITING_FOR_GAME: {
         WorkerState.OBSERVING,

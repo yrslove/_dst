@@ -1,4 +1,5 @@
 
+import os
 from datetime import datetime, timedelta, timezone
 
 from app.workers.contracts import WorkerContext
@@ -63,6 +64,8 @@ def test_process_existence_is_not_readiness(tmp_path):
     assert is_ready(process_alive=True, readiness_file=marker, started_at=started) is True
     future = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
     assert is_ready(process_alive=True, readiness_file=marker, started_at=future) is False
+    os.utime(marker, (4_000_000_000, 4_000_000_000))
+    assert is_ready(process_alive=True, readiness_file=marker, started_at=started) is False
     assert is_ready(process_alive=False, readiness_file=marker) is False
 
 
