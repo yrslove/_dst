@@ -1,7 +1,9 @@
 from dataclasses import replace
+from threading import Thread
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from websockets.sync.server import serve
 
 from app.main import create_app
 from app.models import RuntimeViewSession
@@ -23,6 +25,36 @@ def test_view_provider_disabled_fails_closed(client, app):
     response = client.post(f"/api/v1/runtimes/{account['runtime_id']}/view-sessions")
     assert response.status_code == 503
     assert "access_token" not in response.text
+
+
+def test_view_websocket_negotiates_binary_on_both_legs(client, app, monkeypatch):
+    upstream_subprotocols = []
+
+    def echo(connection):
+        upstream_subprotocols.append(connection.subprotocol)
+        connection.send(connection.recv())
+
+    with serve(echo, "127.0.0.1", 0, subprotocols=["binary"]) as server:
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.socket.getsockname()[:2]
+        monkeypatch.setattr(
+            app.state.views,
+            "resolve_upstream",
+            lambda _session_id, _token: (host, port, 10.0),
+        )
+        client.cookies.set("dst_view_access", "test-view-token")
+
+        with client.websocket_connect(
+            "/api/v1/view-sessions/1/transport/", subprotocols=["binary"]
+        ) as websocket:
+            assert websocket.accepted_subprotocol == "binary"
+            websocket.send_bytes(b"frame-probe")
+            assert websocket.receive_bytes() == b"frame-probe"
+
+        server.shutdown()
+        thread.join(timeout=2)
+    assert upstream_subprotocols == ["binary"]
 
 
 def test_view_session_is_short_lived_and_token_protected(settings):

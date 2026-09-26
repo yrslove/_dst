@@ -205,10 +205,11 @@ class WorkerConfig:
             if not isinstance(manifest, dict) or manifest.get("format_version") != 1:
                 raise ValueError("unknown replay format version")
         elif self.recording_enabled and self.mode not in {
+            WorkerMode.DISABLED,
             WorkerMode.OBSERVE,
             WorkerMode.ACTIVE,
         }:
-            raise ValueError("recording requires OBSERVE or ACTIVE mode")
+            raise ValueError("recording requires a live worker mode")
         if any(
             not re.fullmatch(r"[A-Za-z0-9_+.-]{1,32}", value)
             for value in (

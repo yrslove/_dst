@@ -15,6 +15,7 @@ from app.models import (
     JobStatus,
     Node,
     NodeStatus,
+    Run,
     RuntimeInstance,
     RuntimeState,
     WorkerStatus,
@@ -108,10 +109,7 @@ class Watchdog:
                     error = None
                     if node and node.status == NodeStatus.OFFLINE:
                         error = ErrorCode.NODE_OFFLINE
-                    elif (
-                        ensure_utc(runtime.last_heartbeat_at or runtime.updated_at)
-                        < runtime_cutoff
-                    ):
+                    elif self._runtime_heartbeat_baseline(session, runtime) < runtime_cutoff:
                         error = ErrorCode.AGENT_STALE
                     elif worker and worker.phase in {
                         "STEAM_READY",
@@ -149,3 +147,14 @@ class Watchdog:
                         )
         result["leases_recovered"] = self.leases.recover_expired()
         return result
+
+    @staticmethod
+    def _runtime_heartbeat_baseline(session, runtime: RuntimeInstance):
+        baseline = ensure_utc(runtime.last_heartbeat_at or runtime.updated_at)
+        started_at = session.scalar(
+            select(Run.started_at)
+            .where(Run.runtime_id == runtime.id, Run.ended_at.is_(None))
+            .order_by(Run.started_at.desc())
+            .limit(1)
+        )
+        return max(baseline, ensure_utc(started_at)) if started_at else baseline

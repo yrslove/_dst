@@ -87,6 +87,7 @@ RUNTIME_TRANSITIONS: Mapping[str, AbstractSet[str]] = {
     RuntimeState.ERROR: {
         RuntimeState.PROVISIONING,
         RuntimeState.STARTING,
+        RuntimeState.RUNNING,
         RuntimeState.STOPPING,
         RuntimeState.STOPPED,
         RuntimeState.DESTROYING,
@@ -120,6 +121,7 @@ ACCOUNT_TRANSITIONS: Mapping[str, AbstractSet[str]] = {
     },
     AccountState.VERIFYING: {
         AccountState.READY,
+        AccountState.RUNNING,
         AccountState.NEEDS_LOGIN,
         AccountState.NEEDS_ATTENTION,
         AccountState.ERROR,
@@ -147,6 +149,7 @@ ACCOUNT_TRANSITIONS: Mapping[str, AbstractSet[str]] = {
         AccountState.DISABLED,
     },
     AccountState.NEEDS_ATTENTION: {
+        AccountState.NEEDS_LOGIN,
         AccountState.READY,
         AccountState.QUEUED,
         AccountState.RUNNING,
@@ -164,6 +167,7 @@ ACCOUNT_TRANSITIONS: Mapping[str, AbstractSet[str]] = {
         AccountState.QUEUED,
         AccountState.PROVISIONING,
         AccountState.NEEDS_LOGIN,
+        AccountState.RUNNING,
         AccountState.READY,
         AccountState.NEEDS_ATTENTION,
         AccountState.DISABLED,

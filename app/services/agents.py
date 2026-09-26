@@ -12,8 +12,11 @@ from app.domain.errors import (
     ProtocolMismatch,
     RuntimeNotFound,
 )
-from app.domain.state import transition_node
+from app.domain.state import transition_account, transition_node
 from app.models import (
+    Account,
+    AccountState,
+    DesiredState,
     Node,
     NodeHeartbeat,
     NodeResourceSnapshot,
@@ -108,10 +111,35 @@ class AgentService:
                 RuntimeState.RUNNING,
                 RuntimeState.STOPPING,
                 RuntimeState.STALE,
-            }:
+            } and not (
+                runtime.state == RuntimeState.ERROR
+                and runtime.desired_state == DesiredState.RUNNING
+            ):
                 raise AuthenticationRequired("runtime is not accepting heartbeats")
             runtime.last_heartbeat_at = now
             runtime.agent_version = payload.agent_version
+            # Steam sign-in is distinct from full runtime verification. Once the
+            # managed Steam adapter has proved readiness, the account is past the
+            # login step even while DST/game verification is still pending.
+            if (
+                runtime.verified_at is None
+                and runtime.state == RuntimeState.RUNNING
+                and payload.steam_running
+                and payload.healthy
+                and payload.phase
+                in {"STEAM_READY", "DST_STARTING", "GAME_READY", "WORKER_IDLE"}
+            ):
+                account = session.get(Account, runtime.account_id)
+                if account and account.status == AccountState.NEEDS_LOGIN:
+                    transition_account(account, AccountState.VERIFYING)
+                    add_event(
+                        session,
+                        level="INFO",
+                        kind="STEAM_AUTHENTICATED",
+                        message="Steam is ready; runtime verification is pending",
+                        account_id=account.id,
+                        runtime_id=runtime.id,
+                    )
             latest = session.scalar(
                 select(RuntimeHeartbeat)
                 .where(RuntimeHeartbeat.runtime_id == runtime.id)

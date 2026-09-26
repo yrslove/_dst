@@ -21,7 +21,7 @@ NoNewPrivileges=true
 PrivateTmp=false
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/run/dst-runtime /home/dst
+ReadWritePaths=/run/dst-runtime /home/dst /tmp
 
 [Install]
 WantedBy=multi-user.target

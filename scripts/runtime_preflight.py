@@ -72,7 +72,22 @@ def run(args: argparse.Namespace) -> list[Check]:
             ),
             run_command(
                 "Steam executable",
-                incus_exec(instance, "sh", "-lc", "command -v steam"),
+                incus_exec(
+                    instance,
+                    "sh",
+                    "-lc",
+                    "command -v steam || test -x /usr/games/steam",
+                ),
+            ),
+            run_command(
+                "Xpra HTML jQuery",
+                incus_exec(
+                    instance, "test", "-s", "/usr/share/xpra/www/js/lib/jquery.js"
+                ),
+            ),
+            run_command(
+                "Xpra system Pillow",
+                incus_exec(instance, "python3", "-c", "import PIL"),
             ),
             run_command(
                 "DST application",

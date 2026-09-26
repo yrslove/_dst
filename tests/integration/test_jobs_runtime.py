@@ -55,6 +55,24 @@ def test_start_stop_restart_runtime(client, app):
     assert runs[0]["duration_seconds"] is not None
 
 
+def test_stop_unverified_runtime_after_attention_returns_to_login(client, app):
+    account = create_account(client, "attention-stop")
+    assert app.state.executor.execute_next()
+    with app.state.db.session() as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        stored_account = session.get(Account, account["id"])
+        runtime.state = RuntimeState.STALE
+        stored_account.status = AccountState.NEEDS_ATTENTION
+
+    queued = client.post(f"/api/v1/accounts/{account['id']}/stop")
+    assert queued.status_code == 202
+    assert app.state.executor.execute_next()
+    assert client.get(f"/api/v1/jobs/{queued.json()['job']['id']}").json()["status"] == "SUCCEEDED"
+    current = client.get(f"/api/v1/accounts/{account['id']}").json()
+    assert current["state"] == RuntimeState.STOPPED
+    assert current["status"] == AccountState.NEEDS_LOGIN
+
+
 def test_provider_timeout_retries_without_duplicate_provision(client, app):
     from app.providers.base import InstanceTimeout
 

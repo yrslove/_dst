@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from app.providers.view.base import ViewUnavailable
 from app.providers.view.xpra import XpraRuntimeViewProvider
 from app.runtime.bootstrap_models import RuntimeAgentConfig
 from app.runtime.display import DisplayEnvironment
@@ -348,7 +349,7 @@ def test_xpra_cleanup_does_not_hide_operational_failure():
     assert not XpraRuntimeViewProvider._idempotent_cleanup_result(failed)
 
 
-def test_xpra_cleanup_uses_the_created_socket_directory(monkeypatch):
+def test_xpra_cleanup_targets_only_the_created_shadow(monkeypatch):
     provider = XpraRuntimeViewProvider(object())
     calls = []
 
@@ -359,15 +360,30 @@ def test_xpra_cleanup_uses_the_created_socket_directory(monkeypatch):
     monkeypatch.setattr(provider, "_incus", run)
     provider._cleanup_backend("dst-runtime", "view-123", ":99")
 
-    assert calls[-1] == (
-        "exec",
-        "dst-runtime",
-        "--",
-        "xpra",
-        "stop",
-        ":99",
-        "--socket-dir=/run/dst-runtime/xpra",
+    assert calls[-1][:5] == (
+        "exec", "dst-runtime", "--", "/usr/bin/python3", "-c"
     )
+    assert calls[-1][-2:] == (":99", "14500")
+
+
+def test_xpra_cleanup_keeps_failed_shadow_termination_visible(monkeypatch):
+    provider = XpraRuntimeViewProvider(object())
+    calls = []
+
+    def run(*args, **_kwargs):
+        calls.append(args)
+        if args[:4] == ("exec", "dst-runtime", "--", "/usr/bin/python3"):
+            return subprocess.CompletedProcess(args, 7, stderr="still running")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(provider, "_incus", run)
+    with pytest.raises(ViewUnavailable):
+        provider._cleanup_backend("dst-runtime", "view-123", ":99")
+
+    assert calls[-1][:5] == (
+        "exec", "dst-runtime", "--", "/usr/bin/python3", "-c"
+    )
+    assert calls[-1][-2:] == (":99", "14500")
 
 
 def test_agent_settings_hide_tokens_and_capture_display(monkeypatch):

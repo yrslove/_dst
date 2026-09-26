@@ -795,6 +795,27 @@ def test_replay_config_rejects_missing_session_and_live_recording_mix(tmp_path):
         ).validate()
 
 
+def test_disabling_recording_worker_closes_session_and_releases_resources(tmp_path):
+    config = WorkerConfig(
+        plugin="dst",
+        mode=WorkerMode.OBSERVE,
+        recording_enabled=True,
+        recording_root=tmp_path.resolve(),
+    )
+    replace(config, mode=WorkerMode.DISABLED).validate()
+    worker = DSTGameWorker(config, worker_generation=3)
+    session = recorder(tmp_path)
+    worker.recorder = session
+
+    report = worker.set_mode(WorkerMode.DISABLED)
+
+    assert report.mode == WorkerMode.DISABLED
+    assert report.state == "DISABLED"
+    assert worker.recorder is None
+    assert worker.input is None
+    assert json.loads((session.path / "manifest.json").read_text())["completion_status"] == "COMPLETE"
+
+
 @pytest.mark.parametrize(
     "change",
     [

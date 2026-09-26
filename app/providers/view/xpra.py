@@ -23,6 +23,37 @@ from app.subprocess_env import sanitized_subprocess_environment
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _SAFE_DISPLAY = re.compile(r":[0-9]{1,4}(?:\.[0-9]+)?")
 
+# Ubuntu 24.04's xpra 3.1.5 can serve HTML while rejecting its own `xpra stop`
+# connection. Only terminate the exact shadow process started by this provider.
+_STOP_SHADOW = """
+import os, pathlib, signal, socket, sys, time
+display, port = sys.argv[1:]
+expected = '--bind-tcp=127.0.0.1:' + port
+matches = []
+for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
+    try:
+        args = path.read_bytes().split(b'\\0')
+        args = [item.decode() for item in args if item]
+    except (OSError, UnicodeError):
+        continue
+    if (len(args) >= 4 and pathlib.Path(args[1]).name == 'xpra'
+            and args[2:4] == ['shadow', display]
+            and expected in args
+            and '--socket-dir=/run/dst-runtime/xpra' in args):
+        matches.append(int(path.parent.name))
+if len(matches) > 1:
+    sys.exit(1)
+if matches:
+    os.kill(matches[0], signal.SIGTERM)
+for _ in range(30):
+    with socket.socket() as connection:
+        connection.settimeout(0.1)
+        if connection.connect_ex(('127.0.0.1', int(port))) != 0:
+            sys.exit(0)
+    time.sleep(0.1)
+sys.exit(1)
+"""
+
 
 class XpraRuntimeViewProvider(RuntimeViewProvider):
     """Ephemeral xpra shadow + loopback-only Incus proxy.
@@ -196,13 +227,14 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
                 "exec",
                 target,
                 "--",
-                "xpra",
-                "stop",
+                "/usr/bin/python3",
+                "-c",
+                _STOP_SHADOW,
                 display,
-                "--socket-dir=/run/dst-runtime/xpra",
+                str(self.container_port),
                 allow_failure=True,
             )
-            if not self._idempotent_cleanup_result(stopped):
+            if stopped.returncode != 0:
                 failure = failure or ViewUnavailable(
                     "xpra shadow cleanup could not be confirmed"
                 )

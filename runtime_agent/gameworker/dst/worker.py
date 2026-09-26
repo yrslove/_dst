@@ -440,8 +440,9 @@ class DSTGameWorker:
             return self.status()
         self.mode = mode
         if mode == WorkerMode.DISABLED:
-            if self.input:
-                self.input.release_all()
+            if previous != WorkerMode.DISABLED and not self._release_resources():
+                self._cleanup_failed = True
+                self._error_code = "WORKER_SHUTDOWN_FAILED"
             if self.machine.state not in {
                 WorkerState.DISABLED,
                 WorkerState.SHUTTING_DOWN,

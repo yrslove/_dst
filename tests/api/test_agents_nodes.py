@@ -1,10 +1,12 @@
 from datetime import timedelta
 
+from app.domain.state import transition_account, transition_runtime
 from app.models import (
     Account,
     AccountState,
     Node,
     NodeStatus,
+    Run,
     RuntimeInstance,
     RuntimeState,
     WorkerStatus,
@@ -87,6 +89,52 @@ def test_agent_details_are_bounded_and_secrets_redacted(client, app):
         assert diagnostics["token"] == "[REDACTED]"
         assert diagnostics["nested"]["password_hint"] == "[REDACTED]"
         assert len(diagnostics["noise"]) == 500
+
+
+def test_steam_ready_ends_login_state_without_claiming_runtime_verified(client, app):
+    account = create_account(client, "steam-ready-transition")
+    assert app.state.executor.execute_next()
+    token = client.post(
+        f"/api/v1/runtimes/{account['runtime_id']}/token/rotate"
+    ).json()["token"]
+    assert client.post(f"/api/v1/accounts/{account['id']}/setup").status_code == 202
+    assert app.state.executor.execute_next()
+    payload = heartbeat_payload(account["runtime_id"])
+    payload.update(phase="STEAM_READY", dst_running=False)
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.post(
+        "/api/v1/runtime-agent/heartbeat", headers=headers, json=payload
+    )
+    assert response.status_code == 200
+    assert response.json()["runtime_verified"] is False
+    with app.state.db.session() as session:
+        assert session.get(Account, account["id"]).status == AccountState.VERIFYING
+        assert session.get(RuntimeInstance, account["runtime_id"]).verified_at is None
+    # Repeated authenticated heartbeats must be idempotent.
+    assert client.post(
+        "/api/v1/runtime-agent/heartbeat", headers=headers, json=payload
+    ).status_code == 200
+    with app.state.db.session() as session:
+        assert session.get(Account, account["id"]).status == AccountState.VERIFYING
+    # A failed verification job can put the database record in ERROR while the
+    # same authenticated runtime remains live. Fresh heartbeats and VERIFY must
+    # recover that record without restarting its container.
+    with app.state.db.transaction(immediate=True) as session:
+        transition_runtime(
+            session.get(RuntimeInstance, account["runtime_id"]), RuntimeState.ERROR
+        )
+        transition_account(session.get(Account, account["id"]), AccountState.ERROR)
+    payload.update(phase="GAME_READY", dst_running=True)
+    assert client.post(
+        "/api/v1/runtime-agent/heartbeat", headers=headers, json=payload
+    ).status_code == 200
+    assert client.post(f"/api/v1/accounts/{account['id']}/verify").status_code == 202
+    assert app.state.executor.execute_next()
+    with app.state.db.session() as session:
+        assert session.get(Account, account["id"]).status == AccountState.RUNNING
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        assert runtime.state == RuntimeState.RUNNING
+        assert runtime.verified_at is not None
 
 
 def test_stopped_runtime_rejects_even_valid_heartbeat(client, app):
@@ -187,3 +235,29 @@ def test_stale_runtime_agent_marks_needs_attention(client, app, settings):
         assert stored.status == AccountState.NEEDS_ATTENTION
         assert runtime.state == RuntimeState.STALE
         assert runtime.last_error_code == "AGENT_STALE"
+
+
+def test_new_run_gets_first_heartbeat_window_after_old_heartbeat(client, app, settings):
+    account = create_account(client, "restart-heartbeat-window")
+    assert app.state.executor.execute_next()
+    with app.state.db.transaction(immediate=True) as session:
+        stored = session.get(Account, account["id"])
+        stored.status = AccountState.RUNNING
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        runtime.state = RuntimeState.RUNNING
+        runtime.last_heartbeat_at = utcnow() - timedelta(
+            seconds=settings.watchdog_stale_seconds + 1
+        )
+        session.add(
+            Run(
+                account_id=stored.id,
+                runtime_id=runtime.id,
+                node_id=runtime.node_id,
+                started_at=utcnow(),
+                start_reason="setup",
+            )
+        )
+    result = app.state.watchdog.tick()
+    assert result["runtimes_stale"] == 0
+    with app.state.db.session() as session:
+        assert session.get(RuntimeInstance, account["runtime_id"]).state == RuntimeState.RUNNING

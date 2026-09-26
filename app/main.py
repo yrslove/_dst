@@ -772,13 +772,21 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
         except (ViewSessionNotFound, ViewSessionNotReady, ViewUnavailable):
             await websocket.close(code=4404)
             return
-        await websocket.accept()
+        # Xpra's HTML5 client requires the `binary` WebSocket subprotocol.
+        # Negotiate it on both legs of the relay; a bare upgrade is accepted
+        # by ASGI but rejected by the browser and by xpra.
+        if "binary" not in websocket.scope.get("subprotocols", []):
+            await websocket.close(code=4406)
+            return
+        await websocket.accept(subprotocol="binary")
         try:
             from websockets.asyncio.client import connect
 
             query = f"?{websocket.url.query}" if websocket.url.query else ""
             async with connect(
-                f"ws://{host}:{port}/{path}{query}", max_size=2 * 1024 * 1024
+                f"ws://{host}:{port}/{path}{query}",
+                subprotocols=["binary"],
+                max_size=2 * 1024 * 1024,
             ) as upstream:
 
                 async def client_to_upstream():
