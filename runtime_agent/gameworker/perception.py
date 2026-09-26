@@ -319,7 +319,31 @@ class ObservePipeline:
             or observation.observed_monotonic + self.max_observation_age < now
         ):
             return PipelineOutcome("STALE_OBSERVATION", frame.frame_id, observation)
+        verify = getattr(self.planner, "verify_observation", None)
+        if verify is not None:
+            pending_proposal = getattr(self.planner, "pending_proposal", None)
+            verified_result = verify(observation)
+            if verified_result is not None:
+                if self.recorder is not None:
+                    self.recorder.record_action_result(
+                        verified_result,
+                        frame_id=frame.frame_id,
+                        observation_id=observation_id,
+                        proposal=pending_proposal,
+                    )
+                return PipelineOutcome(
+                    "ACTION_VERIFIED"
+                    if verified_result.status.value == "COMPLETED"
+                    else "ACTION_FAILED",
+                    frame.frame_id,
+                    observation,
+                    pending_proposal,
+                    verified_result,
+                )
         if not observation.production_ready:
+            on_unknown = getattr(self.planner, "on_unknown", None)
+            if on_unknown is not None:
+                on_unknown(observation)
             return PipelineOutcome("UNKNOWN", frame.frame_id, observation)
         planner_started = self._clock()
         planner_deadline = planner_started + self.planner_timeout
@@ -351,7 +375,18 @@ class ObservePipeline:
                 )
             except Exception:
                 logger.warning("recording rejected a planner proposal", exc_info=True)
-        result = self.actions.execute(proposal.action, duration=proposal.duration)
+        if proposal.target is not None:
+            result = self.actions.execute(
+                proposal.action,
+                duration=proposal.duration,
+                target=proposal.target,
+                viewport=proposal.viewport,
+            )
+        else:
+            result = self.actions.execute(proposal.action, duration=proposal.duration)
+        on_result = getattr(self.planner, "on_action_result", None)
+        if on_result is not None:
+            result = on_result(observation, result)
         if result.status.value == "SUPPRESSED":
             with self._lock:
                 self._observe_suppressed_actions_total += 1

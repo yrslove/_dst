@@ -32,6 +32,21 @@ class ObservationValidity(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+class DSTScreen(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    MAIN_MENU = "MAIN_MENU"
+    LOGIN_REWARD_AVAILABLE = "LOGIN_REWARD_AVAILABLE"
+    REWARD_RESULT = "REWARD_RESULT"
+    IN_WORLD_IDLE = "IN_WORLD_IDLE"
+    GIFT_AVAILABLE = "GIFT_AVAILABLE"
+    LOADING = "LOADING"
+    DISCONNECTED = "DISCONNECTED"
+    PAUSED = "PAUSED"
+    DEAD = "DEAD"
+    CHARACTER_SELECTION = "CHARACTER_SELECTION"
+    UNEXPECTED_MODAL = "UNEXPECTED_MODAL"
+
+
 @dataclass(frozen=True, slots=True)
 class Detection:
     kind: str
@@ -110,6 +125,10 @@ class GameObservation:
     screen_change: float | None
     perception_latency: float
     diagnostic_flags: tuple[str, ...] = field(default_factory=tuple)
+    screen: DSTScreen = DSTScreen.UNKNOWN
+    screen_confidence: float = 0.0
+    frame_width: int = 0
+    frame_height: int = 0
 
     def __post_init__(self) -> None:
         if (
@@ -134,6 +153,11 @@ class GameObservation:
         if (
             not math.isfinite(self.worker_confidence)
             or not 0 <= self.worker_confidence <= 1
+            or not isinstance(self.screen, DSTScreen)
+            or not math.isfinite(self.screen_confidence)
+            or not 0 <= self.screen_confidence <= 1
+            or self.frame_width < 0
+            or self.frame_height < 0
         ):
             raise ValueError("observation confidence is invalid")
         if (
@@ -402,12 +426,20 @@ class VisionDetector:
             ):
                 return Detection(template_id, False, 0.0, template_id=template_id)
             result = cv2.matchTemplate(sample, template, cv2.TM_CCOEFF_NORMED)
-            confidence = max(0.0, min(1.0, float(result.max())))
+            _, score, _, location = cv2.minMaxLoc(result)
+            confidence = max(0.0, min(1.0, float(score)))
+            left = region[0] + location[0]
+            top = region[1] + location[1]
             return Detection(
                 template_id,
                 confidence >= asset.threshold,
                 confidence,
-                bounds=asset.expected_region,
+                bounds=NormalizedRegion(
+                    left / image.width,
+                    top / image.height,
+                    (left + template.shape[1]) / image.width,
+                    (top + template.shape[0]) / image.height,
+                ),
                 detector_id="opencv-template",
                 template_id=template_id,
                 verified=asset.verified,
@@ -440,17 +472,55 @@ class VisionDetector:
         generation_valid = frame.runtime_generation > 0 and frame.worker_generation > 0
         image = frame.image()
         digest, change, frozen = self._monitor.update(image, started)
-        detections = tuple(
-            self.detect(image, name, deadline=deadline)
+        names = ("game_hud", "pause_menu", "player_marker", "interaction_prompt")
+        detected = {
+            name: self.detect(image, name, deadline=deadline)
             for name in (
-                "game_hud",
-                "pause_menu",
-                "player_marker",
-                "interaction_prompt",
+                *names,
+                *(key for key in self.registry.assets if key not in names),
             )
-        )
-        game, menu, player, interaction = detections
-        confidence = max(item.confidence for item in detections)
+        }
+        detections = tuple(detected.values())
+        game, menu, player, interaction = (detected[name] for name in names)
+
+        def found(name: str) -> bool:
+            item = detected.get(name)
+            return bool(item and item.detected and item.verified)
+
+        screen = DSTScreen.UNKNOWN
+        confidence = 0.0
+        reward_buttons = ("login_reward_open_button", "login_reward_open_hover")
+        matched_buttons = [detected[name] for name in reward_buttons if found(name)]
+        if found("login_reward_title") and matched_buttons:
+            screen = DSTScreen.LOGIN_REWARD_AVAILABLE
+            confidence = min(
+                detected["login_reward_title"].confidence,
+                max(button.confidence for button in matched_buttons),
+            )
+        elif found("login_reward_title"):
+            # A reward overlay obscures the menu even if its button animates.
+            screen = DSTScreen.UNKNOWN
+        elif found("main_menu_browse") and found("main_menu_host_game"):
+            from PIL import ImageStat
+
+            menu_region = Viewport(*image.size).region(
+                NormalizedRegion(0.02, 0.43, 0.26, 0.60)
+            )
+            menu_luminance = ImageStat.Stat(image.crop(menu_region).convert("L")).mean[
+                0
+            ]
+            if menu_luminance >= 12.5:
+                screen = DSTScreen.MAIN_MENU
+                confidence = min(
+                    detected["main_menu_browse"].confidence,
+                    detected["main_menu_host_game"].confidence,
+                    min(1.0, menu_luminance / 20.0),
+                )
+        elif found("pause_menu"):
+            screen, confidence = DSTScreen.PAUSED, menu.confidence
+        elif found("game_hud") and found("player_marker"):
+            screen = DSTScreen.IN_WORLD_IDLE
+            confidence = min(game.confidence, player.confidence)
         assets_verified = self.registry.production_ready
         calibration_verified = calibration.verified and calibration.matches(
             frame.width, frame.height
@@ -466,7 +536,7 @@ class VisionDetector:
             flags.append("SCREEN_FROZEN")
         if stale:
             flags.append("STALE")
-        if confidence < self.default_threshold:
+        if screen == DSTScreen.UNKNOWN or confidence < self.default_threshold:
             flags.append("UNKNOWN")
         if any(item.metadata for item in detections):
             flags.append("DETECTOR_ERROR")
@@ -482,6 +552,7 @@ class VisionDetector:
         elif (
             assets_verified
             and calibration_verified
+            and screen != DSTScreen.UNKNOWN
             and confidence >= self.default_threshold
         ):
             validity = ObservationValidity.VALID
@@ -511,6 +582,10 @@ class VisionDetector:
             screen_change=change,
             perception_latency=max(0.0, finished - started),
             diagnostic_flags=tuple(dict.fromkeys(flags)),
+            screen=screen,
+            screen_confidence=confidence,
+            frame_width=frame.width,
+            frame_height=frame.height,
         )
 
 

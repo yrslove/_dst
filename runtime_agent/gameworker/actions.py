@@ -11,6 +11,7 @@ from enum import StrEnum
 from threading import Event, Lock, Thread
 
 from runtime_agent.gameworker.config import InputBindings, WorkerMode
+from runtime_agent.gameworker.geometry import NormalizedPoint, Viewport
 from runtime_agent.gameworker.input import DeadmanSafety, InputController, InputError
 
 logger = logging.getLogger("runtime_agent.gameworker.actions")
@@ -29,6 +30,7 @@ class ActionName(StrEnum):
     RELEASE_ALL = "RELEASE_ALL"
     RECOVERY = "RECOVERY"
     PAUSE = "PAUSE"
+    CLICK_REWARD_OPEN = "CLICK_REWARD_OPEN"
 
 
 class ActionStatus(StrEnum):
@@ -42,6 +44,7 @@ class ActionStatus(StrEnum):
     GAME_NOT_READY = "GAME_NOT_READY"
     SAFETY_BLOCKED = "SAFETY_BLOCKED"
     SUPPRESSED = "SUPPRESSED"
+    PENDING_VERIFICATION = "PENDING_VERIFICATION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +168,7 @@ class ActionExecutor:
         action_timeout: float,
         queue_size: int = 16,
         clock: Callable[[], float] = time.monotonic,
+        allowed_actions: frozenset[ActionName] | None = None,
     ):
         if queue_size < 1:
             raise ValueError("action queue size must be positive")
@@ -177,6 +181,7 @@ class ActionExecutor:
         self.worker_generation = worker_generation
         self.runtime_id = runtime_id
         self.action_timeout = action_timeout
+        self.allowed_actions = allowed_actions
         self._clock = clock
         self._queue: queue.Queue[ActionTicket] = queue.Queue(maxsize=queue_size)
         self._lock = Lock()
@@ -299,6 +304,14 @@ class ActionExecutor:
             ActionName.PAUSE,
         }:
             return self._result(action, ActionStatus.REJECTED, reason="invalid action")
+        if (
+            self.allowed_actions is not None
+            and action.name not in self.allowed_actions
+            and action.name not in _SAFETY_ACTIONS
+        ):
+            return self._result(
+                action, ActionStatus.REJECTED, reason="action not whitelisted"
+            )
         if action.runtime_generation != self.runtime_generation:
             return self._result(
                 action, ActionStatus.STALE_GENERATION, reason="stale runtime generation"
@@ -364,6 +377,24 @@ class ActionExecutor:
             return self._result(
                 action, ActionStatus.REJECTED, reason="invalid action parameters"
             )
+        if action.name == ActionName.CLICK_REWARD_OPEN:
+            values = dict(action.parameters)
+            try:
+                point = NormalizedPoint(float(values["x"]), float(values["y"]))
+                viewport = Viewport(int(values["width"]), int(values["height"]))
+                if len(values) != 4 or not (
+                    0.35 < point.x < 0.65 and 0.75 < point.y < 0.97
+                ):
+                    raise ValueError("reward anchor outside guarded UI region")
+                if (
+                    not 640 <= viewport.width <= 4096
+                    or not 480 <= viewport.height <= 2160
+                ):
+                    raise ValueError("invalid viewport")
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return self._result(
+                    action, ActionStatus.REJECTED, reason="invalid reward anchor"
+                )
         return None
 
     def submit(self, action: Action) -> ActionTicket:
@@ -539,7 +570,10 @@ class ActionExecutor:
                         started=started,
                         reason=ticket.cancel_reason,
                     )
-                if not self.controller.action_limiter.allow():
+                if (
+                    action.name != ActionName.CLICK_REWARD_OPEN
+                    and not self.controller.action_limiter.allow()
+                ):
                     return self._result(
                         action,
                         ActionStatus.REJECTED,
@@ -582,6 +616,12 @@ class ActionExecutor:
                             self._stop.wait(min(0.02, max(0.0, end - self._clock())))
                     finally:
                         self.controller.key_up(key)
+                elif action.name == ActionName.CLICK_REWARD_OPEN:
+                    values = dict(action.parameters)
+                    self.controller.click(
+                        NormalizedPoint(float(values["x"]), float(values["y"])),
+                        Viewport(int(values["width"]), int(values["height"])),
+                    )
                 else:
                     key = getattr(self.bindings, _PRESS_KEYS[action.name])
                     self.controller.key_press(key)
@@ -707,6 +747,7 @@ class GameActions:
         worker_generation: int = 0,
         runtime_id: int = 0,
         queue_size: int = 16,
+        allowed_actions: frozenset[ActionName] | None = None,
     ):
         self.controller = controller
         self.deadman = deadman
@@ -728,9 +769,12 @@ class GameActions:
             mode=mode,
             action_timeout=action_timeout,
             queue_size=queue_size,
+            allowed_actions=allowed_actions,
         )
 
-    def _new_action(self, name: ActionName, *, duration: float | None = None) -> Action:
+    def _new_action(
+        self, name: ActionName, *, duration: float | None = None, parameters: tuple = ()
+    ) -> Action:
         with self._sequence_lock:
             self._sequence += 1
             sequence = self._sequence
@@ -746,6 +790,7 @@ class GameActions:
             duration=duration,
             deadline=time.monotonic() + self.action_timeout,
             sequence=sequence,
+            parameters=parameters,
         )
 
     def set_mode(self, mode: WorkerMode) -> None:
@@ -809,6 +854,82 @@ class GameActions:
         return self.execute_action(self._new_action(ActionName.OPEN_INVENTORY))
 
     def execute(
-        self, action: ActionName, *, duration: float | None = None
+        self,
+        action: ActionName,
+        *,
+        duration: float | None = None,
+        target: NormalizedPoint | None = None,
+        viewport: Viewport | None = None,
     ) -> ActionResult:
-        return self.execute_action(self._new_action(action, duration=duration))
+        parameters = ()
+        if action == ActionName.CLICK_REWARD_OPEN:
+            if target is None or viewport is None:
+                raise ValueError("reward click requires detected target and viewport")
+            parameters = (
+                ("x", target.x),
+                ("y", target.y),
+                ("width", viewport.width),
+                ("height", viewport.height),
+            )
+        return self.execute_action(
+            self._new_action(action, duration=duration, parameters=parameters)
+        )
+
+
+class ObserveActions:
+    """OBSERVE-only action boundary with no input driver or executor thread."""
+
+    def __init__(
+        self, *, runtime_id: int, runtime_generation: int, worker_generation: int
+    ):
+        self.runtime_id = runtime_id
+        self.runtime_generation = runtime_generation
+        self.worker_generation = worker_generation
+        self._sequence = 0
+
+    def execute(
+        self,
+        action: ActionName,
+        *,
+        duration: float | None = None,
+        target: NormalizedPoint | None = None,
+        viewport: Viewport | None = None,
+    ) -> ActionResult:
+        self._sequence += 1
+        return ActionResult(
+            f"observe-action-{self._sequence}",
+            action,
+            ActionStatus.SUPPRESSED,
+            0.0,
+            self.runtime_generation,
+            self.worker_generation,
+            runtime_id=self.runtime_id,
+            reason="OBSERVE has no input controller",
+        )
+
+    def execute_action(self, action: Action) -> ActionResult:
+        return ActionResult(
+            action.action_id,
+            action.name,
+            ActionStatus.SUPPRESSED,
+            0.0,
+            self.runtime_generation,
+            self.worker_generation,
+            runtime_id=self.runtime_id,
+            reason="OBSERVE has no input controller",
+        )
+
+    def set_safety(self, **values) -> None:
+        return None
+
+    def cancel(self) -> None:
+        return None
+
+    def release_all(self) -> None:
+        return None
+
+    def reset_cancel(self) -> None:
+        return None
+
+    def shutdown(self) -> bool:
+        return True

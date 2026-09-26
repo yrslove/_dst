@@ -323,7 +323,7 @@ def test_worker_prepare_closes_executor_created_before_later_failure(monkeypatch
             calls.append("actions")
 
     worker = DSTGameWorker(WorkerConfig(plugin="dst", mode=WorkerMode.OBSERVE))
-    monkeypatch.setattr("runtime_agent.gameworker.dst.worker.GameActions", Actions)
+    monkeypatch.setattr("runtime_agent.gameworker.dst.worker.ObserveActions", Actions)
     monkeypatch.setattr(
         "runtime_agent.gameworker.dst.worker.VisionDetector",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("bad assets")),
@@ -360,9 +360,7 @@ def test_xpra_cleanup_targets_only_the_created_shadow(monkeypatch):
     monkeypatch.setattr(provider, "_incus", run)
     provider._cleanup_backend("dst-runtime", "view-123", ":99")
 
-    assert calls[-1][:5] == (
-        "exec", "dst-runtime", "--", "/usr/bin/python3", "-c"
-    )
+    assert calls[-1][:5] == ("exec", "dst-runtime", "--", "/usr/bin/python3", "-c")
     assert calls[-1][-2:] == (":99", "14500")
 
 
@@ -380,9 +378,7 @@ def test_xpra_cleanup_keeps_failed_shadow_termination_visible(monkeypatch):
     with pytest.raises(ViewUnavailable):
         provider._cleanup_backend("dst-runtime", "view-123", ":99")
 
-    assert calls[-1][:5] == (
-        "exec", "dst-runtime", "--", "/usr/bin/python3", "-c"
-    )
+    assert calls[-1][:5] == ("exec", "dst-runtime", "--", "/usr/bin/python3", "-c")
     assert calls[-1][-2:] == (":99", "14500")
 
 
@@ -437,8 +433,8 @@ def test_bootstrap_environment_uses_runtime_agent_contract():
     )
     rendered = config.environment_file().decode()
 
-    assert "AUTO_LAUNCH_STEAM=\"1\"" in rendered
-    assert "RUNTIME_GENERATION=\"7\"" in rendered
+    assert 'AUTO_LAUNCH_STEAM="1"' in rendered
+    assert 'RUNTIME_GENERATION="7"' in rendered
     assert "STEAM_ENABLED" not in rendered
     assert "STEAM_COMMAND=" in rendered
     assert 'XAUTHORITY="/run/dst-runtime/Xauthority"' in rendered

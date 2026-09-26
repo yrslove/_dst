@@ -734,6 +734,9 @@ class SessionRecorder:
                 self._failure = "recorder shutdown timeout"
             self._stop.set()
             return False
+        # The writer may fail between the liveness check and enqueueing the
+        # shutdown sentinel. Drain that otherwise orphaned queue item.
+        self._discard_queue()
         with self._lock:
             return self._status in {
                 RecordingStatus.COMPLETE,

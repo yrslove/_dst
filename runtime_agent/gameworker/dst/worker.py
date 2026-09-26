@@ -7,9 +7,11 @@ from threading import Lock
 
 from runtime_agent.gameworker.actions import (
     Action,
+    ActionName,
     ActionResult,
     ActionStatus,
     GameActions,
+    ObserveActions,
 )
 from runtime_agent.gameworker.activity import ActivityController
 from runtime_agent.gameworker.base import WorkerContext, WorkerReport
@@ -85,6 +87,7 @@ class DSTGameWorker:
         self._last_observation: dict = {}
         self._last_capture_at = 0.0
         self._unknown_count = 0
+        self._unknown_since: float | None = None
         self._sequence = 0
         self._observation_generation = 0
         self._game_ready = False
@@ -186,34 +189,44 @@ class DSTGameWorker:
                 worker_generation=max(1, self.worker_generation),
                 timeout=self.config.capture_timeout,
             )
-            lease = InputLease()
-            input_controller = InputController(
-                context.display,
-                lease=lease,
-                max_actions_per_second=self.config.max_actions_per_second,
-                max_key_presses_per_second=self.config.max_key_presses_per_second,
-                subprocess_timeout=self.config.input_subprocess_timeout,
-            )
-            deadman = DeadmanSafety(input_controller, self.config.deadman_timeout)
-            actions = GameActions(
-                input_controller,
-                deadman,
-                self.config.bindings,
-                mode=self.mode,
-                action_timeout=self.config.action_timeout,
-                runtime_generation=context.runtime_generation,
-                worker_generation=self.worker_generation,
-                runtime_id=context.runtime_id,
-                queue_size=self.config.action_queue_size,
-            )
-            navigation = NavigationController(
-                actions,
-                StuckDetector(attempts=max(2, self.config.recovery_attempts)),
-                self.config.action_timeout * 4,
-            )
-            recovery = RecoveryController(
-                actions, max_attempts=self.config.recovery_attempts
-            )
+            navigation = None
+            recovery = None
+            if self.mode == WorkerMode.ACTIVE:
+                lease = InputLease()
+                input_controller = InputController(
+                    context.display,
+                    lease=lease,
+                    max_actions_per_second=self.config.max_actions_per_second,
+                    max_key_presses_per_second=self.config.max_key_presses_per_second,
+                    subprocess_timeout=self.config.input_subprocess_timeout,
+                )
+                deadman = DeadmanSafety(input_controller, self.config.deadman_timeout)
+                actions = GameActions(
+                    input_controller,
+                    deadman,
+                    self.config.bindings,
+                    mode=self.mode,
+                    action_timeout=self.config.action_timeout,
+                    runtime_generation=context.runtime_generation,
+                    worker_generation=self.worker_generation,
+                    runtime_id=context.runtime_id,
+                    queue_size=self.config.action_queue_size,
+                    allowed_actions=frozenset({ActionName.CLICK_REWARD_OPEN}),
+                )
+                navigation = NavigationController(
+                    actions,
+                    StuckDetector(attempts=max(2, self.config.recovery_attempts)),
+                    self.config.action_timeout * 4,
+                )
+                recovery = RecoveryController(
+                    actions, max_attempts=self.config.recovery_attempts
+                )
+            else:
+                actions = ObserveActions(
+                    runtime_id=context.runtime_id,
+                    runtime_generation=context.runtime_generation,
+                    worker_generation=self.worker_generation,
+                )
             vision = VisionDetector(
                 AssetRegistry(self.config.assets_manifest),
                 default_threshold=self.config.vision_threshold,
@@ -290,7 +303,8 @@ class DSTGameWorker:
                 planner_timeout=self.config.planner_timeout,
                 recorder=recorder,
             )
-            deadman.start()
+            if deadman is not None:
+                deadman.start()
             self.capture = capture
             self.input = input_controller
             self.deadman = deadman
@@ -420,6 +434,21 @@ class DSTGameWorker:
 
     def set_mode(self, mode: WorkerMode) -> WorkerReport:
         previous = self.mode
+        if mode != previous and {mode, previous} == {
+            WorkerMode.ACTIVE,
+            WorkerMode.OBSERVE,
+        }:
+            if not self._release_resources():
+                self._cleanup_failed = True
+                self._error_code = "WORKER_SHUTDOWN_FAILED"
+                self.pause()
+                return self.status()
+            self.mode = mode
+            self.activity = ActivityController()
+            if self.context:
+                self.prepare(self.context)
+            self._sync_action_mode()
+            return self.status()
         if mode != previous and WorkerMode.REPLAY in {mode, previous}:
             if self.machine.state not in {
                 WorkerState.SHUTTING_DOWN,
@@ -461,6 +490,7 @@ class DSTGameWorker:
             WorkerState.DISABLED,
             WorkerState.PAUSED,
         }:
+            self.activity = ActivityController()
             if self.machine.state == WorkerState.DISABLED:
                 self.machine.transition(WorkerState.INITIALIZING, "worker mode enabled")
             if self.context:
@@ -565,6 +595,10 @@ class DSTGameWorker:
             if observation is not None:
                 self._last_observation = observation.as_dict()
                 self._last_observation_at = observation.timestamp
+                if observation.production_ready:
+                    self._unknown_since = None
+                elif self.mode == WorkerMode.ACTIVE and self._unknown_since is None:
+                    self._unknown_since = now
             self._would_execute = (
                 outcome.proposal.action if outcome.proposal is not None else None
             )
@@ -599,6 +633,19 @@ class DSTGameWorker:
                 self._error_code = "WORKER_PERCEPTION_UNVERIFIED"
             else:
                 self._error_code = None
+            if self.mode == WorkerMode.ACTIVE and (
+                self.activity.intervention_required
+                or (self._unknown_since is not None and now - self._unknown_since > 20)
+            ):
+                self.activity.counters["recovery_failures"] += 1
+                try:
+                    if self.capture is not None:
+                        self._diagnose(self.capture.capture())
+                except CaptureError:
+                    logger.warning("unknown-screen diagnostic capture failed")
+                self.set_mode(WorkerMode.DISABLED)
+                self._error_code = "WORKER_INTERVENTION_REQUIRED"
+                return self.status()
             if self.machine.state not in {
                 WorkerState.PAUSED,
                 WorkerState.NEEDS_ATTENTION,
@@ -877,6 +924,7 @@ class DSTGameWorker:
                 "worker_active_seconds": round(active_seconds, 3),
                 "pause_seconds": round(pause_seconds, 3),
                 "actions_count": self._actions_count,
+                "behavior_counters": dict(self.activity.counters),
                 "recoveries": self._recoveries,
                 "capture_errors": self._capture_errors,
                 "perception_errors": self._perception_errors,
@@ -914,6 +962,11 @@ class DSTGameWorker:
                 "profile": self.config.profile,
                 "requested_mode": self.mode,
                 "observation": self._last_observation,
+                "behavior_state": self.activity.state.value,
+                "last_behavior_decision": self.activity.decisions[-1]
+                if self.activity.decisions
+                else None,
+                "permitted_active_actions": [ActionName.CLICK_REWARD_OPEN.value],
                 "transitions": self.machine.history()[-10:],
                 "diagnostics": {
                     "worker_mode": self._effective_mode(),

@@ -674,7 +674,12 @@ class ReplayActionSink:
         self.last_result: ActionResult | None = None
 
     def execute(
-        self, action: ActionName, *, duration: float | None = None
+        self,
+        action: ActionName,
+        *,
+        duration: float | None = None,
+        target=None,
+        viewport=None,
     ) -> ActionResult:
         self._sequence += 1
         return self._suppress(

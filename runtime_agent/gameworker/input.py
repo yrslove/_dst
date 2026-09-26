@@ -31,6 +31,7 @@ class InputDriver(Protocol):
     def mouse_down(self, button: int) -> None: ...
     def mouse_up(self, button: int) -> None: ...
     def click(self, button: int) -> None: ...
+    def focus_game_at_pointer(self) -> None: ...
 
 
 class XdotoolInputDriver:
@@ -41,6 +42,8 @@ class XdotoolInputDriver:
             raise ValueError("input subprocess timeout must be positive")
         self.environment = environment
         self.timeout = timeout
+        self._last_focused_window: str | None = None
+        self._last_pointer: tuple[str, str] | None = None
 
     def _run(self, *args: str) -> None:
         environment = sanitized_subprocess_environment()
@@ -74,15 +77,87 @@ class XdotoolInputDriver:
 
     def mouse_move(self, x: int, y: int) -> None:
         self._run("mousemove", str(x), str(y))
+        logger.info(
+            "xdotool mouse move display=%s x=%s y=%s", self.environment.display, x, y
+        )
 
     def mouse_down(self, button: int) -> None:
         self._run("mousedown", str(button))
+        logger.info(
+            "xdotool button down display=%s button=%s pointer=%s window=%s",
+            self.environment.display, button, self._last_pointer,
+            self._last_focused_window,
+        )
 
     def mouse_up(self, button: int) -> None:
         self._run("mouseup", str(button))
+        logger.info(
+            "xdotool button up display=%s button=%s pointer=%s window=%s",
+            self.environment.display, button, self._last_pointer,
+            self._last_focused_window,
+        )
 
     def click(self, button: int) -> None:
-        self._run("click", str(button))
+        self.mouse_down(button)
+        try:
+            self.mouse_up(button)
+        except InputError:
+            # Do not leave a synthetic button held when the release command fails.
+            try:
+                self.mouse_up(button)
+            finally:
+                raise
+        logger.info(
+            "xdotool mouse down/up display=%s button=%s",
+            self.environment.display,
+            button,
+        )
+
+    def focus_game_at_pointer(self) -> None:
+        """Focus only the DST window under the visually selected click anchor."""
+        environment = sanitized_subprocess_environment()
+        for name in GRAPHICAL_ENVIRONMENT_KEYS:
+            environment.pop(name, None)
+        environment.update(self.environment.as_environ())
+
+        def query(*args: str) -> str:
+            try:
+                result = subprocess.run(
+                    ["xdotool", *args],
+                    env=environment,
+                    timeout=self.timeout,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    shell=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise InputError("game window focus query failed") from exc
+            if result.returncode != 0:
+                raise InputError("game window focus query rejected")
+            return result.stdout.strip()
+
+        location = dict(
+            line.split("=", 1)
+            for line in query("getmouselocation", "--shell").splitlines()
+            if "=" in line
+        )
+        window_id = location.get("WINDOW", "")
+        if (
+            not window_id.isdecimal()
+            or query("getwindowname", window_id) != "Don't Starve Together"
+        ):
+            raise InputError("reward anchor is not over the DST window")
+        self._run("windowfocus", "--sync", window_id)
+        if query("getwindowfocus") != window_id:
+            raise InputError("DST window did not receive X11 focus")
+        self._last_focused_window = window_id
+        self._last_pointer = (location.get("X", "?"), location.get("Y", "?"))
+        logger.info(
+            "xdotool focused DST display=%s window=%s pointer=%s",
+            self.environment.display, window_id, self._last_pointer,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +227,11 @@ class FakeInputDriver:
         )
 
     def click(self, button: int) -> None:
-        self._record("click", button, lambda: None)
+        self._record("mouse_down", button, lambda: None)
+        self._record("mouse_up", button, lambda: None)
+
+    def focus_game_at_pointer(self) -> None:
+        self._record("focus_game", "DST", lambda: None)
 
 
 class InputLease:
@@ -267,7 +346,7 @@ class InputController:
                 self._keys.add(key)
             try:
                 self.driver.key_down(key)
-            except Exception:
+            except InputError:
                 self.release_all(reason="key_down_failure", _io_locked=True)
                 raise
 
@@ -275,7 +354,7 @@ class InputController:
         with self._io_lock:
             try:
                 self.driver.key_up(key)
-            except Exception:
+            except InputError:
                 with self._state_lock:
                     self._uncertain_keys.add(key)
                 raise
@@ -335,9 +414,30 @@ class InputController:
             if viewport is None:
                 raise ValueError("viewport is required for normalized mouse input")
             self.mouse_move(point, viewport)
+            self.driver.focus_game_at_pointer()
         with self._io_lock:
             self._require_active()
-            self.driver.click(button)
+            with self._state_lock:
+                self._buttons.add(button)
+            try:
+                self.driver.mouse_down(button)
+            except InputError:
+                self.release_all(reason="click_down_failure", _io_locked=True)
+                raise
+            try:
+                self.driver.mouse_up(button)
+            except InputError:
+                with self._state_lock:
+                    self._uncertain_buttons.add(button)
+                    self._buttons.discard(button)
+                try:
+                    self.driver.mouse_up(button)
+                finally:
+                    raise
+            finally:
+                with self._state_lock:
+                    self._buttons.discard(button)
+                    self._uncertain_buttons.discard(button)
 
     def release_all(self, *, reason: str = "release_all", _io_locked=False) -> bool:
         """Best-effort independent release; logical state is always made safe."""

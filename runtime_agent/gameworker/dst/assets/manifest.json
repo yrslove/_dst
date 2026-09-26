@@ -1,5 +1,11 @@
 {
   "schema_version": 1,
-  "profile": "dst-default-v1",
-  "templates": []
+  "profile": "dst-1280x720-linux-v1",
+  "templates": [
+    {"id":"login_reward_title","filename":"login_reward_title.png","expected_region":[0.335,0.10,0.665,0.29],"threshold":0.94,"version":1,"expected_use":"Thanks for playing title","verified":true},
+    {"id":"login_reward_open_button","filename":"login_reward_open_button.png","expected_region":[0.38,0.75,0.62,0.97],"threshold":0.94,"version":1,"expected_use":"Open Now button and click anchor","verified":true},
+    {"id":"login_reward_open_hover","filename":"login_reward_open_hover.png","expected_region":[0.38,0.75,0.62,0.97],"threshold":0.94,"version":1,"expected_use":"Hovered Open Now button and click anchor","verified":true},
+    {"id":"main_menu_browse","filename":"main_menu_browse.png","expected_region":[0.02,0.42,0.24,0.56],"threshold":0.94,"version":1,"expected_use":"Browse Games menu label; combined with Host Game and panel luminance","verified":true},
+    {"id":"main_menu_host_game","filename":"main_menu_host_game.png","expected_region":[0.02,0.48,0.22,0.62],"threshold":0.94,"version":1,"expected_use":"Host Game menu label; combined with Browse Games and panel luminance","verified":true}
+  ]
 }
