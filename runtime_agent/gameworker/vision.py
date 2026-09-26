@@ -35,6 +35,7 @@ class ObservationValidity(StrEnum):
 class DSTScreen(StrEnum):
     UNKNOWN = "UNKNOWN"
     MAIN_MENU = "MAIN_MENU"
+    OPTIONS = "OPTIONS"
     LOGIN_REWARD_AVAILABLE = "LOGIN_REWARD_AVAILABLE"
     REWARD_RESULT = "REWARD_RESULT"
     IN_WORLD_IDLE = "IN_WORLD_IDLE"
@@ -500,7 +501,17 @@ class VisionDetector:
         elif found("login_reward_title"):
             # A reward overlay obscures the menu even if its button animates.
             screen = DSTScreen.UNKNOWN
-        elif found("main_menu_browse") and found("main_menu_host_game"):
+        elif found("options_title") and found("options_back"):
+            screen = DSTScreen.OPTIONS
+            confidence = min(
+                detected["options_title"].confidence,
+                detected["options_back"].confidence,
+            )
+        elif (
+            found("main_menu_browse")
+            and found("main_menu_host_game")
+            and found("main_menu_options")
+        ):
             from PIL import ImageStat
 
             menu_region = Viewport(*image.size).region(
@@ -514,6 +525,7 @@ class VisionDetector:
                 confidence = min(
                     detected["main_menu_browse"].confidence,
                     detected["main_menu_host_game"].confidence,
+                    detected["main_menu_options"].confidence,
                     min(1.0, menu_luminance / 20.0),
                 )
         elif found("pause_menu"):
