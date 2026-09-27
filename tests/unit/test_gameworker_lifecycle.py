@@ -10,6 +10,7 @@ import pytest
 from app.runtime.display import DisplayEnvironment
 from runtime_agent.gameworker.base import WorkerContext, WorkerReport
 from runtime_agent.gameworker.config import WorkerConfig, WorkerMode
+from runtime_agent.gameworker.dst.worker import DSTGameWorker
 from runtime_agent.gameworker.ipc import (
     WorkerCommandResult,
     WorkerIPCAcknowledgement,
@@ -21,6 +22,7 @@ from runtime_agent.gameworker.process import (
     WorkerProcessState,
     _worker_main,
 )
+from runtime_agent.gameworker.state import WorkerState
 
 
 class FakeQueue(queue.Queue):
@@ -168,6 +170,19 @@ def test_input_free_worker_shutdown_never_opens_emergency_channel(monkeypatch, m
     host.start()
     host._process.alive = False
     host.shutdown()
+
+
+def test_autostart_off_pause_keeps_disabled_worker_disabled():
+    worker = DSTGameWorker(WorkerConfig(plugin="dst", mode=WorkerMode.DISABLED))
+
+    worker.on_game_ready(context())
+    report = worker.pause()
+
+    assert report.mode == WorkerMode.DISABLED
+    assert report.state == WorkerState.DISABLED
+    assert worker.input is None
+    assert worker.actions is None
+    assert worker.capture is None
 
 
 def test_duplicate_ack_for_completed_command_is_ignored(monkeypatch):

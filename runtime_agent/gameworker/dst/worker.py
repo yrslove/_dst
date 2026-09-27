@@ -781,6 +781,19 @@ class DSTGameWorker:
         )
 
     def pause(self) -> WorkerReport:
+        if self.mode == WorkerMode.DISABLED:
+            # DISABLED is already the safest state: the worker owns no capture
+            # or input resources, and an autostart-off pause must not relabel it.
+            self._release_resources()
+            if self.machine.state not in {
+                WorkerState.DISABLED,
+                WorkerState.SHUTTING_DOWN,
+                WorkerState.STOPPED,
+            }:
+                self.machine.transition(WorkerState.DISABLED, "worker remains disabled")
+            self._error_code = "WORKER_DISABLED"
+            self._sync_action_mode()
+            return self.status()
         if self.recorder:
             self.recorder.record_event(RecordingEventType.WORKER_PAUSED)
         if self.pipeline:
