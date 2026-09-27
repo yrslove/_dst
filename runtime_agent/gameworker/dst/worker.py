@@ -50,6 +50,9 @@ logger = logging.getLogger("runtime_agent.gameworker.dst")
 class DSTGameWorker:
     plugin = "DSTGameWorker"
     version = "0.1.0"
+    IDLE_OBSERVATION_INTERVAL_SECONDS = 4.0
+    VERIFY_OBSERVATION_INTERVAL_SECONDS = 0.15
+    VERIFY_TICK_INTERVAL_SECONDS = 0.1
 
     def __init__(self, config: WorkerConfig, *, worker_generation: int = 0):
         self.config = config
@@ -740,12 +743,16 @@ class DSTGameWorker:
         return self.status()
 
     def _observation_interval(self) -> float:
-        state = self.machine.state
-        if state == WorkerState.PAUSED:
-            return max(10.0, self.config.observation_interval * 5)
-        if state in {WorkerState.NAVIGATING, WorkerState.RECOVERING}:
-            return max(0.2, self.config.observation_interval / 2)
-        return self.config.observation_interval
+        if self.pipeline is not None and self.pipeline.verification_pending:
+            return self.VERIFY_OBSERVATION_INTERVAL_SECONDS
+        configured = min(5.0, max(2.0, self.config.observation_interval))
+        return max(self.IDLE_OBSERVATION_INTERVAL_SECONDS, configured)
+
+    @property
+    def next_tick_interval(self) -> float:
+        if self.pipeline is not None and self.pipeline.verification_pending:
+            return min(self.config.tick_interval, self.VERIFY_TICK_INTERVAL_SECONDS)
+        return self.config.tick_interval
 
     def _record_action(self, result) -> None:
         action, dry_run = result.action, result.dry_run

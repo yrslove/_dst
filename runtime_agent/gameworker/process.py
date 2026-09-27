@@ -212,12 +212,20 @@ def _worker_main(
     control = threading.Thread(target=control_loop, name="worker-ipc", daemon=True)
     control.start()
     try:
-        while not stop.wait(config.tick_interval):
+        tick_interval = config.tick_interval
+        while not stop.wait(tick_interval):
             with worker_lock:
                 publish_report(
                     worker.tick(current_context)
                     if game_ready.is_set()
                     else worker.status()
+                )
+                recommended_interval = getattr(
+                    worker, "next_tick_interval", config.tick_interval
+                )
+                tick_interval = min(
+                    config.tick_interval,
+                    max(0.01, float(recommended_interval)),
                 )
     finally:
         if not shutdown_complete.is_set():

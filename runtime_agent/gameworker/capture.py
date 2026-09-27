@@ -220,8 +220,8 @@ def _set_parent_death_signal() -> None:
         return
 
 
-def _grab_x11_frame(
-    sender,
+def _capture_worker_loop(
+    connection,
     environment: DisplayEnvironment,
     max_width: int,
     max_height: int,
@@ -233,27 +233,59 @@ def _grab_x11_frame(
     os.environ.update(environment.as_environ())
     try:
         from PIL import ImageGrab
-
-        image = ImageGrab.grab(xdisplay=environment.display)
-        image.thumbnail((max_width, max_height))
-        image = image.convert("RGB")
-        captured_at = datetime.now(timezone.utc).isoformat()
-        captured_monotonic = time.monotonic()
-        sender.send(
-            (
-                True,
-                image.width,
-                image.height,
-                image.tobytes(),
-                captured_at,
-                captured_monotonic,
-                None,
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 - isolated backend error boundary
-        sender.send((False, 0, 0, b"", "", 0.0, type(exc).__name__))
+    except Exception as exc:  # noqa: BLE001 - isolate capture backend startup
+        try:
+            connection.send(("ERROR", type(exc).__name__))
+        finally:
+            connection.close()
+        return
+    try:
+        connection.send(("READY",))
+        while True:
+            try:
+                sequence = connection.recv()
+            except EOFError:
+                return
+            if sequence is None:
+                return
+            try:
+                image = ImageGrab.grab(xdisplay=environment.display)
+                image.thumbnail((max_width, max_height))
+                image = image.convert("RGB")
+                captured_at = datetime.now(timezone.utc).isoformat()
+                captured_monotonic = time.monotonic()
+                connection.send(
+                    (
+                        "FRAME",
+                        sequence,
+                        True,
+                        image.width,
+                        image.height,
+                        image.tobytes(),
+                        captured_at,
+                        captured_monotonic,
+                        None,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - isolate each capture error
+                try:
+                    connection.send(
+                        (
+                            "FRAME",
+                            sequence,
+                            False,
+                            0,
+                            0,
+                            b"",
+                            "",
+                            0.0,
+                            type(exc).__name__,
+                        )
+                    )
+                except (BrokenPipeError, EOFError, OSError):
+                    return
     finally:
-        sender.close()
+        connection.close()
 
 
 class X11ScreenCapture:
@@ -284,7 +316,8 @@ class X11ScreenCapture:
         self._last_resolution = (max_width, max_height)
         self._sequence = 0
         self._closed = False
-        self._active = None
+        self._process = None
+        self._connection = None
         self._lock = Lock()
         self._capture_lock = Lock()
 
@@ -305,81 +338,136 @@ class X11ScreenCapture:
             process.kill()
             process.join(timeout=0.5)
 
+    def _ensure_worker(self):
+        with self._lock:
+            if self._closed:
+                raise CaptureError(
+                    "capture source is closed", failure=CaptureFailure.CLOSED
+                )
+            if self._process is not None and self._process.is_alive():
+                return self._connection
+            previous_process, previous_connection = self._process, self._connection
+            self._process = None
+            self._connection = None
+        if previous_connection is not None:
+            previous_connection.close()
+        self._stop_process(previous_process)
+
+        parent, child = self._ctx.Pipe(duplex=True)
+        process = self._ctx.Process(
+            target=_capture_worker_loop,
+            args=(child, self.environment, self.max_width, self.max_height),
+            name=f"x11-capture-{self.runtime_id}-g{self.worker_generation}",
+            daemon=True,
+        )
+        try:
+            process.start()
+            child.close()
+            if not parent.poll(max(self.timeout, 10.0)):
+                raise CaptureError(
+                    "X11 capture helper did not become ready",
+                    failure=CaptureFailure.TIMEOUT,
+                )
+            ready = parent.recv()
+            if ready != ("READY",):
+                error = (
+                    ready[1]
+                    if isinstance(ready, tuple) and len(ready) > 1
+                    else "unknown"
+                )
+                raise CaptureError(f"X11 capture helper failed to start ({error})")
+        except Exception as exc:
+            parent.close()
+            child.close()
+            self._stop_process(process)
+            if isinstance(exc, CaptureError):
+                raise
+            raise CaptureError("X11 capture helper failed to start") from exc
+        with self._lock:
+            if self._closed:
+                parent.close()
+                self._stop_process(process)
+                raise CaptureError(
+                    "capture source is closed", failure=CaptureFailure.CLOSED
+                )
+            self._process = process
+            self._connection = parent
+            return parent
+
+    def _discard_worker(self, connection=None) -> None:
+        with self._lock:
+            if connection is not None and self._connection is not connection:
+                return
+            process, active_connection = self._process, self._connection
+            self._process = None
+            self._connection = None
+        if active_connection is not None:
+            active_connection.close()
+        self._stop_process(process)
+
     def capture(self) -> Frame:
         with self._capture_lock:
+            connection = self._ensure_worker()
             with self._lock:
-                if self._closed:
-                    raise CaptureError(
-                        "capture source is closed", failure=CaptureFailure.CLOSED
-                    )
-                receiver, sender = self._ctx.Pipe(duplex=False)
-                process = self._ctx.Process(
-                    target=_grab_x11_frame,
-                    args=(sender, self.environment, self.max_width, self.max_height),
-                    name=f"x11-capture-{self.runtime_id}-g{self.worker_generation}",
-                    daemon=True,
-                )
                 self._sequence += 1
                 sequence = self._sequence
-                try:
-                    # Starting under this lock makes close() unable to miss a
-                    # helper between construction and publication.
-                    process.start()
-                except Exception as exc:
-                    receiver.close()
-                    sender.close()
-                    raise CaptureError("X11 capture helper failed to start") from exc
-                self._active = process
-            sender.close()
             try:
-                if not receiver.poll(self.timeout):
+                connection.send(sequence)
+                if not connection.poll(self.timeout):
+                    self._discard_worker(connection)
                     raise CaptureError(
                         "X11 capture timed out", failure=CaptureFailure.TIMEOUT
                     )
-                try:
-                    (
-                        ok,
-                        width,
-                        height,
-                        pixels,
-                        captured_at,
-                        captured_monotonic,
-                        error,
-                    ) = receiver.recv()
-                except EOFError as exc:
-                    raise CaptureError("X11 capture helper exited") from exc
-                if not ok:
-                    raise CaptureError(f"X11 capture failed ({error})")
-                try:
-                    frame = Frame(
-                        frame_id=(
-                            f"r{self.runtime_generation}-w{self.worker_generation}"
-                            f"-f{sequence}"
-                        ),
-                        sequence=sequence,
-                        captured_at=captured_at,
-                        captured_monotonic=captured_monotonic,
-                        runtime_id=self.runtime_id,
-                        runtime_generation=self.runtime_generation,
-                        worker_generation=self.worker_generation,
-                        width=width,
-                        height=height,
-                        pixels=pixels,
-                        source="x11-pillow",
-                    )
-                except (TypeError, ValueError) as exc:
-                    raise CaptureError(
-                        "X11 capture returned an invalid frame",
-                        failure=CaptureFailure.INVALID_FRAME,
-                    ) from exc
-                self._last_resolution = (width, height)
-                return frame
-            finally:
-                receiver.close()
-                self._stop_process(process)
-                with self._lock:
-                    if self._active is process:
-                        self._active = None
+                reply = connection.recv()
+            except (EOFError, BrokenPipeError, OSError) as exc:
+                self._discard_worker(connection)
+                raise CaptureError("X11 capture helper exited") from exc
+            if not isinstance(reply, tuple) or len(reply) != 9 or reply[0] != "FRAME":
+                self._discard_worker(connection)
+                raise CaptureError("X11 capture helper returned an invalid response")
+            (
+                _,
+                response_sequence,
+                ok,
+                width,
+                height,
+                pixels,
+                captured_at,
+                captured_monotonic,
+                error,
+            ) = reply
+            if response_sequence != sequence:
+                self._discard_worker(connection)
+                raise CaptureError(
+                    "X11 capture helper returned a stale frame",
+                    failure=CaptureFailure.STALE_GENERATION,
+                )
+            if not ok:
+                raise CaptureError(f"X11 capture failed ({error})")
+            try:
+                frame = Frame(
+                    frame_id=(
+                        f"r{self.runtime_generation}-w{self.worker_generation}"
+                        f"-f{sequence}"
+                    ),
+                    sequence=sequence,
+                    captured_at=captured_at,
+                    captured_monotonic=captured_monotonic,
+                    runtime_id=self.runtime_id,
+                    runtime_generation=self.runtime_generation,
+                    worker_generation=self.worker_generation,
+                    width=width,
+                    height=height,
+                    pixels=pixels,
+                    source="x11-pillow",
+                )
+            except (TypeError, ValueError) as exc:
+                raise CaptureError(
+                    "X11 capture returned an invalid frame",
+                    failure=CaptureFailure.INVALID_FRAME,
+                ) from exc
+            self._last_resolution = (width, height)
+            return frame
 
     def capture_region(self, region: NormalizedRegion) -> Frame:
         source = self.capture()
@@ -407,5 +495,16 @@ class X11ScreenCapture:
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            process = self._active
-        self._stop_process(process)
+            process, connection = self._process, self._connection
+            self._process = None
+            self._connection = None
+        if connection is not None:
+            try:
+                connection.send(None)
+                if process is not None:
+                    process.join(timeout=0.5)
+            except (BrokenPipeError, EOFError, OSError, ValueError):
+                pass
+            connection.close()
+        if process is not None and process.is_alive():
+            self._stop_process(process)

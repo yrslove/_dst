@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
 from dataclasses import replace
@@ -80,9 +81,7 @@ def make_observation(
     prompt: bool = True,
 ) -> GameObservation:
     observed = (
-        frame.captured_monotonic
-        if observed_monotonic is None
-        else observed_monotonic
+        frame.captured_monotonic if observed_monotonic is None else observed_monotonic
     )
     game = Detection("game_hud", True, 0.99, verified=verified)
     menu = Detection("pause_menu", False, 0.01, verified=verified)
@@ -208,9 +207,7 @@ def test_fake_capture_and_latest_slot_are_bounded_and_closeable():
         source.capture()
     assert closed.value.failure is CaptureFailure.CLOSED
     with pytest.raises(ValueError, match="bound"):
-        FakeCaptureSource(
-            [first] * 257, runtime_generation=7, worker_generation=3
-        )
+        FakeCaptureSource([first] * 257, runtime_generation=7, worker_generation=3)
     repeating = FakeCaptureSource(
         [second], runtime_generation=7, worker_generation=3, repeat_last=True
     )
@@ -317,9 +314,7 @@ def test_template_registry_rejects_missing_escape_duplicate_and_fake_verificatio
 
 def test_vision_detector_recognizes_only_verified_synthetic_fixture(tmp_path):
     pattern = Image.new("L", (4, 4))
-    pattern.putdata(
-        [0, 255, 0, 255, 255, 0, 255, 0, 0, 255, 0, 255, 255, 0, 255, 0]
-    )
+    pattern.putdata([0, 255, 0, 255, 255, 0, 255, 0, 0, 255, 0, 255, 255, 0, 255, 0])
     canvas = Image.new("RGB", (32, 24), "gray")
     canvas.paste(pattern.convert("RGB"), (10, 8))
     templates = []
@@ -446,9 +441,7 @@ def test_end_to_end_observe_pipeline_returns_suppressed_without_input(
     )
     actions, driver = observe_actions()
     pipeline = make_pipeline(
-        FakeCaptureSource(
-            [frame], runtime_generation=7, worker_generation=3
-        ),
+        FakeCaptureSource([frame], runtime_generation=7, worker_generation=3),
         engine,
         planner,
         actions,
@@ -838,43 +831,116 @@ def test_capture_failure_updates_bounded_health_without_observation():
     pipeline.close()
 
 
-def test_x11_capture_timeout_terminates_helper_and_leaves_no_active_process():
-    class Connection:
-        def poll(self, _timeout):
-            return False
+class _FakeCaptureConnection:
+    def __init__(self, messages, role, owner):
+        self.messages = messages
+        self.role = role
+        self.owner = owner
+        self.closed = False
 
-        def close(self):
-            pass
+    def send(self, value):
+        if self.role == "child":
+            self.owner.responses.put(value)
+        elif value is not None and self.owner.reply_to_capture:
+            self.owner.responses.put(
+                (
+                    "FRAME",
+                    value,
+                    True,
+                    1,
+                    1,
+                    b"\x00\x00\x00",
+                    "captured",
+                    time.monotonic(),
+                    None,
+                )
+            )
 
-    class Process:
-        def __init__(self):
+    def poll(self, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self.messages.empty():
+                return True
+            time.sleep(0.001)
+        return not self.messages.empty()
+
+    def recv(self):
+        return self.messages.get_nowait()
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeCaptureProcess:
+    def __init__(self, owner, kwargs):
+        self.owner = owner
+        self.kwargs = kwargs
+        self.alive = False
+        self.terminated = False
+
+    def start(self):
+        self.alive = True
+        self.kwargs["args"][0].send(("READY",))
+
+    def is_alive(self):
+        return self.alive
+
+    def terminate(self):
+        self.terminated = True
+        self.alive = False
+
+    def join(self, timeout=None):
+        if timeout is not None and timeout <= 0.5:
             self.alive = False
-            self.terminated = False
 
-        def start(self):
-            self.alive = True
 
-        def is_alive(self):
-            return self.alive
+class _FakeCaptureProcessContext:
+    def __init__(self, *, reply_to_capture):
+        self.reply_to_capture = reply_to_capture
+        self.responses = queue.Queue()
+        self.pipe_count = 0
+        self.processes = []
 
-        def terminate(self):
-            self.terminated = True
-            self.alive = False
+    def Pipe(self, duplex=True):
+        assert duplex
+        self.pipe_count += 1
+        return (
+            _FakeCaptureConnection(self.responses, "parent", self),
+            _FakeCaptureConnection(queue.Queue(), "child", self),
+        )
 
-        def join(self, timeout=None):
-            pass
+    def Process(self, **kwargs):
+        process = _FakeCaptureProcess(self, kwargs)
+        self.processes.append(process)
+        return process
 
-    class Context:
-        def __init__(self):
-            self.process = Process()
 
-        def Pipe(self, duplex=False):
-            return Connection(), Connection()
+def test_x11_capture_reuses_one_killable_helper_for_multiple_frames():
+    context = _FakeCaptureProcessContext(reply_to_capture=True)
+    capture = X11ScreenCapture(
+        DisplayEnvironment(":99"),
+        max_width=800,
+        max_height=600,
+        timeout=0.1,
+        runtime_id=2,
+        runtime_generation=7,
+        worker_generation=3,
+        process_context=context,
+    )
 
-        def Process(self, **_kwargs):
-            return self.process
+    first = capture.capture()
+    second = capture.capture()
 
-    context = Context()
+    assert (first.sequence, second.sequence) == (1, 2)
+    assert context.pipe_count == 1
+    assert len(context.processes) == 1
+    assert context.processes[0].is_alive()
+    capture.close()
+    assert not context.processes[0].is_alive()
+
+
+def test_x11_capture_timeout_terminates_helper_and_restarts_cleanly():
+    context = _FakeCaptureProcessContext(reply_to_capture=False)
     capture = X11ScreenCapture(
         DisplayEnvironment(":99"),
         max_width=800,
@@ -890,6 +956,7 @@ def test_x11_capture_timeout_terminates_helper_and_leaves_no_active_process():
         capture.capture()
 
     assert error.value.failure is CaptureFailure.TIMEOUT
-    assert context.process.terminated
-    assert capture._active is None
+    assert context.processes[0].terminated
+    assert capture._process is None
+    assert capture._connection is None
     capture.close()

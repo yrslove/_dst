@@ -30,8 +30,12 @@ logger = logging.getLogger("runtime_agent.gameworker.perception")
 
 class ActionSink(Protocol):
     def execute(
-        self, action: ActionName, *, duration: float | None = None,
-        target=None, viewport=None,
+        self,
+        action: ActionName,
+        *,
+        duration: float | None = None,
+        target=None,
+        viewport=None,
     ) -> ActionResult: ...
 
 
@@ -134,6 +138,10 @@ class ObservePipeline:
     def latest_observation(self) -> GameObservation | None:
         return self._store.current()
 
+    @property
+    def verification_pending(self) -> bool:
+        return self.action_lifecycle.pending is not None
+
     def health(self) -> dict[str, float | int | None]:
         with self._lock:
             return {
@@ -198,8 +206,9 @@ class ObservePipeline:
             failure = getattr(self.planner, "on_action_failure", None)
             if failure is not None:
                 failure(expired)
-            return PipelineOutcome("ACTION_FAILED", action_result=expired,
-                                   reason=expired.reason)
+            return PipelineOutcome(
+                "ACTION_FAILED", action_result=expired, reason=expired.reason
+            )
         try:
             captured = self.capture.capture()
         except CaptureError as exc:
@@ -345,12 +354,19 @@ class ObservePipeline:
                     callback(observation, verified_result)
             if self.recorder is not None:
                 self.recorder.record_action_result(
-                    result, frame_id=frame.frame_id, observation_id=observation_id,
+                    result,
+                    frame_id=frame.frame_id,
+                    observation_id=observation_id,
                 )
             return PipelineOutcome(
-                "ACTION_VERIFIED" if result.status == ActionStatus.SUCCEEDED else
-                "ACTION_FAILED" if result.terminal else "ACTION_VERIFYING",
-                frame.frame_id, observation, action_result=result,
+                "ACTION_VERIFIED"
+                if result.status == ActionStatus.SUCCEEDED
+                else "ACTION_FAILED"
+                if result.terminal
+                else "ACTION_VERIFYING",
+                frame.frame_id,
+                observation,
+                action_result=result,
             )
         if not observation.production_ready:
             on_unknown = getattr(self.planner, "on_unknown", None)
@@ -393,15 +409,23 @@ class ObservePipeline:
             except ValueError as exc:
                 result = ActionResult(
                     f"anchor-missing-{observation.observation_generation}",
-                    proposal.action, ActionStatus.REJECTED, 0.0,
-                    self.runtime_generation, self.worker_generation,
-                    observation.runtime_id, str(exc),
+                    proposal.action,
+                    ActionStatus.REJECTED,
+                    0.0,
+                    self.runtime_generation,
+                    self.worker_generation,
+                    observation.runtime_id,
+                    str(exc),
                 )
                 on_result = getattr(self.planner, "on_action_result", None)
                 if on_result is not None:
                     result = on_result(observation, result)
                 return PipelineOutcome(
-                    "ACTION_FAILED", frame.frame_id, observation, proposal, result,
+                    "ACTION_FAILED",
+                    frame.frame_id,
+                    observation,
+                    proposal,
+                    result,
                     reason=str(exc),
                 )
             result = self.actions.execute(
@@ -439,10 +463,14 @@ class ObservePipeline:
             result.status,
         )
         return PipelineOutcome(
-            "ACTION_VERIFYING" if result.status.value == "VERIFYING" else "ACTION_RESULT",
-            frame.frame_id, observation, proposal, result
+            "ACTION_VERIFYING"
+            if result.status.value == "VERIFYING"
+            else "ACTION_RESULT",
+            frame.frame_id,
+            observation,
+            proposal,
+            result,
         )
-
 
     def close(self) -> None:
         with self._lock:

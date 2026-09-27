@@ -4,6 +4,7 @@ import pickle
 import queue
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -142,7 +143,8 @@ def test_crash_release_finishes_before_replacement_generation_starts(monkeypatch
 
     host = WorkerProcessHost(
         WorkerConfig(plugin="dst", mode=WorkerMode.ACTIVE),
-        context(), max_restarts=1,
+        context(),
+        max_restarts=1,
     )
     host._ctx = OrderedContext()
     monkeypatch.setattr(
@@ -183,6 +185,25 @@ def test_autostart_off_pause_keeps_disabled_worker_disabled():
     assert worker.input is None
     assert worker.actions is None
     assert worker.capture is None
+
+
+def test_worker_uses_slow_idle_and_burst_verification_cadence():
+    worker = DSTGameWorker(
+        WorkerConfig(
+            plugin="dst",
+            mode=WorkerMode.OBSERVE,
+            tick_interval=1.0,
+            observation_interval=2.0,
+        )
+    )
+
+    assert worker._observation_interval() == 4.0
+    assert worker.next_tick_interval == 1.0
+
+    worker.pipeline = SimpleNamespace(verification_pending=True)
+
+    assert worker._observation_interval() == 0.15
+    assert worker.next_tick_interval == 0.1
 
 
 def test_duplicate_ack_for_completed_command_is_ignored(monkeypatch):
