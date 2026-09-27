@@ -40,6 +40,7 @@ class DSTScreen(StrEnum):
     LOGIN_REWARD_AVAILABLE = "LOGIN_REWARD_AVAILABLE"
     REWARD_RESULT = "REWARD_RESULT"
     HOST_GAME_PLAYSTYLE = "HOST_GAME_PLAYSTYLE"
+    HOST_GAME_CAVES_PROMPT = "HOST_GAME_CAVES_PROMPT"
     IN_WORLD_IDLE = "IN_WORLD_IDLE"
     GIFT_AVAILABLE = "GIFT_AVAILABLE"
     LOADING = "LOADING"
@@ -532,6 +533,25 @@ class VisionDetector:
                     "host_game_playstyle_title",
                     "host_game_playstyle_prompt",
                     "host_game_playstyle_survival",
+                )
+            )
+        elif all(
+            found(key)
+            for key in (
+                "host_game_caves_prompt_title",
+                "host_game_caves_option_caves",
+                "host_game_caves_option_no_caves",
+                "host_game_caves_back",
+            )
+        ):
+            screen = DSTScreen.HOST_GAME_CAVES_PROMPT
+            confidence = min(
+                detected[key].confidence
+                for key in (
+                    "host_game_caves_prompt_title",
+                    "host_game_caves_option_caves",
+                    "host_game_caves_option_no_caves",
+                    "host_game_caves_back",
                 )
             )
         elif (

@@ -182,6 +182,42 @@
       "version": 1,
       "expected_use": "Selected Survival card on captured Host Game playstyle screen",
       "verified": true
+    },
+    {
+      "id": "host_game_caves_prompt_title",
+      "filename": "host_game_caves_prompt_title.png",
+      "expected_region": [0.39, 0.22, 0.61, 0.31],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Caves or no Caves setup prompt title",
+      "verified": true
+    },
+    {
+      "id": "host_game_caves_option_caves",
+      "filename": "host_game_caves_option_caves.png",
+      "expected_region": [0.39, 0.31, 0.49, 0.37],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Caves option label (perception only)",
+      "verified": true
+    },
+    {
+      "id": "host_game_caves_option_no_caves",
+      "filename": "host_game_caves_option_no_caves.png",
+      "expected_region": [0.51, 0.31, 0.62, 0.37],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "No Caves option label (perception only)",
+      "verified": true
+    },
+    {
+      "id": "host_game_caves_back",
+      "filename": "host_game_caves_back.png",
+      "expected_region": [0.02, 0.87, 0.16, 0.99],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Back control anchor on Caves setup prompt; no action enabled",
+      "verified": true
     }
   ]
 }

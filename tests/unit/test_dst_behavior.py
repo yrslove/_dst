@@ -125,19 +125,20 @@ def test_reward_requires_two_anchors_and_click_tracks_match():
     assert main_menu.validity == ObservationValidity.VALID
 
 
-def test_real_host_game_playstyle_frame_replays_as_its_own_state(tmp_path):
+def test_real_host_game_caves_prompt_replays_without_menu_confounds(tmp_path):
     real_frame = Image.open(
-        ASSETS / "samples/host_game_playstyle_live.png"
+        ASSETS / "samples/host_game_caves_prompt_live.png"
     ).convert("RGB")
-    observation = analyze_image(real_frame, "host-game-playstyle-live", 1)
+    observation = analyze_image(real_frame, "host-game-caves-prompt-live", 1)
 
     assert observation.validity == ObservationValidity.VALID
-    assert observation.screen == DSTScreen.HOST_GAME_PLAYSTYLE
+    assert observation.screen == DSTScreen.HOST_GAME_CAVES_PROMPT
     assert observation.screen_confidence >= 0.94
     assert {
-        "host_game_playstyle_title",
-        "host_game_playstyle_prompt",
-        "host_game_playstyle_survival",
+        "host_game_caves_prompt_title",
+        "host_game_caves_option_caves",
+        "host_game_caves_option_no_caves",
+        "host_game_caves_back",
     } <= {
         item.kind for item in observation.detections if item.detected and item.verified
     }
@@ -151,12 +152,29 @@ def test_real_host_game_playstyle_frame_replays_as_its_own_state(tmp_path):
     assert not any(
         item.detected
         for item in main_menu.detections
-        if item.kind.startswith("host_game_playstyle_")
+        if item.kind.startswith("host_game_caves_")
+    )
+    playstyle = analyze_image(
+        Image.open(ASSETS / "samples/host_game_playstyle_live.png").convert("RGB"),
+        "playstyle-confounder",
+        3,
+    )
+    assert playstyle.screen == DSTScreen.HOST_GAME_PLAYSTYLE
+    assert playstyle.screen != DSTScreen.HOST_GAME_CAVES_PROMPT
+    assert not any(
+        item.detected
+        for item in playstyle.detections
+        if item.kind
+        in {
+            "host_game_caves_prompt_title",
+            "host_game_caves_option_caves",
+            "host_game_caves_option_no_caves",
+        }
     )
 
     recorder = SessionRecorder(
         tmp_path.resolve(),
-        runtime_instance_id="host-game-screen-test",
+        runtime_instance_id="host-game-caves-prompt-test",
         runtime_id=1,
         runtime_generation=1,
         worker_generation=1,
@@ -188,7 +206,7 @@ def test_real_host_game_playstyle_frame_replays_as_its_own_state(tmp_path):
     assert recorder.record_event(RecordingEventType.GAME_READY)
     captured_monotonic = time.monotonic()
     recorded_frame = Frame(
-        frame_id="host-game-playstyle-real-frame",
+        frame_id="host-game-caves-prompt-real-frame",
         sequence=1,
         captured_at="2026-09-27T00:00:00+00:00",
         captured_monotonic=captured_monotonic,
@@ -228,7 +246,7 @@ def test_real_host_game_playstyle_frame_replays_as_its_own_state(tmp_path):
         replayed = worker.tick(context)
         assert replayed.telemetry["replay_frames_processed"] == 1
         assert replayed.details["observation"]["screen"] == (
-            DSTScreen.HOST_GAME_PLAYSTYLE.value
+            DSTScreen.HOST_GAME_CAVES_PROMPT.value
         )
         assert replayed.details["observation"]["validity"] == "VALID"
         assert worker.input is None
