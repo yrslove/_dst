@@ -31,6 +31,11 @@ from runtime_agent.gameworker.input import (
     InputController,
     InputLease,
 )
+from runtime_agent.gameworker.recording import (
+    RecordingEventType,
+    RecordingLimits,
+    SessionRecorder,
+)
 from runtime_agent.gameworker.transitions import ActionLifecycle, click_request
 from runtime_agent.gameworker.vision import (
     AssetRegistry,
@@ -118,6 +123,117 @@ def test_reward_requires_two_anchors_and_click_tracks_match():
     main_menu = analyze_image(main_menu_image, "manual-main-menu", 2)
     assert main_menu.screen == DSTScreen.MAIN_MENU
     assert main_menu.validity == ObservationValidity.VALID
+
+
+def test_real_host_game_playstyle_frame_replays_as_its_own_state(tmp_path):
+    real_frame = Image.open(
+        ASSETS / "samples/host_game_playstyle_live.png"
+    ).convert("RGB")
+    observation = analyze_image(real_frame, "host-game-playstyle-live", 1)
+
+    assert observation.validity == ObservationValidity.VALID
+    assert observation.screen == DSTScreen.HOST_GAME_PLAYSTYLE
+    assert observation.screen_confidence >= 0.94
+    assert {
+        "host_game_playstyle_title",
+        "host_game_playstyle_prompt",
+        "host_game_playstyle_survival",
+    } <= {
+        item.kind for item in observation.detections if item.detected and item.verified
+    }
+
+    main_menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "main-menu-confounder",
+        2,
+    )
+    assert main_menu.screen == DSTScreen.MAIN_MENU
+    assert not any(
+        item.detected
+        for item in main_menu.detections
+        if item.kind.startswith("host_game_playstyle_")
+    )
+
+    recorder = SessionRecorder(
+        tmp_path.resolve(),
+        runtime_instance_id="host-game-screen-test",
+        runtime_id=1,
+        runtime_generation=1,
+        worker_generation=1,
+        worker_mode="OBSERVE",
+        capture_source={"kind": "saved-real-x11"},
+        calibration={
+            "profile_id": "dst-1280x720-linux-v1",
+            "version": 1,
+            "verified": True,
+            "expected_width": 1280,
+            "expected_height": 720,
+        },
+        perception={
+            "engine": "VisionDetector",
+            "engine_version": 1,
+            "registry_version": 1,
+            "assets_configured": True,
+            "assets_verified": True,
+        },
+        limits=RecordingLimits(
+            max_duration_seconds=30,
+            max_frames=1,
+            max_bytes=10 * 1024 * 1024,
+            queue_size=8,
+            frame_interval_seconds=0,
+            shutdown_timeout_seconds=30,
+        ),
+    )
+    assert recorder.record_event(RecordingEventType.GAME_READY)
+    captured_monotonic = time.monotonic()
+    recorded_frame = Frame(
+        frame_id="host-game-playstyle-real-frame",
+        sequence=1,
+        captured_at="2026-09-27T00:00:00+00:00",
+        captured_monotonic=captured_monotonic,
+        runtime_id=1,
+        runtime_generation=1,
+        worker_generation=1,
+        width=1280,
+        height=720,
+        pixels=real_frame.tobytes(),
+        source="captured-x11",
+    )
+    assert recorder.record_frame(recorded_frame)
+    assert recorder.close()
+
+    worker = DSTGameWorker(
+        WorkerConfig(
+            plugin="dst",
+            mode=WorkerMode.REPLAY,
+            replay_session_path=recorder.path,
+            capture_max_width=1280,
+            capture_max_height=720,
+            calibration_verified=True,
+            vision_threshold=0.8,
+            assets_manifest=ASSETS / "manifest.json",
+        ),
+        worker_generation=2,
+    )
+    context = WorkerContext(
+        1,
+        1,
+        DisplayEnvironment(":99"),
+        runtime_verified=False,
+        runtime_generation=1,
+    )
+    try:
+        assert worker.prepare(context).mode == WorkerMode.REPLAY
+        replayed = worker.tick(context)
+        assert replayed.telemetry["replay_frames_processed"] == 1
+        assert replayed.details["observation"]["screen"] == (
+            DSTScreen.HOST_GAME_PLAYSTYLE.value
+        )
+        assert replayed.details["observation"]["validity"] == "VALID"
+        assert worker.input is None
+    finally:
+        worker.shutdown()
 
 
 def test_reward_click_is_one_shot_and_observe_has_no_input():

@@ -155,6 +155,33 @@
       "version": 1,
       "expected_use": "Discard unsaved Options confirmation; requires title, body and Yes",
       "verified": true
+    },
+    {
+      "id": "host_game_playstyle_title",
+      "filename": "host_game_playstyle_title.png",
+      "expected_region": [0.035, 0.035, 0.16, 0.1],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Host Game page title on playstyle picker",
+      "verified": true
+    },
+    {
+      "id": "host_game_playstyle_prompt",
+      "filename": "host_game_playstyle_prompt.png",
+      "expected_region": [0.34, 0.28, 0.66, 0.37],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Pick your server's playstyle prompt",
+      "verified": true
+    },
+    {
+      "id": "host_game_playstyle_survival",
+      "filename": "host_game_playstyle_survival.png",
+      "expected_region": [0.42, 0.36, 0.59, 0.62],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Selected Survival card on captured Host Game playstyle screen",
+      "verified": true
     }
   ]
 }

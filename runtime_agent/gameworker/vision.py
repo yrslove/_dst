@@ -39,6 +39,7 @@ class DSTScreen(StrEnum):
     OPTIONS_DISCARD_CONFIRM = "OPTIONS_DISCARD_CONFIRM"
     LOGIN_REWARD_AVAILABLE = "LOGIN_REWARD_AVAILABLE"
     REWARD_RESULT = "REWARD_RESULT"
+    HOST_GAME_PLAYSTYLE = "HOST_GAME_PLAYSTYLE"
     IN_WORLD_IDLE = "IN_WORLD_IDLE"
     GIFT_AVAILABLE = "GIFT_AVAILABLE"
     LOADING = "LOADING"
@@ -515,6 +516,23 @@ class VisionDetector:
             confidence = min(
                 detected["options_title"].confidence,
                 detected["options_back"].confidence,
+            )
+        elif all(
+            found(key)
+            for key in (
+                "host_game_playstyle_title",
+                "host_game_playstyle_prompt",
+                "host_game_playstyle_survival",
+            )
+        ):
+            screen = DSTScreen.HOST_GAME_PLAYSTYLE
+            confidence = min(
+                detected[key].confidence
+                for key in (
+                    "host_game_playstyle_title",
+                    "host_game_playstyle_prompt",
+                    "host_game_playstyle_survival",
+                )
             )
         elif (
             found("main_menu_browse")
