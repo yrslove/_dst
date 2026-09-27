@@ -31,6 +31,7 @@ from runtime_agent.gameworker.input import (
     InputController,
     InputLease,
 )
+from runtime_agent.gameworker.transitions import ActionLifecycle, click_request
 from runtime_agent.gameworker.vision import (
     AssetRegistry,
     DSTScreen,
@@ -98,11 +99,14 @@ def test_reward_requires_two_anchors_and_click_tracks_match():
     proposal = policy.propose(replace(reward, source_frame_id="test-frame-2"))
     assert proposal is not None
     assert proposal.action == ActionName.CLICK_REWARD_OPEN
-    assert 0.5 < proposal.target.x < 0.53
-    assert proposal.viewport.width == 1280
+    target, viewport = click_request(proposal.action, reward)
+    assert 0.5 < target.x < 0.53
+    assert viewport.width == 1280
     hovered = observe(hover=True)
     assert hovered.screen == DSTScreen.LOGIN_REWARD_AVAILABLE
     assert hovered.validity == ObservationValidity.VALID
+    hover_target, _ = click_request(ActionName.CLICK_REWARD_OPEN, hovered)
+    assert 0.4 < hover_target.x < 0.6
     without_button = observe(button=False)
     assert without_button.screen == DSTScreen.UNKNOWN
     assert without_button.validity == ObservationValidity.UNKNOWN
@@ -124,43 +128,38 @@ def test_reward_click_is_one_shot_and_observe_has_no_input():
     assert proposal is not None
     sink = ObserveActions(runtime_id=1, runtime_generation=1, worker_generation=1)
     assert not hasattr(sink, "controller")
-    dry_run = sink.execute(
-        proposal.action, target=proposal.target, viewport=proposal.viewport
-    )
+    target, viewport = click_request(proposal.action, observation)
+    dry_run = sink.execute(proposal.action, target=target, viewport=viewport)
     assert dry_run.status == ActionStatus.SUPPRESSED
     policy.on_action_result(observation, dry_run)
-    completed = ActionResult(
-        "one", proposal.action, ActionStatus.COMPLETED, 0.01, 1, 1, 1
+    verifying = ActionResult(
+        "one", proposal.action, ActionStatus.VERIFYING, 0.01, 1, 1, 1
     )
-    pending = policy.on_action_result(observation, completed)
-    assert pending.status == ActionStatus.PENDING_VERIFICATION
+    pending = policy.on_action_result(observation, verifying)
+    assert pending.status == ActionStatus.VERIFYING
     assert policy.propose(observation) is None
     assert policy.counters["active_actions"] == 1
     assert policy.counters["reward_detected"] == 1
 
 
-def test_reward_retry_is_bounded_and_requires_unchanged_verified_screen():
+def test_reward_verification_timeout_requires_intervention():
     observation = observe()
     policy = ActivityController()
     policy.propose(observation)
     proposal = policy.propose(observation)
-    completed = ActionResult(
-        "first", proposal.action, ActionStatus.COMPLETED, 0.01, 1, 1, 1
-    )
-    pending = policy.on_action_result(observation, completed)
-    assert pending.status == ActionStatus.PENDING_VERIFICATION
+    clock = [observation.observed_monotonic + .01]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    sent = ActionResult("first", proposal.action, ActionStatus.SENT, .01, 1, 1, 1)
+    pending = lifecycle.begin(sent, observation)
+    assert pending.status == ActionStatus.VERIFYING
+    policy.on_action_result(observation, pending)
     assert policy.propose(observation) is None
-    later = replace(observation, observed_monotonic=observation.observed_monotonic + 13)
-    failed = policy.verify_observation(later)
-    assert failed.status == ActionStatus.FAILED
-    assert "transition" in failed.reason
-    retry = policy.propose(later)
-    assert retry is not None and retry.action == ActionName.CLICK_REWARD_OPEN
-    policy.on_action_result(later, replace(completed, action_id="second"))
-    final = replace(later, observed_monotonic=later.observed_monotonic + 13)
-    failed = policy.verify_observation(final)
-    assert failed.status == ActionStatus.FAILED
+    clock[0] += 46
+    failed = lifecycle.poll()
+    assert failed is not None and failed.status == ActionStatus.TIMED_OUT
+    policy.on_action_failure(failed)
     assert policy.intervention_required
+    assert policy.propose(observation) is None
 
 
 def test_click_success_requires_two_replay_verified_transition_frames():
@@ -168,21 +167,24 @@ def test_click_success_requires_two_replay_verified_transition_frames():
     policy = ActivityController()
     policy.propose(reward)
     proposal = policy.propose(reward)
-    injected = ActionResult(
-        "click", proposal.action, ActionStatus.COMPLETED, 0.1, 1, 1, 1
-    )
-    pending = policy.on_action_result(reward, injected)
-    assert pending.status == ActionStatus.PENDING_VERIFICATION
+    clock = [reward.observed_monotonic + .01]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    injected = ActionResult("click", proposal.action, ActionStatus.SENT, .1, 1, 1, 1)
+    pending = lifecycle.begin(injected, reward)
+    policy.on_action_result(reward, pending)
+    assert pending.status == ActionStatus.VERIFYING
     assert policy.counters["reward_claimed"] == 0
     menu = analyze_image(
         Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
         "menu-1",
         2,
     )
-    assert policy.verify_observation(menu) is None
-    menu2 = replace(menu, source_frame_id="menu-2", source_sequence=3)
-    verified = policy.verify_observation(menu2)
-    assert verified.status == ActionStatus.COMPLETED
+    assert lifecycle.observe(menu) is None
+    menu2 = replace(menu, source_frame_id="menu-2", source_sequence=3,
+                    observed_monotonic=menu.observed_monotonic + .02)
+    verified = lifecycle.observe(menu2)
+    assert verified is not None and verified.status == ActionStatus.SUCCEEDED
+    policy.on_verified(menu2, verified)
     assert "MAIN_MENU" in verified.reason
     assert policy.counters["reward_opened"] == 1
     assert policy.counters["reward_claimed"] == 0

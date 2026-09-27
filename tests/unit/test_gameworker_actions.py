@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pickle
-import subprocess
 import threading
 import time
 
@@ -15,13 +14,13 @@ from runtime_agent.gameworker.actions import (
     ActionStatus,
 )
 from runtime_agent.gameworker.config import InputBindings, WorkerConfig, WorkerMode
+from runtime_agent.gameworker.geometry import NormalizedPoint, Viewport
 from runtime_agent.gameworker.input import (
     DeadmanSafety,
     FakeInputDriver,
     InputController,
     InputError,
     InputLease,
-    XdotoolInputDriver,
     emergency_release_all,
 )
 
@@ -87,9 +86,9 @@ def test_action_and_result_are_pickle_safe_and_duplicate_is_idempotent():
     restored = pickle.loads(pickle.dumps(first))
     value.shutdown()
 
-    assert first.status == ActionStatus.COMPLETED
+    assert first.status == ActionStatus.SENT
     assert second == first == restored
-    assert [event.operation for event in driver.events].count("key_press") == 1
+    assert [event.operation for event in driver.events].count("key_down") == 1
 
 
 def test_concurrent_duplicate_delivery_executes_input_once():
@@ -111,7 +110,7 @@ def test_concurrent_duplicate_delivery_executes_input_once():
 
     assert len(results) == 8
     assert len(set(results)) == 1
-    assert [event.operation for event in driver.events].count("key_press") == 1
+    assert [event.operation for event in driver.events].count("key_down") == 1
 
 
 def test_generation_deadline_and_duration_validation_are_terminal_without_input():
@@ -196,6 +195,38 @@ def test_observe_suppresses_gameplay_but_release_all_remains_available():
     assert driver.events == []
 
 
+def test_revoke_during_click_settle_prevents_new_button_input():
+    focused = threading.Event()
+
+    class DelayedDriver(FakeInputDriver):
+        settle_seconds = .5
+
+        def focus_game_at_pointer(self):
+            super().focus_game_at_pointer()
+            focused.set()
+
+    driver = DelayedDriver()
+    controller = InputController(lease=InputLease(), max_actions_per_second=10,
+                                 max_key_presses_per_second=10, driver=driver)
+    failures = []
+
+    def click():
+        try:
+            controller.click(NormalizedPoint(.1, .7), Viewport(1280, 720))
+        except InputError as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=click)
+    thread.start()
+    assert focused.wait(1)
+    controller.revoke()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert failures
+    assert [event.operation for event in driver.events] == ["mouse_move", "focus_game"]
+    assert not controller.has_held_inputs
+
+
 def test_cancel_running_movement_releases_key_and_returns_terminal_result():
     entered = threading.Event()
     driver = FakeInputDriver(
@@ -234,7 +265,7 @@ def test_opposite_movement_preempts_without_conflicting_held_keys():
     value.shutdown()
 
     assert left_result is not None and left_result.status == ActionStatus.PREEMPTED
-    assert right_result is not None and right_result.status == ActionStatus.COMPLETED
+    assert right_result is not None and right_result.status == ActionStatus.SENT
     assert not controller.has_held_inputs
     operations = [(event.operation, event.value) for event in driver.events]
     assert operations.index(("key_up", "a")) < operations.index(("key_down", "d"))
@@ -386,7 +417,10 @@ def test_parent_emergency_release_attempts_every_binding_independently(monkeypat
         def mouse_up(self, button):
             calls.append(("mouse", button))
 
-    monkeypatch.setattr("runtime_agent.gameworker.input.XdotoolInputDriver", Driver)
+        def close(self):
+            pass
+
+    monkeypatch.setattr("runtime_agent.gameworker.input.XpraInputDriver", Driver)
 
     emergency_release_all(DisplayEnvironment(":99"), InputBindings())
 
@@ -400,30 +434,3 @@ def test_parent_emergency_release_attempts_every_binding_independently(monkeypat
         "Escape",
     }
     assert [value for kind, value in calls if kind == "mouse"] == [1, 2, 3, 4, 5]
-
-
-def test_xdotool_driver_is_bounded_shell_free_and_credential_free(monkeypatch):
-    captured = {}
-
-    def run(argv, **kwargs):
-        captured.update(argv=argv, **kwargs)
-        return subprocess.CompletedProcess(argv, 0)
-
-    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "must-not-leak")
-    monkeypatch.setenv("DISPLAY", ":12")
-    monkeypatch.setattr("runtime_agent.gameworker.input.subprocess.run", run)
-    driver = XdotoolInputDriver(
-        DisplayEnvironment(":99", xauthority="/run/dst/Xauthority"), timeout=0.25
-    )
-
-    driver.key_down("w")
-
-    assert captured["argv"] == ["xdotool", "keydown", "--clearmodifiers", "w"]
-    assert captured["timeout"] == 0.25
-    assert captured["shell"] is False
-    assert captured["stdin"] == subprocess.DEVNULL
-    assert captured["stdout"] == subprocess.DEVNULL
-    assert captured["stderr"] == subprocess.DEVNULL
-    assert captured["env"]["DISPLAY"] == ":99"
-    assert captured["env"]["XAUTHORITY"] == "/run/dst/Xauthority"
-    assert "CONTROL_PLANE_TOKEN" not in captured["env"]

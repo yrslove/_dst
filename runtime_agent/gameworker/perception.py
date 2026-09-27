@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Protocol
 
-from runtime_agent.gameworker.actions import ActionName, ActionResult
+from runtime_agent.gameworker.actions import ActionName, ActionResult, ActionStatus
 from runtime_agent.gameworker.activity import ActionProposal, Planner
 from runtime_agent.gameworker.capture import (
     CaptureError,
@@ -14,6 +14,11 @@ from runtime_agent.gameworker.capture import (
     LatestFrameSlot,
 )
 from runtime_agent.gameworker.geometry import CalibrationProfile
+from runtime_agent.gameworker.transitions import (
+    CONTRACTS,
+    ActionLifecycle,
+    click_request,
+)
 from runtime_agent.gameworker.vision import (
     GameObservation,
     ObservationStore,
@@ -25,7 +30,8 @@ logger = logging.getLogger("runtime_agent.gameworker.perception")
 
 class ActionSink(Protocol):
     def execute(
-        self, action: ActionName, *, duration: float | None = None
+        self, action: ActionName, *, duration: float | None = None,
+        target=None, viewport=None,
     ) -> ActionResult: ...
 
 
@@ -100,6 +106,7 @@ class ObservePipeline:
         self.planner_timeout = planner_timeout
         self._clock = clock
         self.recorder = recorder
+        self.action_lifecycle = ActionLifecycle(clock=clock)
         self._slot = LatestFrameSlot()
         self._store = ObservationStore(runtime_generation, worker_generation)
         self._lock = Lock()
@@ -154,6 +161,7 @@ class ObservePipeline:
             self._store.invalidate()
 
     def on_game_lost(self) -> None:
+        self.action_lifecycle.abort(reason="game readiness lost")
         with self._lock:
             self._session += 1
             self._game_ready = False
@@ -162,6 +170,7 @@ class ObservePipeline:
 
     def invalidate(self) -> None:
         """Discard prior perception while retaining current game-ready knowledge."""
+        self.action_lifecycle.abort(reason="perception invalidated")
         with self._lock:
             self._session += 1
             self._ready_after = self._clock() if self._game_ready else float("inf")
@@ -184,6 +193,13 @@ class ObservePipeline:
             game_ready = self._game_ready
             ready_after = self._ready_after
         capture_started = self._clock()
+        expired = self.action_lifecycle.poll()
+        if expired is not None:
+            failure = getattr(self.planner, "on_action_failure", None)
+            if failure is not None:
+                failure(expired)
+            return PipelineOutcome("ACTION_FAILED", action_result=expired,
+                                   reason=expired.reason)
         try:
             captured = self.capture.capture()
         except CaptureError as exc:
@@ -319,27 +335,23 @@ class ObservePipeline:
             or observation.observed_monotonic + self.max_observation_age < now
         ):
             return PipelineOutcome("STALE_OBSERVATION", frame.frame_id, observation)
-        verify = getattr(self.planner, "verify_observation", None)
-        if verify is not None:
-            pending_proposal = getattr(self.planner, "pending_proposal", None)
-            verified_result = verify(observation)
+        if self.action_lifecycle.pending is not None:
+            verified_result = self.action_lifecycle.observe(observation)
+            result = verified_result or self.action_lifecycle.current()
+            assert result is not None
             if verified_result is not None:
-                if self.recorder is not None:
-                    self.recorder.record_action_result(
-                        verified_result,
-                        frame_id=frame.frame_id,
-                        observation_id=observation_id,
-                        proposal=pending_proposal,
-                    )
-                return PipelineOutcome(
-                    "ACTION_VERIFIED"
-                    if verified_result.status.value == "COMPLETED"
-                    else "ACTION_FAILED",
-                    frame.frame_id,
-                    observation,
-                    pending_proposal,
-                    verified_result,
+                callback = getattr(self.planner, "on_verified", None)
+                if callback is not None:
+                    callback(observation, verified_result)
+            if self.recorder is not None:
+                self.recorder.record_action_result(
+                    result, frame_id=frame.frame_id, observation_id=observation_id,
                 )
+            return PipelineOutcome(
+                "ACTION_VERIFIED" if result.status == ActionStatus.SUCCEEDED else
+                "ACTION_FAILED" if result.terminal else "ACTION_VERIFYING",
+                frame.frame_id, observation, action_result=result,
+            )
         if not observation.production_ready:
             on_unknown = getattr(self.planner, "on_unknown", None)
             if on_unknown is not None:
@@ -375,15 +387,33 @@ class ObservePipeline:
                 )
             except Exception:
                 logger.warning("recording rejected a planner proposal", exc_info=True)
-        if proposal.target is not None:
+        if proposal.action in CONTRACTS:
+            try:
+                target, viewport = click_request(proposal.action, observation)
+            except ValueError as exc:
+                result = ActionResult(
+                    f"anchor-missing-{observation.observation_generation}",
+                    proposal.action, ActionStatus.REJECTED, 0.0,
+                    self.runtime_generation, self.worker_generation,
+                    observation.runtime_id, str(exc),
+                )
+                on_result = getattr(self.planner, "on_action_result", None)
+                if on_result is not None:
+                    result = on_result(observation, result)
+                return PipelineOutcome(
+                    "ACTION_FAILED", frame.frame_id, observation, proposal, result,
+                    reason=str(exc),
+                )
             result = self.actions.execute(
                 proposal.action,
                 duration=proposal.duration,
-                target=proposal.target,
-                viewport=proposal.viewport,
+                target=target,
+                viewport=viewport,
             )
         else:
             result = self.actions.execute(proposal.action, duration=proposal.duration)
+        if result.status == ActionStatus.SENT:
+            result = self.action_lifecycle.begin(result, observation)
         on_result = getattr(self.planner, "on_action_result", None)
         if on_result is not None:
             result = on_result(observation, result)
@@ -409,8 +439,10 @@ class ObservePipeline:
             result.status,
         )
         return PipelineOutcome(
-            "ACTION_RESULT", frame.frame_id, observation, proposal, result
+            "ACTION_VERIFYING" if result.status.value == "VERIFYING" else "ACTION_RESULT",
+            frame.frame_id, observation, proposal, result
         )
+
 
     def close(self) -> None:
         with self._lock:

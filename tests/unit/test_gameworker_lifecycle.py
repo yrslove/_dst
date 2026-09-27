@@ -138,7 +138,10 @@ def test_crash_release_finishes_before_replacement_generation_starts(monkeypatch
             events.append("spawn")
             return super().Process(**kwargs)
 
-    host = WorkerProcessHost(WorkerConfig(plugin="dst"), context(), max_restarts=1)
+    host = WorkerProcessHost(
+        WorkerConfig(plugin="dst", mode=WorkerMode.ACTIVE),
+        context(), max_restarts=1,
+    )
     host._ctx = OrderedContext()
     monkeypatch.setattr(
         "runtime_agent.gameworker.process.emergency_release_all",
@@ -152,6 +155,19 @@ def test_crash_release_finishes_before_replacement_generation_starts(monkeypatch
 
     assert events == ["release", "spawn"]
     assert host.worker_generation == 2
+
+
+@pytest.mark.parametrize("mode", [WorkerMode.DISABLED, WorkerMode.OBSERVE])
+def test_input_free_worker_shutdown_never_opens_emergency_channel(monkeypatch, mode):
+    host = WorkerProcessHost(WorkerConfig(plugin="dst", mode=mode), context())
+    host._ctx = FakeMPContext()
+    monkeypatch.setattr(
+        "runtime_agent.gameworker.process.emergency_release_all",
+        lambda *_args: pytest.fail("input-free mode opened live input"),
+    )
+    host.start()
+    host._process.alive = False
+    host.shutdown()
 
 
 def test_duplicate_ack_for_completed_command_is_ignored(monkeypatch):
@@ -465,7 +481,7 @@ def test_dst_cleanup_failure_does_not_skip_remaining_resources():
             raise RuntimeError("deadman cleanup failed")
 
     class Input:
-        def release_all(self):
+        def close(self):
             calls.append("input")
 
     class Capture:

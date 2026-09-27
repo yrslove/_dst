@@ -65,14 +65,14 @@ class WorkerConfig:
     autostart: bool = False
     tick_interval: float = 1.0
     observation_interval: float = 2.0
-    action_timeout: float = 1.0
+    action_timeout: float = 5.0
     recovery_attempts: int = 3
     vision_threshold: float = 0.80
     max_actions_per_second: float = 2.0
     max_key_presses_per_second: float = 6.0
     action_queue_size: int = 16
     input_subprocess_timeout: float = 2.0
-    deadman_timeout: float = 5.0
+    deadman_timeout: float = 12.0
     capture_backend: str = "x11"
     capture_timeout: float = 2.0
     max_frame_age: float = 3.0
@@ -243,7 +243,7 @@ class WorkerConfig:
             autostart=_strict_bool("WORKER_AUTOSTART", False),
             tick_interval=float(os.getenv("WORKER_TICK_INTERVAL", "1")),
             observation_interval=float(os.getenv("WORKER_OBSERVATION_INTERVAL", "2")),
-            action_timeout=float(os.getenv("WORKER_ACTION_TIMEOUT", "1")),
+            action_timeout=float(os.getenv("WORKER_ACTION_TIMEOUT", "5")),
             recovery_attempts=int(os.getenv("WORKER_RECOVERY_ATTEMPTS", "3")),
             vision_threshold=float(os.getenv("WORKER_VISION_THRESHOLD", "0.80")),
             max_actions_per_second=float(
@@ -256,7 +256,7 @@ class WorkerConfig:
             input_subprocess_timeout=float(
                 os.getenv("WORKER_INPUT_SUBPROCESS_TIMEOUT", "2")
             ),
-            deadman_timeout=float(os.getenv("WORKER_DEADMAN_TIMEOUT", "5")),
+            deadman_timeout=float(os.getenv("WORKER_DEADMAN_TIMEOUT", "12")),
             capture_backend=os.getenv("WORKER_CAPTURE_BACKEND", "x11").lower(),
             capture_timeout=float(os.getenv("WORKER_CAPTURE_TIMEOUT", "2")),
             max_frame_age=float(os.getenv("WORKER_MAX_FRAME_AGE", "3")),

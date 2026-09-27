@@ -566,6 +566,12 @@ class WorkerProcessHost:
                 }:
                     self._state = WorkerProcessState.RUNNING
 
+    def _may_have_live_input(self) -> bool:
+        return self.config.plugin == "dst" and (
+            self.config.mode == WorkerMode.ACTIVE
+            or self._last_report.mode == WorkerMode.ACTIVE.value
+        )
+
     def _handle_dead_process(self) -> None:
         assert self._process is not None and not self._process.is_alive()
         self._process.join(timeout=min(0.1, self.stop_timeout))
@@ -579,7 +585,8 @@ class WorkerProcessHost:
                 self._last_report.healthy = True
             self._state = WorkerProcessState.STOPPED
             return
-        emergency_release_all(self.context.display, self.config.bindings)
+        if self._may_have_live_input():
+            emergency_release_all(self.context.display, self.config.bindings)
         self._fail_pending_commands(WorkerCommandResult.WORKER_CRASHED)
         self._process = None
         self._close_queues()
@@ -876,7 +883,7 @@ class WorkerProcessHost:
                     # Retain the handle and IPC ownership. Callers must not be told
                     # cleanup completed while an unkillable child is still alive.
                     return self._last_report
-            if had_process:
+            if had_process and self._may_have_live_input():
                 emergency_release_all(self.context.display, self.config.bindings)
             if self._process is not None and not self._process.is_alive():
                 self._process.join(timeout=min(0.1, self.stop_timeout))

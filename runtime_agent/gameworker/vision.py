@@ -36,6 +36,7 @@ class DSTScreen(StrEnum):
     UNKNOWN = "UNKNOWN"
     MAIN_MENU = "MAIN_MENU"
     OPTIONS = "OPTIONS"
+    OPTIONS_DISCARD_CONFIRM = "OPTIONS_DISCARD_CONFIRM"
     LOGIN_REWARD_AVAILABLE = "LOGIN_REWARD_AVAILABLE"
     REWARD_RESULT = "REWARD_RESULT"
     IN_WORLD_IDLE = "IN_WORLD_IDLE"
@@ -492,7 +493,15 @@ class VisionDetector:
         confidence = 0.0
         reward_buttons = ("login_reward_open_button", "login_reward_open_hover")
         matched_buttons = [detected[name] for name in reward_buttons if found(name)]
-        if found("login_reward_title") and matched_buttons:
+        discard_anchors = (
+            "options_discard_title",
+            "options_discard_body",
+            "options_discard_yes",
+        )
+        if all(found(key) for key in discard_anchors):
+            screen = DSTScreen.OPTIONS_DISCARD_CONFIRM
+            confidence = min(detected[key].confidence for key in discard_anchors)
+        elif found("login_reward_title") and matched_buttons:
             screen = DSTScreen.LOGIN_REWARD_AVAILABLE
             confidence = min(
                 detected["login_reward_title"].confidence,

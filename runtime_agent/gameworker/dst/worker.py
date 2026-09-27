@@ -120,7 +120,7 @@ class DSTGameWorker:
             (pipeline, "close"),
             (recorder, "close"),
             (deadman, "close"),
-            (input_controller, "release_all"),
+            (input_controller, "close"),
             (capture, "close"),
         )
         for resource, operation in resources:

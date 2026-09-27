@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 import time
 from collections import deque
 from collections.abc import Callable
@@ -10,154 +9,23 @@ from dataclasses import dataclass
 from threading import Event, Lock, Thread
 from typing import Protocol
 
-from app.runtime.display import GRAPHICAL_ENVIRONMENT_KEYS, DisplayEnvironment
-from app.subprocess_env import sanitized_subprocess_environment
+from app.runtime.display import DisplayEnvironment
 from runtime_agent.gameworker.geometry import NormalizedPoint, Viewport
+from runtime_agent.gameworker.xpra_input import InputError, XpraInputDriver
 
 logger = logging.getLogger("runtime_agent.gameworker.input")
 
 
-class InputError(RuntimeError):
-    code = "WORKER_INPUT_FAILED"
-
-
 class InputDriver(Protocol):
-    """The only boundary allowed to perform platform input operations."""
+    """Platform input boundary; only XpraInputDriver performs live injection."""
 
     def key_down(self, key: str) -> None: ...
     def key_up(self, key: str) -> None: ...
-    def key_press(self, key: str) -> None: ...
     def mouse_move(self, x: int, y: int) -> None: ...
     def mouse_down(self, button: int) -> None: ...
     def mouse_up(self, button: int) -> None: ...
-    def click(self, button: int) -> None: ...
     def focus_game_at_pointer(self) -> None: ...
-
-
-class XdotoolInputDriver:
-    """Bounded, shell-free production adapter for X11 input."""
-
-    def __init__(self, environment: DisplayEnvironment, *, timeout: float = 2.0):
-        if timeout <= 0:
-            raise ValueError("input subprocess timeout must be positive")
-        self.environment = environment
-        self.timeout = timeout
-        self._last_focused_window: str | None = None
-        self._last_pointer: tuple[str, str] | None = None
-
-    def _run(self, *args: str) -> None:
-        environment = sanitized_subprocess_environment()
-        for name in GRAPHICAL_ENVIRONMENT_KEYS:
-            environment.pop(name, None)
-        environment.update(self.environment.as_environ())
-        try:
-            result = subprocess.run(
-                ["xdotool", *args],
-                env=environment,
-                timeout=self.timeout,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                shell=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise InputError("xdotool input operation failed") from exc
-        if result.returncode != 0:
-            raise InputError("xdotool rejected input operation")
-
-    def key_down(self, key: str) -> None:
-        self._run("keydown", "--clearmodifiers", key)
-
-    def key_up(self, key: str) -> None:
-        self._run("keyup", key)
-
-    def key_press(self, key: str) -> None:
-        self._run("key", "--clearmodifiers", key)
-
-    def mouse_move(self, x: int, y: int) -> None:
-        self._run("mousemove", str(x), str(y))
-        logger.info(
-            "xdotool mouse move display=%s x=%s y=%s", self.environment.display, x, y
-        )
-
-    def mouse_down(self, button: int) -> None:
-        self._run("mousedown", str(button))
-        logger.info(
-            "xdotool button down display=%s button=%s pointer=%s window=%s",
-            self.environment.display, button, self._last_pointer,
-            self._last_focused_window,
-        )
-
-    def mouse_up(self, button: int) -> None:
-        self._run("mouseup", str(button))
-        logger.info(
-            "xdotool button up display=%s button=%s pointer=%s window=%s",
-            self.environment.display, button, self._last_pointer,
-            self._last_focused_window,
-        )
-
-    def click(self, button: int) -> None:
-        self.mouse_down(button)
-        try:
-            self.mouse_up(button)
-        except InputError:
-            # Do not leave a synthetic button held when the release command fails.
-            try:
-                self.mouse_up(button)
-            finally:
-                raise
-        logger.info(
-            "xdotool mouse down/up display=%s button=%s",
-            self.environment.display,
-            button,
-        )
-
-    def focus_game_at_pointer(self) -> None:
-        """Focus only the DST window under the visually selected click anchor."""
-        environment = sanitized_subprocess_environment()
-        for name in GRAPHICAL_ENVIRONMENT_KEYS:
-            environment.pop(name, None)
-        environment.update(self.environment.as_environ())
-
-        def query(*args: str) -> str:
-            try:
-                result = subprocess.run(
-                    ["xdotool", *args],
-                    env=environment,
-                    timeout=self.timeout,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    shell=False,
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise InputError("game window focus query failed") from exc
-            if result.returncode != 0:
-                raise InputError("game window focus query rejected")
-            return result.stdout.strip()
-
-        location = dict(
-            line.split("=", 1)
-            for line in query("getmouselocation", "--shell").splitlines()
-            if "=" in line
-        )
-        window_id = location.get("WINDOW", "")
-        if (
-            not window_id.isdecimal()
-            or query("getwindowname", window_id) != "Don't Starve Together"
-        ):
-            raise InputError("reward anchor is not over the DST window")
-        self._run("windowfocus", "--sync", window_id)
-        if query("getwindowfocus") != window_id:
-            raise InputError("DST window did not receive X11 focus")
-        self._last_focused_window = window_id
-        self._last_pointer = (location.get("X", "?"), location.get("Y", "?"))
-        logger.info(
-            "xdotool focused DST display=%s window=%s pointer=%s",
-            self.environment.display, window_id, self._last_pointer,
-        )
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +101,9 @@ class FakeInputDriver:
     def focus_game_at_pointer(self) -> None:
         self._record("focus_game", "DST", lambda: None)
 
+    def close(self) -> None:
+        pass
+
 
 class InputLease:
     def __init__(self):
@@ -284,8 +155,8 @@ class InputController:
     ):
         if driver is None:
             if environment is None:
-                raise ValueError("display environment is required for xdotool input")
-            driver = XdotoolInputDriver(environment, timeout=subprocess_timeout)
+                raise ValueError("display environment is required for xpra input")
+            driver = XpraInputDriver(environment, timeout=subprocess_timeout)
         self.environment = environment
         self.driver = driver
         self.lease = lease
@@ -298,6 +169,7 @@ class InputController:
         self._state_lock = Lock()
         self._io_lock = Lock()
         self._revoked = False
+        self._revocation = Event()
 
     @property
     def has_held_inputs(self) -> bool:
@@ -327,10 +199,12 @@ class InputController:
     def activate(self) -> None:
         with self._state_lock:
             self._revoked = False
+            self._revocation.clear()
 
     def revoke(self) -> None:
         with self._state_lock:
             self._revoked = True
+            self._revocation.set()
 
     def _require_active(self) -> None:
         with self._state_lock:
@@ -365,11 +239,12 @@ class InputController:
                 self._uncertain_keys.discard(key)
 
     def key_press(self, key: str) -> None:
-        if not self.key_limiter.allow():
-            raise InputError("key input rate limit exceeded")
-        with self._io_lock:
-            self._require_active()
-            self.driver.key_press(key)
+        self.key_down(key)
+        try:
+            self._revocation.wait(getattr(self.driver, "press_seconds", 0.0))
+        finally:
+            self.key_up(key)
+        self._require_active()
 
     def mouse_move(self, point: NormalizedPoint, viewport: Viewport) -> None:
         x, y = viewport.point(point)
@@ -410,34 +285,42 @@ class InputController:
     ) -> None:
         if not self.action_limiter.allow():
             raise InputError("action rate limit exceeded")
-        if point is not None:
-            if viewport is None:
-                raise ValueError("viewport is required for normalized mouse input")
-            self.mouse_move(point, viewport)
-            self.driver.focus_game_at_pointer()
         with self._io_lock:
+            self._require_active()
+            if point is not None:
+                if viewport is None:
+                    raise ValueError("viewport is required for normalized mouse input")
+                self.driver.mouse_move(*viewport.point(point))
+                self._require_active()
+                self.driver.focus_game_at_pointer()
+                self._revocation.wait(getattr(self.driver, "settle_seconds", 0.0))
             self._require_active()
             with self._state_lock:
                 self._buttons.add(button)
             try:
                 self.driver.mouse_down(button)
-            except InputError:
-                self.release_all(reason="click_down_failure", _io_locked=True)
-                raise
-            try:
-                self.driver.mouse_up(button)
-            except InputError:
-                with self._state_lock:
-                    self._uncertain_buttons.add(button)
-                    self._buttons.discard(button)
+                self._revocation.wait(getattr(self.driver, "press_seconds", 0.0))
+            finally:
+                # Retain uncertain releases for independent cleanup attempts.
                 try:
                     self.driver.mouse_up(button)
-                finally:
+                except Exception:
+                    with self._state_lock:
+                        self._uncertain_buttons.add(button)
                     raise
-            finally:
-                with self._state_lock:
-                    self._buttons.discard(button)
-                    self._uncertain_buttons.discard(button)
+                else:
+                    with self._state_lock:
+                        self._uncertain_buttons.discard(button)
+                finally:
+                    with self._state_lock:
+                        self._buttons.discard(button)
+            self._require_active()
+
+    def close(self) -> bool:
+        self.revoke()
+        released = self.release_all(reason="controller_close")
+        self.driver.close()
+        return released
 
     def release_all(self, *, reason: str = "release_all", _io_locked=False) -> bool:
         """Best-effort independent release; logical state is always made safe."""
@@ -535,25 +418,28 @@ class DeadmanSafety:
 
 def emergency_release_all(environment: DisplayEnvironment, bindings) -> None:
     """Best-effort parent-side reset after isolated worker process death."""
-    driver = XdotoolInputDriver(environment)
-    keys = sorted(
-        {
-            bindings.move_up,
-            bindings.move_down,
-            bindings.move_left,
-            bindings.move_right,
-            bindings.interact,
-            bindings.inventory,
-            bindings.cancel,
-        }
-    )
-    for key in keys:
-        try:
-            driver.key_up(key)
-        except Exception:  # noqa: BLE001 - parent safety boundary must continue
-            logger.warning("parent emergency key release failed key=%s", key)
-    for button in range(1, 6):
-        try:
-            driver.mouse_up(button)
-        except Exception:  # noqa: BLE001 - parent safety boundary must continue
-            logger.warning("parent emergency mouse release failed button=%s", button)
+    driver = XpraInputDriver(environment)
+    try:
+        keys = sorted(
+            {
+                bindings.move_up,
+                bindings.move_down,
+                bindings.move_left,
+                bindings.move_right,
+                bindings.interact,
+                bindings.inventory,
+                bindings.cancel,
+            }
+        )
+        for key in keys:
+            try:
+                driver.key_up(key)
+            except Exception:  # noqa: BLE001 - parent safety boundary must continue
+                logger.warning("parent emergency key release failed key=%s", key)
+        for button in range(1, 6):
+            try:
+                driver.mouse_up(button)
+            except Exception:  # noqa: BLE001 - parent safety boundary must continue
+                logger.warning("parent emergency mouse release failed button=%s", button)
+    finally:
+        driver.close()

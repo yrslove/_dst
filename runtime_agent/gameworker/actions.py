@@ -31,9 +31,16 @@ class ActionName(StrEnum):
     RECOVERY = "RECOVERY"
     PAUSE = "PAUSE"
     CLICK_REWARD_OPEN = "CLICK_REWARD_OPEN"
+    CLICK_OPTIONS = "CLICK_OPTIONS"
+    CLICK_BACK = "CLICK_BACK"
+    DISCARD_OPTIONS = "DISCARD_OPTIONS"
 
 
 class ActionStatus(StrEnum):
+    PENDING = "PENDING"
+    SENT = "SENT"
+    VERIFYING = "VERIFYING"
+    SUCCEEDED = "SUCCEEDED"
     COMPLETED = "COMPLETED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
@@ -44,7 +51,6 @@ class ActionStatus(StrEnum):
     GAME_NOT_READY = "GAME_NOT_READY"
     SAFETY_BLOCKED = "SAFETY_BLOCKED"
     SUPPRESSED = "SUPPRESSED"
-    PENDING_VERIFICATION = "PENDING_VERIFICATION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +82,9 @@ class ActionResult:
 
     @property
     def terminal(self) -> bool:
-        return True
+        return self.status not in {
+            ActionStatus.PENDING, ActionStatus.SENT, ActionStatus.VERIFYING,
+        }
 
     @property
     def dry_run(self) -> bool:
@@ -84,7 +92,7 @@ class ActionResult:
 
     @property
     def result(self) -> str:
-        if self.status == ActionStatus.COMPLETED:
+        if self.status in {ActionStatus.COMPLETED, ActionStatus.SUCCEEDED}:
             return "OK"
         if self.status == ActionStatus.SUPPRESSED:
             return "WOULD_EXECUTE"
@@ -148,6 +156,12 @@ _PRESS_KEYS = {
     ActionName.INTERACT: "interact",
     ActionName.CANCEL: "cancel",
     ActionName.OPEN_INVENTORY: "inventory",
+}
+CLICK_REGIONS = {
+    ActionName.CLICK_REWARD_OPEN: (0.35, 0.75, 0.65, 0.97),
+    ActionName.CLICK_OPTIONS: (0.02, 0.66, 0.18, 0.75),
+    ActionName.CLICK_BACK: (0.02, 0.87, 0.15, 0.99),
+    ActionName.DISCARD_OPTIONS: (0.32, 0.54, 0.50, 0.61),
 }
 _SAFETY_ACTIONS = {ActionName.STOP_MOVEMENT, ActionName.RELEASE_ALL}
 
@@ -377,15 +391,16 @@ class ActionExecutor:
             return self._result(
                 action, ActionStatus.REJECTED, reason="invalid action parameters"
             )
-        if action.name == ActionName.CLICK_REWARD_OPEN:
+        if action.name in CLICK_REGIONS:
             values = dict(action.parameters)
             try:
                 point = NormalizedPoint(float(values["x"]), float(values["y"]))
                 viewport = Viewport(int(values["width"]), int(values["height"]))
+                left, top, right, bottom = CLICK_REGIONS[action.name]
                 if len(values) != 4 or not (
-                    0.35 < point.x < 0.65 and 0.75 < point.y < 0.97
+                    left < point.x < right and top < point.y < bottom
                 ):
-                    raise ValueError("reward anchor outside guarded UI region")
+                    raise ValueError("anchor outside guarded UI region")
                 if (
                     not 640 <= viewport.width <= 4096
                     or not 480 <= viewport.height <= 2160
@@ -393,7 +408,7 @@ class ActionExecutor:
                     raise ValueError("invalid viewport")
             except (KeyError, TypeError, ValueError, OverflowError):
                 return self._result(
-                    action, ActionStatus.REJECTED, reason="invalid reward anchor"
+                    action, ActionStatus.REJECTED, reason="invalid action anchor"
                 )
         return None
 
@@ -571,7 +586,7 @@ class ActionExecutor:
                         reason=ticket.cancel_reason,
                     )
                 if (
-                    action.name != ActionName.CLICK_REWARD_OPEN
+                    action.name not in CLICK_REGIONS
                     and not self.controller.action_limiter.allow()
                 ):
                     return self._result(
@@ -616,7 +631,7 @@ class ActionExecutor:
                             self._stop.wait(min(0.02, max(0.0, end - self._clock())))
                     finally:
                         self.controller.key_up(key)
-                elif action.name == ActionName.CLICK_REWARD_OPEN:
+                elif action.name in CLICK_REGIONS:
                     values = dict(action.parameters)
                     self.controller.click(
                         NormalizedPoint(float(values["x"]), float(values["y"])),
@@ -625,7 +640,13 @@ class ActionExecutor:
                 else:
                     key = getattr(self.bindings, _PRESS_KEYS[action.name])
                     self.controller.key_press(key)
-            return self._result(action, ActionStatus.COMPLETED, started=started)
+            if ticket.cancel_status is not None:
+                return self._result(action, ticket.cancel_status, started=started,
+                                    reason=ticket.cancel_reason)
+            if action.deadline is not None and self._clock() >= action.deadline:
+                return self._result(action, ActionStatus.TIMED_OUT, started=started,
+                                    reason="transport exceeded deadline")
+            return self._result(action, ActionStatus.SENT, started=started)
         except InputError as exc:
             with self._lock:
                 self._faulted = True
@@ -862,9 +883,9 @@ class GameActions:
         viewport: Viewport | None = None,
     ) -> ActionResult:
         parameters = ()
-        if action == ActionName.CLICK_REWARD_OPEN:
+        if action in CLICK_REGIONS:
             if target is None or viewport is None:
-                raise ValueError("reward click requires detected target and viewport")
+                raise ValueError("click requires detected target and viewport")
             parameters = (
                 ("x", target.x),
                 ("y", target.y),
