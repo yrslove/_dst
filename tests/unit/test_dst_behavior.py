@@ -643,6 +643,64 @@ def test_validation_activity_enters_host_game_from_main_menu():
     assert pause is not None and pause.action == ActionName.CANCEL
 
 
+def test_host_game_timeout_retries_only_from_fresh_unchanged_verified_menu():
+    menu_frame = Image.open(
+        ASSETS / "samples/main_menu_after_reward.png"
+    ).convert("RGB")
+    menu = analyze_image(menu_frame, "host-retry-1", 1)
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(menu) is None
+    menu = replace(menu, source_frame_id="host-retry-2", source_sequence=2)
+    first = policy.propose(menu)
+    assert first is not None and first.action == ActionName.CLICK_HOST_GAME
+
+    timed_out = ActionResult(
+        "host-first", ActionName.CLICK_HOST_GAME, ActionStatus.TIMED_OUT,
+        45.0, 1, 1, 1, "verified transition deadline elapsed",
+    )
+    policy.on_action_failure(timed_out)
+    assert not policy.intervention_required
+
+    fresh_menu = replace(
+        menu, source_frame_id="host-retry-3", source_sequence=3,
+        screen_change=0.002,
+    )
+    retry = policy.propose(fresh_menu)
+    assert retry is not None and retry.action == ActionName.CLICK_HOST_GAME
+    assert "once" in (retry.reason or "")
+
+    policy.on_action_failure(replace(timed_out, action_id="host-second"))
+    assert policy.intervention_required
+    assert policy.propose(
+        replace(fresh_menu, source_frame_id="host-retry-4", source_sequence=4)
+    ) is None
+
+
+def test_host_game_timeout_does_not_retry_after_source_state_changes():
+    menu_frame = Image.open(
+        ASSETS / "samples/main_menu_after_reward.png"
+    ).convert("RGB")
+    menu = analyze_image(menu_frame, "host-change-1", 1)
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(menu) is None
+    menu = replace(menu, source_frame_id="host-change-2", source_sequence=2)
+    assert policy.propose(menu).action == ActionName.CLICK_HOST_GAME
+    policy.on_action_failure(ActionResult(
+        "host-timeout", ActionName.CLICK_HOST_GAME, ActionStatus.TIMED_OUT,
+        45.0, 1, 1, 1, "verified transition deadline elapsed",
+    ))
+
+    world_list = analyze_image(
+        Image.open(ASSETS / "samples/host_game_world_list_live.png").convert("RGB"),
+        "host-change-list-1", 3,
+    )
+    assert policy.propose(world_list) is None
+    assert policy.propose(
+        replace(world_list, source_frame_id="host-change-list-2", source_sequence=4)
+    ) is None
+    assert policy.intervention_required
+
+
 def test_validation_selects_survivor_to_open_loadout_panel():
     character = analyze_image(
         Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB"),

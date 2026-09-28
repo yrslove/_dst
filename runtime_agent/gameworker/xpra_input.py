@@ -19,6 +19,10 @@ class InputError(RuntimeError):
     code = "WORKER_INPUT_FAILED"
 
 
+class InputTransportError(InputError):
+    """The private bridge or its server connection was lost."""
+
+
 class XpraInputDriver:
     # Measured against DST's bundled SDL: short pulses are not reliable. These
     # bounded transport timings are intentionally hidden from behavior policies.
@@ -30,12 +34,18 @@ class XpraInputDriver:
             raise ValueError("input timeout must be positive")
         self.environment = environment
         self.timeout = timeout
+        self._point = [0, 0]
         self._closed = False
         self._buffer = bytearray()
+        self._process = None
+        self._selector = None
+        self._start_bridge()
+
+    def _start_bridge(self):
         env = sanitized_subprocess_environment()
         for name in GRAPHICAL_ENVIRONMENT_KEYS:
             env.pop(name, None)
-        env.update(environment.as_environ())
+        env.update(self.environment.as_environ())
         self._process = subprocess.Popen(
             ["/usr/bin/python3", str(Path(__file__).with_name("xpra_bridge.py"))],
             env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -58,7 +68,9 @@ class XpraInputDriver:
             if remaining <= 0 or not self._selector.select(remaining):
                 raise InputError("xpra input operation timed out")
             data = os.read(self._process.stdout.fileno(), 4096)
-            if not data or len(self._buffer) + len(data) > 8192:
+            if not data:
+                raise InputTransportError("xpra input bridge reached EOF")
+            if len(self._buffer) + len(data) > 8192:
                 raise InputError("xpra input channel closed or oversized")
             self._buffer.extend(data)
         line, _, remainder = self._buffer.partition(b"\n")
@@ -69,12 +81,25 @@ class XpraInputDriver:
             raise InputError("xpra input channel closed or malformed") from exc
         if not reply.get("ok"):
             reason = reply.get("error")
+            if reason in {
+                "BrokenPipeError", "ConnectionAbortedError",
+                "ConnectionResetError", "EOFError", "TimeoutError",
+            }:
+                raise InputTransportError(
+                    f"xpra input server connection lost: {reason}"
+                )
             raise InputError(f"xpra input channel rejected operation: {reason}")
         return reply
 
-    def _call(self, operation, *args):
+    @staticmethod
+    def _safe_to_retry(operation, args):
+        return operation in {"move", "focus"} or (
+            operation == "button" and len(args) > 1 and args[1] is False
+        ) or (operation == "key" and len(args) > 1 and args[1] is False)
+
+    def _call_once(self, operation, *args):
         if self._closed:
-            raise InputError("xpra input channel is closed")
+            raise InputTransportError("xpra input channel is closed")
         try:
             self._process.stdin.write(json.dumps([operation, *args]).encode() + b"\n")
             result = self._read(self.timeout)
@@ -83,15 +108,57 @@ class XpraInputDriver:
                     "xpra_button_ack %s",
                     json.dumps(result, sort_keys=True, separators=(",", ":")),
                 )
+            elif operation == "focus":
+                logger.warning(
+                    "xpra_focus_ack %s",
+                    json.dumps(result, sort_keys=True, separators=(",", ":")),
+                )
             elif operation in {"move", "focus", "button"}:
                 logger.info(
                     "xpra_input_ack %s",
                     json.dumps(result, sort_keys=True, separators=(",", ":")),
                 )
             return result
-        except (OSError, InputError) as exc:
-            # EOF makes the bridge release inputs before destroying its server.
+        except InputTransportError:
             self.close()
+            raise
+        except OSError as exc:
+            self.close()
+            raise InputTransportError(
+                f"xpra input operation failed: {type(exc).__name__}"
+            ) from exc
+        except InputError:
+            self.close()
+            raise
+
+    def _reconnect(self, operation, args):
+        logger.warning(
+            "xpra_input_reconnect operation=%s retry=1",
+            operation,
+        )
+        self._closed = False
+        self._buffer.clear()
+        self._start_bridge()
+        # A new bridge starts with no local pointer state. Reestablish only
+        # the last known position before an idempotent focus/release retry.
+        if operation != "move":
+            self._call_once("move", *self._point)
+        return self._call_once(operation, *args)
+
+    def _call(self, operation, *args):
+        if operation == "move":
+            self._point = [args[0], args[1]]
+        try:
+            return self._call_once(operation, *args)
+        except InputTransportError as exc:
+            if self._safe_to_retry(operation, args):
+                try:
+                    return self._reconnect(operation, args)
+                except (OSError, InputError) as retry_exc:
+                    self.close()
+                    raise InputError(
+                        f"xpra input operation failed after reconnect: {retry_exc}"
+                    ) from retry_exc
             raise InputError(f"xpra input operation failed: {exc}") from exc
 
     def mouse_move(self, x, y):
@@ -116,7 +183,10 @@ class XpraInputDriver:
         if self._closed:
             return
         self._closed = True
-        self._process.stdin.close()
+        try:
+            self._process.stdin.close()
+        except OSError:
+            pass
         try:
             self._process.wait(timeout=3)
         except subprocess.TimeoutExpired:
@@ -126,5 +196,7 @@ class XpraInputDriver:
             except subprocess.TimeoutExpired:
                 self._process.kill()
                 self._process.wait(timeout=2)
-        self._selector.close()
-        self._process.stdout.close()
+        if self._selector is not None:
+            self._selector.close()
+        if self._process is not None and self._process.stdout is not None:
+            self._process.stdout.close()

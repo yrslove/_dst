@@ -7,7 +7,7 @@ from runtime_agent.gameworker.xpra_bridge import (
     _server_input_capabilities,
     _xpra_mouse_log_tail,
 )
-from runtime_agent.gameworker.xpra_input import XpraInputDriver
+from runtime_agent.gameworker.xpra_input import InputError, XpraInputDriver
 
 
 def test_private_server_does_not_expire_during_a_paused_worker():
@@ -81,3 +81,106 @@ def test_private_bridge_uses_sanitized_env_and_framed_replies(monkeypatch):
         driver.close()
         os.close(driver._process.stdin_read)
         os.close(driver._process.stdout_write)
+
+
+def test_broken_xpra_server_channel_reconnects_once_for_pointer_move(monkeypatch):
+    processes = []
+    replies = [
+        (
+            b'{"ok":true,"ready":1,"server_readonly":false,"server_pointer":true}\n'
+            b'{"ok":false,"error":"BrokenPipeError"}\n'
+        ),
+        (
+            b'{"ok":true,"ready":1,"server_readonly":false,"server_pointer":true}\n'
+            b'{"ok":true}\n'
+        ),
+    ]
+
+    class FakeProcess:
+        def __init__(self, _argv, **_kwargs):
+            stdin_read, stdin_write = os.pipe()
+            stdout_read, stdout_write = os.pipe()
+            self.stdin = os.fdopen(stdin_write, "wb", buffering=0)
+            self.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+            self.stdin_read = stdin_read
+            self.stdout_write = stdout_write
+            self.returncode = None
+            processes.append(self)
+            os.write(stdout_write, replies.pop(0))
+
+        def wait(self, timeout):
+            self.returncode = 0
+            return self.returncode
+
+    monkeypatch.setattr("runtime_agent.gameworker.xpra_input.subprocess.Popen", FakeProcess)
+    driver = XpraInputDriver(DisplayEnvironment(":99"))
+    try:
+        driver.mouse_move(122, 393)
+        assert len(processes) == 2
+        assert os.read(processes[0].stdin_read, 128) == b'["move", 122, 393]\n'
+        assert os.read(processes[1].stdin_read, 128) == b'["move", 122, 393]\n'
+    finally:
+        driver.close()
+        for process in processes:
+            os.close(process.stdin_read)
+            os.close(process.stdout_write)
+
+
+def test_broken_xpra_channel_does_not_retry_ambiguous_button_press(monkeypatch):
+    processes = []
+    replies = [
+        (
+            b'{"ok":true,"ready":1,"server_readonly":false,"server_pointer":true}\n'
+            b'{"ok":true}\n'
+            b'{"ok":false,"error":"BrokenPipeError"}\n'
+        ),
+        (
+            b'{"ok":true,"ready":1,"server_readonly":false,"server_pointer":true}\n'
+            b'{"ok":true}\n'
+            b'{"ok":true}\n'
+        ),
+    ]
+
+    class FakeProcess:
+        def __init__(self, _argv, **_kwargs):
+            stdin_read, stdin_write = os.pipe()
+            stdout_read, stdout_write = os.pipe()
+            self.stdin = os.fdopen(stdin_write, "wb", buffering=0)
+            self.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+            self.stdin_read = stdin_read
+            self.stdout_write = stdout_write
+            self.returncode = None
+            processes.append(self)
+            os.write(
+                stdout_write,
+                replies.pop(0),
+            )
+
+        def wait(self, timeout):
+            self.returncode = 0
+            return self.returncode
+
+    monkeypatch.setattr("runtime_agent.gameworker.xpra_input.subprocess.Popen", FakeProcess)
+    driver = XpraInputDriver(DisplayEnvironment(":99"))
+    try:
+        driver.mouse_move(122, 393)
+        try:
+            driver.mouse_down(1)
+        except InputError:
+            pass
+        else:
+            raise AssertionError("ambiguous button press unexpectedly succeeded")
+        assert len(processes) == 1
+        assert os.read(processes[0].stdin_read, 128) == (
+            b'["move", 122, 393]\n["button", 1, true]\n'
+        )
+        driver.mouse_up(1)
+        assert len(processes) == 2
+        assert os.read(processes[1].stdin_read, 128) == (
+            b'["move", 122, 393]\n["button", 1, false]\n'
+        )
+    finally:
+        driver.close()
+        for process in processes:
+            os.close(process.stdin_read)
+            os.close(process.stdout_write)

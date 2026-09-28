@@ -62,6 +62,9 @@ class ActivityController:
         self.validation_movement_enabled = validation_movement_enabled
         self.validation_complete = False
         self._validation_step = 0
+        self._validation_host_retry_count = 0
+        self._validation_host_retry_pending = False
+        self._validation_host_source_sequence: int | None = None
         self._validation_world_frames = 0
         self._validation_last_world_sequence: int | None = None
         self.state = DSTScreen.UNKNOWN
@@ -114,6 +117,9 @@ class ActivityController:
             self.counters["unknown_frames"] += 1
             self._record(observation, "NONE", "unverified observation")
             return None
+        if self.intervention_required:
+            self._record(observation, "NONE", "intervention required")
+            return None
         if observation.screen != self._candidate:
             self._candidate = observation.screen
             self._candidate_frames = 1
@@ -138,6 +144,42 @@ class ActivityController:
         if self.state != observation.screen or self._candidate_frames < 2:
             self._record(observation, "NONE", "hysteresis")
             return None
+        if self._validation_host_retry_pending:
+            self._validation_host_retry_pending = False
+            host_anchor = next(
+                (
+                    item for item in observation.detections
+                    if item.kind == "main_menu_host_game"
+                    and item.detected and item.verified
+                    and item.bounds is not None and item.confidence >= 0.94
+                ),
+                None,
+            )
+            if (
+                observation.screen != DSTScreen.MAIN_MENU
+                or observation.screen_confidence < 0.94
+                or observation.source_sequence
+                <= (self._validation_host_source_sequence or 0)
+                or observation.screen_change is None
+                or observation.screen_change >= 0.02
+                or host_anchor is None
+            ):
+                self.intervention_required = True
+                self._record(
+                    observation,
+                    "NONE",
+                    "Host Game retry withheld; fresh unchanged menu anchor required",
+                )
+                return None
+            proposal = ActionProposal(
+                ActionName.CLICK_HOST_GAME,
+                reason=(
+                    "retry Host Game once after a fresh unchanged menu frame "
+                    "confirmed the verified anchor"
+                ),
+            )
+            self._record(observation, proposal.action.value, proposal.reason or "")
+            return proposal
         if self.state == DSTScreen.REWARD_RESULT and not self.intervention_required:
             close_button = next(
                 (
@@ -339,6 +381,10 @@ class ActivityController:
                     if anchor is None or observation.screen_confidence < 0.94:
                         self._record(observation, "NONE", "validation anchor insufficient")
                         return None
+                    if action == ActionName.CLICK_HOST_GAME:
+                        self._validation_host_source_sequence = (
+                            observation.source_sequence
+                        )
                     proposal = ActionProposal(action, reason=reason)
                     self._record(observation, action.value, reason)
                     return proposal
@@ -445,8 +491,18 @@ class ActivityController:
         else:
             self.on_action_failure(result)
 
-    def on_action_failure(self, _result: ActionResult) -> None:
+    def on_action_failure(self, result: ActionResult) -> None:
         self._awaiting_reward_transition = False
+        if (
+            result.action == ActionName.CLICK_HOST_GAME
+            and result.status == ActionStatus.TIMED_OUT
+            and result.reason == "verified transition deadline elapsed"
+            and self._validation_host_retry_count == 0
+            and self._validation_step == 0
+        ):
+            self._validation_host_retry_count = 1
+            self._validation_host_retry_pending = True
+            return
         self.intervention_required = True
         self.counters["recovery_failures"] += 1
 

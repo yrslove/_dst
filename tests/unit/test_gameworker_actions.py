@@ -225,7 +225,10 @@ def test_revoke_during_click_settle_prevents_new_button_input():
     thread.join(timeout=1)
     assert not thread.is_alive()
     assert failures
-    assert [event.operation for event in driver.events] == ["mouse_move", "mouse_move", "focus_game"]
+    assert [event.operation for event in driver.events] == [
+        "mouse_move", "mouse_move", "focus_game"
+    ]
+    assert "mouse_down" not in {event.operation for event in driver.events}
     assert not controller.has_held_inputs
 
 
