@@ -13,6 +13,7 @@ from runtime_agent.gameworker.transitions import (
 from runtime_agent.gameworker.vision import (
     Detection,
     DSTScreen,
+    FrameChangeMonitor,
     ObservationValidity,
 )
 
@@ -104,6 +105,7 @@ def test_movement_requires_fresh_meaningful_frame_change_and_fails_on_pause():
         observed_monotonic=before.observed_monotonic + 0.1,
         fresh_until=before.fresh_until + 0.1,
         screen_change=0.001,
+        gameplay_change=0.001,
     )
     clock[0] = still.observed_monotonic + 0.001
     assert lifecycle.observe(still) is None
@@ -116,6 +118,7 @@ def test_movement_requires_fresh_meaningful_frame_change_and_fails_on_pause():
         observed_monotonic=still.observed_monotonic + 0.1,
         fresh_until=still.fresh_until + 0.1,
         screen_change=0.02,
+        gameplay_change=0.02,
     )
     clock[0] = changed.observed_monotonic + 0.001
     assert lifecycle.observe(changed).status == ActionStatus.SUCCEEDED
@@ -286,13 +289,40 @@ def test_movement_requires_fresh_world_frames_with_visible_change():
     lifecycle = ActionLifecycle(clock=lambda: clock[0])
     assert lifecycle.begin(sent(ActionName.MOVE_FORWARD), world).status == ActionStatus.VERIFYING
     unchanged = replace(world, source_sequence=2, source_frame_id="still-2",
-                        observed_monotonic=clock[0] + 0.01, screen_change=0.0)
+                        observed_monotonic=clock[0] + 0.01, screen_change=0.0,
+                        gameplay_change=0.0)
     assert lifecycle.observe(unchanged) is None
     assert lifecycle.observe(replace(unchanged, source_sequence=3,
                                      source_frame_id="still-3")) is None
     moved = replace(unchanged, source_sequence=4, source_frame_id="moved-4",
-                    screen_change=0.02)
+                    screen_change=0.001, gameplay_change=0.01)
     assert lifecycle.observe(moved).status == ActionStatus.SUCCEEDED
+
+
+def test_canonical_pause_and_resume_require_fresh_perceived_states():
+    world = frame("in_world_wilson_live.png", 1)
+    paused = frame("in_world_auto_paused_live.png", 2)
+    clock = [world.observed_monotonic + 0.001]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    assert lifecycle.begin(sent(ActionName.PAUSE_WORLD), world).status == ActionStatus.VERIFYING
+    assert lifecycle.observe(world) is None
+    clock[0] = paused.observed_monotonic + 0.001
+    assert lifecycle.observe(paused) is None
+    paused_again = replace(paused, source_sequence=3, source_frame_id="paused-3")
+    clock[0] = paused_again.observed_monotonic + 0.001
+    assert lifecycle.observe(paused_again).status == ActionStatus.SUCCEEDED
+
+    assert lifecycle.begin(sent(ActionName.RESUME_WORLD), paused_again).status == ActionStatus.VERIFYING
+    resumed = frame("in_world_wilson_live.png", 4)
+    resumed = replace(resumed, observed_monotonic=paused_again.observed_monotonic + 0.1)
+    clock[0] = resumed.observed_monotonic + 0.001
+    assert lifecycle.observe(resumed) is None
+    resumed_again = replace(
+        resumed, source_sequence=5, source_frame_id="resumed-5",
+        observed_monotonic=resumed.observed_monotonic + 0.1,
+    )
+    clock[0] = resumed_again.observed_monotonic + 0.001
+    assert lifecycle.observe(resumed_again).status == ActionStatus.SUCCEEDED
 
 
 def test_live_auto_paused_screen_is_not_classified_as_alive():
@@ -301,6 +331,28 @@ def test_live_auto_paused_screen_is_not_classified_as_alive():
     assert paused.screen == DSTScreen.PAUSED
     assert paused.screen_confidence >= 0.94
     assert frame("in_world_wilson_live.png", 2).screen == DSTScreen.IN_WORLD_IDLE
+
+
+def test_gameplay_change_ignores_static_hud_region_and_tracks_world_roi():
+    monitor = FrameChangeMonitor()
+    base = Image.new("RGB", (128, 72), (20, 20, 20))
+    _digest, first_screen_change, _frozen, first_gameplay_change = monitor.update(
+        base, 1.0
+    )
+    assert first_screen_change is None and first_gameplay_change is None
+
+    hud_only = base.copy()
+    hud_only.paste((220, 220, 220), (0, 0, 10, 10))
+    _digest, hud_change, _frozen, hud_gameplay_change = monitor.update(hud_only, 1.1)
+    assert hud_change is not None and hud_change > 0
+    assert hud_gameplay_change == 0
+
+    world_shift = hud_only.copy()
+    world_shift.paste((230, 230, 230), (50, 30, 80, 55))
+    _digest, _screen_change, _frozen, gameplay_change = monitor.update(
+        world_shift, 1.2
+    )
+    assert gameplay_change is not None and gameplay_change > 0.006
 
 
 def test_reentry_world_list_uses_stable_farm_name_anchor():

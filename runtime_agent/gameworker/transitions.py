@@ -19,6 +19,7 @@ class ActionContract:
     confidence: float = 0.94
     stable_observations: int = 2
     min_screen_change: float = 0.0
+    min_gameplay_change: float = 0.0
     required_detections: tuple[str, ...] = ()
     interaction_prompt_hidden: bool = False
     anchor_point: tuple[float, float] = (0.5, 0.5)
@@ -28,22 +29,22 @@ CONTRACTS = {
     ActionName.MOVE_FORWARD: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
         frozenset({DSTScreen.IN_WORLD_IDLE}), timeout=15.0,
-        min_screen_change=0.02,
+        min_gameplay_change=0.006,
     ),
     ActionName.MOVE_BACKWARD: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
         frozenset({DSTScreen.IN_WORLD_IDLE}), timeout=15.0,
-        min_screen_change=0.02,
+        min_gameplay_change=0.006,
     ),
     ActionName.TURN_LEFT: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
         frozenset({DSTScreen.IN_WORLD_IDLE}), timeout=15.0,
-        min_screen_change=0.02,
+        min_gameplay_change=0.006,
     ),
     ActionName.TURN_RIGHT: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
         frozenset({DSTScreen.IN_WORLD_IDLE}), timeout=15.0,
-        min_screen_change=0.02,
+        min_gameplay_change=0.006,
     ),
     ActionName.INTERACT: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
@@ -52,6 +53,10 @@ CONTRACTS = {
         interaction_prompt_hidden=True,
     ),
     ActionName.CANCEL: ActionContract(
+        (), frozenset({DSTScreen.IN_WORLD_IDLE}),
+        frozenset({DSTScreen.PAUSED}), timeout=30.0,
+    ),
+    ActionName.PAUSE_WORLD: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
         frozenset({DSTScreen.PAUSED}), timeout=30.0,
     ),
@@ -198,7 +203,10 @@ class ActionLifecycle:
             )
         self.pending = PendingAction(
             result, contract, self.clock(), observation.source_sequence,
-            changed=contract.min_screen_change == 0,
+            changed=(
+                contract.min_screen_change == 0
+                and contract.min_gameplay_change == 0
+            ),
         )
         return self._status(ActionStatus.VERIFYING, "awaiting verified screen transition")
 
@@ -243,8 +251,14 @@ class ActionLifecycle:
                     clear=True,
                 )
             return None
-        if (observation.screen_change is not None
+        if (pending.contract.min_screen_change > 0
+                and observation.screen_change is not None
                 and observation.screen_change >= pending.contract.min_screen_change):
+            pending.changed = True
+        if (
+            observation.gameplay_change is not None
+            and observation.gameplay_change >= pending.contract.min_gameplay_change
+        ):
             pending.changed = True
         if observation.screen in pending.contract.targets:
             if observation.screen == pending.candidate:

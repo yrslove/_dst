@@ -137,6 +137,7 @@ class GameObservation:
     screen_confidence: float = 0.0
     frame_width: int = 0
     frame_height: int = 0
+    gameplay_change: float | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -195,6 +196,13 @@ class GameObservation:
                 and (
                     not math.isfinite(self.screen_change)
                     or not 0 <= self.screen_change <= 1
+                )
+            )
+            or (
+                self.gameplay_change is not None
+                and (
+                    not math.isfinite(self.gameplay_change)
+                    or not 0 <= self.gameplay_change <= 1
                 )
             )
         ):
@@ -331,6 +339,7 @@ class FrameChangeMonitor:
         self.frozen_after_seconds = frozen_after_seconds
         self.change_threshold = change_threshold
         self._last_hash: bytes | None = None
+        self._last_gameplay_hash: bytes | None = None
         self._last_changed_at: float | None = None
 
     @staticmethod
@@ -339,23 +348,35 @@ class FrameChangeMonitor:
         values = tiny.tobytes()
         return hashlib.sha256(values).hexdigest()[:16], values
 
-    def update(self, frame, now_monotonic: float) -> tuple[str, float | None, bool]:
+    def update(
+        self, frame, now_monotonic: float
+    ) -> tuple[str, float | None, bool, float | None]:
         digest, current = self.frame_digest(frame)
+        width, height = frame.size
+        gameplay = frame.crop((
+            int(width * 0.18), int(height * 0.16),
+            int(width * 0.82), int(height * 0.82),
+        )).convert("L").resize((16, 16)).tobytes()
         change = None
+        gameplay_change = None
         if self._last_hash is not None:
             change = sum(abs(a - b) for a, b in zip(current, self._last_hash)) / (
                 255 * len(current)
             )
+            gameplay_change = sum(
+                abs(a - b) for a, b in zip(gameplay, self._last_gameplay_hash)
+            ) / (255 * len(gameplay))
             if change >= self.change_threshold:
                 self._last_changed_at = now_monotonic
         else:
             self._last_changed_at = now_monotonic
         self._last_hash = current
+        self._last_gameplay_hash = gameplay
         frozen = bool(
             self._last_changed_at is not None
             and now_monotonic - self._last_changed_at >= self.frozen_after_seconds
         )
-        return digest, change, frozen
+        return digest, change, frozen, gameplay_change
 
 
 class PerceptionEngine(Protocol):
@@ -479,7 +500,7 @@ class VisionDetector:
         stale = not frame.is_fresh(max_frame_age, started)
         generation_valid = frame.runtime_generation > 0 and frame.worker_generation > 0
         image = frame.image()
-        digest, change, frozen = self._monitor.update(image, started)
+        digest, change, frozen, gameplay_change = self._monitor.update(image, started)
         names = ("game_hud", "pause_menu", "player_marker", "interaction_prompt")
         detected = {
             name: self.detect(image, name, deadline=deadline)
@@ -731,6 +752,7 @@ class VisionDetector:
             screen_confidence=confidence,
             frame_width=frame.width,
             frame_height=frame.height,
+            gameplay_change=gameplay_change,
         )
 
 

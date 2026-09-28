@@ -247,7 +247,7 @@ class ActivityController:
                 if self._validation_step == 5:
                     proposal = ActionProposal(
                         ActionName.MOVE_BACKWARD,
-                        duration=0.35,
+                        duration=0.65,
                         reason="verify a short bounded backward movement",
                     )
                     self._record(observation, proposal.action.value, proposal.reason or "")
@@ -261,14 +261,14 @@ class ActivityController:
                         )
                     else:
                         proposal = ActionProposal(
-                            ActionName.CANCEL,
+                            ActionName.PAUSE_WORLD,
                             reason="no verified interaction target; return to safe pause",
                         )
                     self._record(observation, proposal.action.value, proposal.reason or "")
                     return proposal
                 if self._validation_step == 7:
                     proposal = ActionProposal(
-                        ActionName.CANCEL,
+                        ActionName.PAUSE_WORLD,
                         reason="return to safe pause after bounded in-world actions",
                     )
                     self._record(observation, proposal.action.value, proposal.reason or "")
@@ -288,7 +288,7 @@ class ActivityController:
                             self._validation_step = 3
                             proposal = ActionProposal(
                                 ActionName.MOVE_FORWARD,
-                                duration=0.35,
+                                duration=0.65,
                                 reason=(
                                     "perform a short bounded forward movement after "
                                     "four fresh in-world observations"
@@ -296,7 +296,7 @@ class ActivityController:
                             )
                         else:
                             proposal = ActionProposal(
-                                ActionName.CANCEL,
+                                ActionName.PAUSE_WORLD,
                                 reason="open the pause menu after four fresh world frames",
                             )
                         self._record(observation, proposal.action.value, proposal.reason or "")
@@ -434,6 +434,7 @@ class ActivityController:
             ActionName.START_SURVIVOR,
             ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
             ActionName.CANCEL, ActionName.RESUME_WORLD,
+            ActionName.PAUSE_WORLD,
             ActionName.INTERACT,
         }:
             if result.status == ActionStatus.VERIFYING:
@@ -482,7 +483,7 @@ class ActivityController:
                     self._validation_step = 6
                 elif result.action == ActionName.INTERACT:
                     self._validation_step = 7
-                elif result.action == ActionName.CANCEL:
+                elif result.action in {ActionName.CANCEL, ActionName.PAUSE_WORLD}:
                     self.validation_complete = True
                 elif result.action == ActionName.RESUME_WORLD:
                     self._validation_step = 3

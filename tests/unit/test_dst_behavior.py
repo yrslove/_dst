@@ -115,7 +115,7 @@ def test_opt_in_in_world_validation_moves_boundedly_then_returns_to_pause():
         proposal = policy.propose(observation)
     assert proposal is not None
     assert proposal.action == ActionName.MOVE_FORWARD
-    assert proposal.duration == 0.35
+    assert proposal.duration == 0.65
     policy.on_action_result(
         observation,
         ActionResult(
@@ -136,7 +136,7 @@ def test_opt_in_in_world_validation_moves_boundedly_then_returns_to_pause():
     )
     backward = policy.propose(backward_observation)
     assert backward is not None and backward.action == ActionName.MOVE_BACKWARD
-    assert backward.duration == 0.35
+    assert backward.duration == 0.65
     policy.on_action_result(
         backward_observation,
         ActionResult(
@@ -156,11 +156,11 @@ def test_opt_in_in_world_validation_moves_boundedly_then_returns_to_pause():
         alive, source_frame_id="movement-goal-pause", source_sequence=8
     )
     pause = policy.propose(pause_observation)
-    assert pause is not None and pause.action == ActionName.CANCEL
+    assert pause is not None and pause.action == ActionName.PAUSE_WORLD
     policy.on_verified(
         replace(pause_observation, screen=DSTScreen.PAUSED),
         ActionResult(
-            "pause", ActionName.CANCEL, ActionStatus.SUCCEEDED, 0.2, 1, 1, 1
+            "pause", ActionName.PAUSE_WORLD, ActionStatus.SUCCEEDED, 0.2, 1, 1, 1
         ),
     )
     assert policy.validation_complete
@@ -218,7 +218,7 @@ def test_validation_resumes_from_live_world_and_counts_fresh_frames():
         assert policy.propose(fresh) is None
     fifth = replace(observation, source_frame_id="wilson-world-5", source_sequence=5)
     proposal = policy.propose(fifth)
-    assert proposal is not None and proposal.action == ActionName.CANCEL
+    assert proposal is not None and proposal.action == ActionName.PAUSE_WORLD
     assert proposal.duration is None
 
 
@@ -640,7 +640,7 @@ def test_validation_activity_enters_host_game_from_main_menu():
     pause = policy.propose(replace(
         in_world, source_frame_id="validation-world-14", source_sequence=14,
     ))
-    assert pause is not None and pause.action == ActionName.CANCEL
+    assert pause is not None and pause.action == ActionName.PAUSE_WORLD
 
 
 def test_host_game_timeout_retries_only_from_fresh_unchanged_verified_menu():

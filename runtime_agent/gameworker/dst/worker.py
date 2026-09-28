@@ -925,6 +925,7 @@ class DSTGameWorker:
                     ActionName.TURN_LEFT,
                     ActionName.TURN_RIGHT,
                     ActionName.CANCEL,
+                    ActionName.PAUSE_WORLD,
                     ActionName.RESUME_WORLD,
                     ActionName.INTERACT,
                 }

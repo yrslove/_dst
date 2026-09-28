@@ -93,6 +93,24 @@ def test_action_and_result_are_pickle_safe_and_duplicate_is_idempotent():
     assert [event.operation for event in driver.events].count("key_down") == 1
 
 
+def test_canonical_pause_and_resume_use_the_bound_cancel_key():
+    value, controller, driver, _deadman = executor()
+    paused = value.execute(action("pause-world", ActionName.PAUSE_WORLD))
+    resumed = value.execute(action("resume-world", ActionName.RESUME_WORLD))
+    value.shutdown()
+
+    assert paused.status == resumed.status == ActionStatus.SENT
+    assert [
+        (event.operation, event.value)
+        for event in driver.events
+        if event.value == "Escape"
+    ] == [
+        ("key_down", "Escape"), ("key_up", "Escape"),
+        ("key_down", "Escape"), ("key_up", "Escape"),
+    ]
+    assert not controller.has_held_inputs
+
+
 def test_concurrent_duplicate_delivery_executes_input_once():
     value, _controller, driver, _deadman = executor()
     request = action("concurrent-duplicate")

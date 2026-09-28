@@ -23,6 +23,7 @@ class ActionName(StrEnum):
     MOVE_BACKWARD = "MOVE_BACKWARD"
     TURN_LEFT = "TURN_LEFT"
     TURN_RIGHT = "TURN_RIGHT"
+    PAUSE_WORLD = "PAUSE_WORLD"
     INTERACT = "INTERACT"
     CANCEL = "CANCEL"
     RESUME_WORLD = "RESUME_WORLD"
@@ -166,6 +167,7 @@ _PRESS_KEYS = {
     ActionName.CANCEL: "cancel",
     ActionName.RESUME_WORLD: "cancel",
     ActionName.OPEN_INVENTORY: "inventory",
+    ActionName.PAUSE_WORLD: "cancel",
 }
 CLICK_REGIONS = {
     ActionName.CLICK_REWARD_OPEN: (0.35, 0.75, 0.65, 0.97),
