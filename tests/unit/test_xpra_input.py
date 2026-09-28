@@ -1,14 +1,43 @@
 """Private input bridge framing, environment, and cleanup without a live display."""
 import os
+import struct
+
+import pytest
 
 from app.runtime.display import DisplayEnvironment
 from runtime_agent.gameworker.xpra_bridge import (
+    Channel,
+    ChannelUnavailable,
     _server_argv,
     _server_input_capabilities,
     _xpra_mouse_log_tail,
     key_packet,
 )
-from runtime_agent.gameworker.xpra_input import InputError, XpraInputDriver
+from runtime_agent.gameworker.xpra_input import (
+    InputError,
+    InputTransportError,
+    XpraInputDriver,
+)
+
+
+def test_server_disconnect_reason_is_bounded_and_typed():
+    assert callable(Channel.barrier)
+    channel = Channel.__new__(Channel)
+    channel.read = lambda size: struct.pack("!BBBBI", 80, 0, 0, 0, 1) if size == 8 else b"x"
+    channel.decode = lambda _data: ([b"disconnect", b"session ended"], None)
+
+    with pytest.raises(ChannelUnavailable, match="session ended"):
+        channel.receive_until(b"info-response")
+
+
+def test_channel_disconnect_is_transport_failure_without_button_retry():
+    driver = XpraInputDriver.__new__(XpraInputDriver)
+    driver._buffer = bytearray(
+        b'{"ok":false,"error":"ChannelUnavailable","detail":"server closed"}\n'
+    )
+
+    with pytest.raises(InputTransportError, match="server closed"):
+        driver._read(0.1)
 
 
 def test_console_key_packets_cover_only_validation_command_keys():

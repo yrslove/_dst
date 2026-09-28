@@ -64,7 +64,9 @@ class Channel:
             if packet[0] == kind:
                 return packet
             if packet[0] in (b"disconnect", b"challenge"):
-                raise RuntimeError("xpra channel unavailable")
+                # Preserve the server's bounded reason for a failed input
+                # session; a button press may already have had an effect.
+                raise ChannelUnavailable(str(packet[1:])[:160])
         raise TimeoutError("xpra response missing")
 
     def barrier(self):
@@ -72,6 +74,10 @@ class Channel:
         # This acknowledges server processing, never a gameplay transition.
         self.send(["info-request", [], [], ["server"]])
         self.receive_until(b"info-response")
+
+
+class ChannelUnavailable(RuntimeError):
+    """The private xpra server rejected or ended this client session."""
 
 
 def parent_death_signal():
@@ -345,5 +351,8 @@ if __name__ == "__main__":
     except Exception as exc:  # noqa: BLE001 - private protocol/process boundary
         import traceback
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({"ok": False, "error": type(exc).__name__}), flush=True)
+        print(json.dumps({
+            "ok": False, "error": type(exc).__name__,
+            "detail": str(exc)[:160] if isinstance(exc, ChannelUnavailable) else None,
+        }), flush=True)
         sys.exit(1)

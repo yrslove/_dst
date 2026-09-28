@@ -86,11 +86,14 @@ class XpraInputDriver:
         if not reply.get("ok"):
             reason = reply.get("error")
             if reason in {
-                "BlockingIOError", "BrokenPipeError", "ConnectionAbortedError",
+                "BlockingIOError", "BrokenPipeError", "ChannelUnavailable",
+                "ConnectionAbortedError",
                 "ConnectionResetError", "EOFError", "TimeoutError",
             }:
+                detail = reply.get("detail")
+                suffix = f": {detail[:160]}" if isinstance(detail, str) else ""
                 raise InputTransportError(
-                    f"xpra input server connection lost: {reason}"
+                    f"xpra input server connection lost: {reason}{suffix}"
                 )
             raise InputError(f"xpra input channel rejected operation: {reason}")
         return reply

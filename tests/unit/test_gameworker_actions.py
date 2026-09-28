@@ -656,9 +656,28 @@ def test_next_controller_uses_fresh_driver_after_cleanup(monkeypatch):
     first = InputController(**options)
     first.close()
     second = InputController(**options)
-    second.key_down("w")
+    second.click(NormalizedPoint(0.1, 0.7), Viewport(1280, 720))
     second.close()
 
     assert len(drivers) == 2
     assert drivers[0] is not drivers[1]
     assert drivers[0].closed and drivers[1].closed
+    assert [event.operation for event in drivers[1].events][-2:] == [
+        "mouse_down", "mouse_up",
+    ]
+
+
+def test_fresh_channel_acquisition_failure_sends_no_gameplay_input(monkeypatch):
+    calls = []
+
+    def unavailable(_environment, *, timeout):
+        calls.append("acquire")
+        raise InputError("private xpra input channel unavailable")
+
+    monkeypatch.setattr("runtime_agent.gameworker.input.XpraInputDriver", unavailable)
+    with pytest.raises(InputError, match="unavailable"):
+        InputController(
+            DisplayEnvironment(":99"), lease=InputLease(),
+            max_actions_per_second=10, max_key_presses_per_second=10,
+        )
+    assert calls == ["acquire"]
