@@ -39,6 +39,7 @@ from runtime_agent.gameworker.recording import (
 from runtime_agent.gameworker.transitions import ActionLifecycle, click_request
 from runtime_agent.gameworker.vision import (
     AssetRegistry,
+    Detection,
     DSTScreen,
     ObservationValidity,
     VisionDetector,
@@ -153,7 +154,12 @@ def test_opt_in_in_world_validation_moves_boundedly_then_returns_to_pause():
     )
 
     pause_observation = replace(
-        alive, source_frame_id="movement-goal-pause", source_sequence=8
+        alive,
+        source_frame_id="movement-goal-pause",
+        source_sequence=8,
+        interaction_prompt_visible=Detection(
+            "interaction_prompt", True, 0.99, detector_id="test", verified=True
+        ),
     )
     pause = policy.propose(pause_observation)
     assert pause is not None and pause.action == ActionName.PAUSE_WORLD

@@ -253,17 +253,10 @@ class ActivityController:
                     self._record(observation, proposal.action.value, proposal.reason or "")
                     return proposal
                 if self._validation_step == 6:
-                    prompt = observation.interaction_prompt_visible
-                    if prompt.detected and prompt.verified and prompt.confidence >= 0.94:
-                        proposal = ActionProposal(
-                            ActionName.INTERACT,
-                            reason="interact once with the visually verified nearby target",
-                        )
-                    else:
-                        proposal = ActionProposal(
-                            ActionName.PAUSE_WORLD,
-                            reason="no verified interaction target; return to safe pause",
-                        )
+                    proposal = ActionProposal(
+                        ActionName.PAUSE_WORLD,
+                        reason="return to safe pause after bounded movement validation",
+                    )
                     self._record(observation, proposal.action.value, proposal.reason or "")
                     return proposal
                 if self._validation_step == 7:
