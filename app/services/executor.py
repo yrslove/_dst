@@ -10,6 +10,7 @@ from app.config import Settings
 from app.db import Database
 from app.domain.errors import ControlPlaneError
 from app.domain.state import (
+    GAME_READY_PHASES,
     InvalidStateTransition,
     transition_account,
     transition_runtime,
@@ -474,7 +475,7 @@ class JobExecutor:
                 or not worker.healthy
                 or not worker.steam_running
                 or not worker.dst_running
-                or worker.phase not in {"GAME_READY", "WORKER_IDLE"}
+                or worker.phase not in GAME_READY_PHASES
                 or ensure_utc(worker.updated_at)
                 < utcnow() - timedelta(seconds=self.settings.watchdog_stale_seconds)
             ):

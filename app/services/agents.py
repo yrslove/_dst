@@ -12,11 +12,17 @@ from app.domain.errors import (
     ProtocolMismatch,
     RuntimeNotFound,
 )
-from app.domain.state import transition_account, transition_node
+from app.domain.state import (
+    GAME_READY_PHASES,
+    transition_account,
+    transition_node,
+    transition_runtime,
+)
 from app.models import (
     Account,
     AccountState,
     DesiredState,
+    ErrorCode,
     Node,
     NodeHeartbeat,
     NodeResourceSnapshot,
@@ -223,10 +229,63 @@ class AgentService:
                 "updated_at": now,
             }
             if worker is None:
-                session.add(WorkerStatus(runtime_id=runtime.id, **values))
+                worker = WorkerStatus(runtime_id=runtime.id, **values)
+                session.add(worker)
             else:
                 for key, value in values.items():
                     setattr(worker, key, value)
+            account = session.get(Account, runtime.account_id)
+            node = session.get(Node, runtime.node_id)
+            current_runtime_id = session.scalar(
+                select(RuntimeInstance.id).where(
+                    RuntimeInstance.account_id == runtime.account_id,
+                    RuntimeInstance.active.is_(True),
+                )
+            )
+            if (
+                runtime.state == RuntimeState.STALE
+                and runtime.desired_state == DesiredState.RUNNING
+                and runtime.active
+                and runtime.verified_at is not None
+                and current_runtime_id == runtime.id
+                and runtime.last_error_code == ErrorCode.AGENT_STALE
+                and account is not None
+                and account.enabled
+                and account.status
+                in {AccountState.RUNNING, AccountState.NEEDS_ATTENTION}
+                and node is not None
+                and node.status == NodeStatus.ONLINE
+                and payload.healthy
+                and payload.steam_running
+                and payload.dst_running
+                and payload.phase in GAME_READY_PHASES
+                and worker.healthy
+                and worker.steam_running
+                and worker.dst_running
+                and worker.phase in GAME_READY_PHASES
+                and (
+                    worker.error_code is None
+                    or (
+                        worker.error_code == "WORKER_DISABLED"
+                        and gate_error == "WORKER_DISABLED"
+                        and not (report.get("error_code") or payload.worker_error_code)
+                    )
+                )
+            ):
+                transition_runtime(runtime, RuntimeState.RUNNING)
+                runtime.last_error_code = None
+                runtime.last_error_message = None
+                if account.status == AccountState.NEEDS_ATTENTION:
+                    transition_account(account, AccountState.RUNNING)
+                add_event(
+                    session,
+                    level="INFO",
+                    kind="RUNTIME_RECOVERED",
+                    message="Runtime recovered from stale heartbeat after readiness report",
+                    account_id=account.id,
+                    runtime_id=runtime.id,
+                    node_id=node.id,
+                )
             for result in payload.worker_command_results[:32]:
                 if not isinstance(result, dict):
                     continue

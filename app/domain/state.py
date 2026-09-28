@@ -13,6 +13,8 @@ from app.models import (
     utcnow,
 )
 
+GAME_READY_PHASES = frozenset({"GAME_READY", "WORKER_IDLE"})
+
 
 class InvalidStateTransition(ValueError):
     def __init__(self, entity: str, source: str, target: str):

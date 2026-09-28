@@ -6,7 +6,18 @@ from sqlalchemy import select
 from websockets.sync.server import serve
 
 from app.main import create_app
-from app.models import RuntimeViewSession
+from app.models import (
+    Account,
+    AccountState,
+    DesiredState,
+    ErrorCode,
+    Node,
+    NodeStatus,
+    RuntimeInstance,
+    RuntimeState,
+    RuntimeViewSession,
+    utcnow,
+)
 from app.providers.view import MockRuntimeViewProvider, ViewBackendUnavailable
 from tests.helpers import create_account
 
@@ -83,6 +94,61 @@ def test_view_session_is_short_lived_and_token_protected(settings):
         )
         assert authorized.status_code == 200
         assert "url" not in authorized.json()
+
+
+def test_view_requires_running_until_healthy_heartbeat_recovers_stale_runtime(settings):
+    app = create_app(replace(settings, runtime_view_provider="mock"))
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "test-admin-password"},
+        )
+        client.headers["X-CSRF-Token"] = login.json()["csrf_token"]
+        account = create_account(client, "view-stale-recovery")
+        assert app.state.executor.execute_next()
+        token = client.post(
+            f"/api/v1/runtimes/{account['runtime_id']}/token/rotate"
+        ).json()["token"]
+        assert client.post(f"/api/v1/accounts/{account['id']}/setup").status_code == 202
+        assert app.state.executor.execute_next()
+        with app.state.db.transaction(immediate=True) as session:
+            stored = session.get(Account, account["id"])
+            stored.status = AccountState.NEEDS_ATTENTION
+            runtime = session.get(RuntimeInstance, account["runtime_id"])
+            runtime.state = RuntimeState.STALE
+            runtime.desired_state = DesiredState.RUNNING
+            runtime.verified_at = utcnow()
+            runtime.last_error_code = ErrorCode.AGENT_STALE
+            runtime.last_error_message = "Detected AGENT_STALE"
+            session.get(Node, runtime.node_id).status = NodeStatus.ONLINE
+
+        denied = client.post(
+            f"/api/v1/runtimes/{account['runtime_id']}/view-sessions"
+        )
+        assert denied.status_code == 503
+
+        heartbeat = client.post(
+            "/api/v1/runtime-agent/heartbeat",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "runtime_id": account["runtime_id"],
+                "phase": "GAME_READY",
+                "steam_running": True,
+                "dst_running": True,
+                "healthy": True,
+                "agent_version": "test-1",
+                "protocol_version": 1,
+            },
+        )
+        assert heartbeat.status_code == 200
+        with app.state.db.session() as session:
+            assert session.get(RuntimeInstance, account["runtime_id"]).state == RuntimeState.RUNNING
+            assert session.get(Account, account["id"]).status == AccountState.RUNNING
+
+        created = client.post(
+            f"/api/v1/runtimes/{account['runtime_id']}/view-sessions"
+        )
+        assert created.status_code == 201, created.text
 
 
 def test_failed_view_setup_retains_backend_identity_until_cleanup(settings):

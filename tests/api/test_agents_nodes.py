@@ -4,6 +4,8 @@ from app.domain.state import transition_account, transition_runtime
 from app.models import (
     Account,
     AccountState,
+    DesiredState,
+    ErrorCode,
     Node,
     NodeStatus,
     Run,
@@ -27,6 +29,137 @@ def heartbeat_payload(runtime_id: int) -> dict:
         "agent_version": "test-1",
         "protocol_version": 1,
     }
+
+
+def stale_verified_runtime(client, app, label: str) -> tuple[dict, str]:
+    account = create_account(client, label)
+    assert app.state.executor.execute_next()
+    token = client.post(
+        f"/api/v1/runtimes/{account['runtime_id']}/token/rotate"
+    ).json()["token"]
+    assert client.post(f"/api/v1/accounts/{account['id']}/setup").status_code == 202
+    assert app.state.executor.execute_next()
+    with app.state.db.transaction(immediate=True) as session:
+        stored = session.get(Account, account["id"])
+        stored.status = AccountState.NEEDS_ATTENTION
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        runtime.state = RuntimeState.STALE
+        runtime.desired_state = DesiredState.RUNNING
+        runtime.verified_at = utcnow()
+        runtime.last_error_code = ErrorCode.AGENT_STALE
+        runtime.last_error_message = "Detected AGENT_STALE; capacity retained"
+        node = session.get(Node, runtime.node_id)
+        node.status = NodeStatus.ONLINE
+    return account, token
+
+
+def send_heartbeat(client, runtime_id: int, token: str, payload: dict | None = None):
+    return client.post(
+        "/api/v1/runtime-agent/heartbeat",
+        headers={"Authorization": f"Bearer {token}"},
+        json=payload or heartbeat_payload(runtime_id),
+    )
+
+
+def test_stale_runtime_recovers_from_healthy_authenticated_heartbeat(client, app):
+    account, token = stale_verified_runtime(client, app, "stale-heartbeat-recovers")
+
+    response = send_heartbeat(
+        client, account["runtime_id"], token, heartbeat_payload(account["runtime_id"])
+    )
+
+    assert response.status_code == 200
+    with app.state.db.session() as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        assert runtime.state == RuntimeState.RUNNING
+        assert runtime.last_error_code is None
+        assert runtime.last_error_message is None
+        assert session.get(Account, account["id"]).status == AccountState.RUNNING
+
+
+def test_stale_runtime_does_not_recover_without_steam_or_dst_readiness(client, app):
+    for label, changes in (
+        ("stale-no-steam", {"steam_running": False}),
+        ("stale-no-dst", {"dst_running": False}),
+    ):
+        account, token = stale_verified_runtime(client, app, label)
+        payload = heartbeat_payload(account["runtime_id"])
+        payload.update(changes)
+        assert send_heartbeat(client, account["runtime_id"], token, payload).status_code == 200
+        with app.state.db.session() as session:
+            assert session.get(RuntimeInstance, account["runtime_id"]).state == RuntimeState.STALE
+            assert session.get(Account, account["id"]).status == AccountState.NEEDS_ATTENTION
+
+
+def test_stale_runtime_does_not_recover_when_desired_stopped(client, app):
+    account, token = stale_verified_runtime(client, app, "stale-desired-stopped")
+    with app.state.db.transaction(immediate=True) as session:
+        session.get(RuntimeInstance, account["runtime_id"]).desired_state = DesiredState.STOPPED
+
+    assert send_heartbeat(
+        client, account["runtime_id"], token, heartbeat_payload(account["runtime_id"])
+    ).status_code == 200
+    with app.state.db.session() as session:
+        assert session.get(RuntimeInstance, account["runtime_id"]).state == RuntimeState.STALE
+        assert session.get(Account, account["id"]).status == AccountState.NEEDS_ATTENTION
+
+
+def test_stale_runtime_does_not_recover_from_inactive_generation(client, app):
+    account, token = stale_verified_runtime(client, app, "stale-old-generation")
+    with app.state.db.transaction(immediate=True) as session:
+        session.get(RuntimeInstance, account["runtime_id"]).active = False
+
+    response = send_heartbeat(
+        client, account["runtime_id"], token, heartbeat_payload(account["runtime_id"])
+    )
+    assert response.status_code == 401
+    with app.state.db.session() as session:
+        assert session.get(RuntimeInstance, account["runtime_id"]).state == RuntimeState.STALE
+
+
+def test_stale_runtime_does_not_clear_nonrecoverable_error(client, app):
+    account, token = stale_verified_runtime(client, app, "stale-fatal-error")
+    with app.state.db.transaction(immediate=True) as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        runtime.last_error_code = ErrorCode.RUNTIME_NOT_FOUND
+        runtime.last_error_message = "Provider confirms missing runtime"
+
+    assert send_heartbeat(
+        client, account["runtime_id"], token, heartbeat_payload(account["runtime_id"])
+    ).status_code == 200
+    with app.state.db.session() as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        assert runtime.state == RuntimeState.STALE
+        assert runtime.last_error_code == ErrorCode.RUNTIME_NOT_FOUND
+        assert runtime.last_error_message == "Provider confirms missing runtime"
+        assert session.get(Account, account["id"]).status == AccountState.NEEDS_ATTENTION
+
+
+def test_healthy_heartbeat_on_running_runtime_does_not_change_state(client, app):
+    account = create_account(client, "running-heartbeat-idempotent")
+    assert app.state.executor.execute_next()
+    token = client.post(
+        f"/api/v1/runtimes/{account['runtime_id']}/token/rotate"
+    ).json()["token"]
+    assert client.post(f"/api/v1/accounts/{account['id']}/setup").status_code == 202
+    assert app.state.executor.execute_next()
+    with app.state.db.transaction(immediate=True) as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        runtime.verified_at = utcnow()
+    assert send_heartbeat(
+        client, account["runtime_id"], token, heartbeat_payload(account["runtime_id"])
+    ).status_code == 200
+    with app.state.db.session() as session:
+        assert session.get(RuntimeInstance, account["runtime_id"]).state == RuntimeState.RUNNING
+
+
+def test_healthy_heartbeat_for_wrong_runtime_identity_does_not_recover(client, app):
+    account, token = stale_verified_runtime(client, app, "stale-wrong-identity")
+    payload = heartbeat_payload(account["runtime_id"] + 1000)
+
+    assert send_heartbeat(client, account["runtime_id"], token, payload).status_code == 404
+    with app.state.db.session() as session:
+        assert session.get(RuntimeInstance, account["runtime_id"]).state == RuntimeState.STALE
 
 
 def test_bad_runtime_token_does_not_change_heartbeat(client, app):
