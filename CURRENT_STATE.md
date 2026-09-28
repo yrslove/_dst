@@ -29,6 +29,8 @@ The following paths/capabilities have already been proven against the live runti
 - Xpra canonical input path and bounded reconnect handling.
 - Runtime Agent SIGHUP token/adoption handoff.
 - Steam/Klei persistence through managed recovery.
+- Control Plane `STALE -> RUNNING` recovery after a healthy authenticated `GAME_READY`
+  heartbeat while the configured GameWorker remains `DISABLED`.
 
 Do not rerun these acceptance paths merely because a new task starts. Revalidate a path
 only when code directly affecting it changed or new evidence indicates regression.
@@ -55,10 +57,13 @@ infrastructure that can persist in the world.
 
 ## Current blockers
 
-- Control Plane `STALE` state can remain stale despite healthy Runtime Agent/DST heartbeats.
+- The canonical Host Game action remained in `VERIFYING` while a fresh screen still
+  showed `MAIN_MENU`; no blind retry was made. Live evidence is preserved outside the
+  repository at `/home/dst/Farm01-gift-path-blocker*`.
+- Farm 01 has not been verified with a persistent Science Machine near the player.
 - The first actionable gift frame has not yet been captured.
 - In-world gift actions/contracts are not implemented.
-- Production goal composition remains future work; the gift loop is still pending.
+- The production gift behavior remains future work; the gift loop is still pending.
 
 ## Completed worker semantics
 

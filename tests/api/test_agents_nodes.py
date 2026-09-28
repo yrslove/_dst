@@ -77,6 +77,35 @@ def test_stale_runtime_recovers_from_healthy_authenticated_heartbeat(client, app
         assert session.get(Account, account["id"]).status == AccountState.RUNNING
 
 
+def test_stale_runtime_recovers_when_worker_is_intentionally_disabled(client, app):
+    account, token = stale_verified_runtime(client, app, "stale-disabled-worker-recovers")
+    payload = heartbeat_payload(account["runtime_id"])
+    payload.update(
+        {
+            "worker_state": "DISABLED",
+            "worker_error_code": "WORKER_DISABLED",
+            "worker": {
+                "mode": "DISABLED",
+                "state": "DISABLED",
+                "error_code": "WORKER_DISABLED",
+                "phase": "GAME_READY",
+                "healthy": True,
+                "steam_running": True,
+                "dst_running": True,
+            },
+        }
+    )
+
+    assert send_heartbeat(client, account["runtime_id"], token, payload).status_code == 200
+    with app.state.db.session() as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        worker = session.get(WorkerStatus, runtime.id)
+        assert runtime.state == RuntimeState.RUNNING
+        assert runtime.last_error_code is None
+        assert session.get(Account, account["id"]).status == AccountState.RUNNING
+        assert worker.worker_mode == "DISABLED"
+
+
 def test_stale_runtime_does_not_recover_without_steam_or_dst_readiness(client, app):
     for label, changes in (
         ("stale-no-steam", {"steam_running": False}),

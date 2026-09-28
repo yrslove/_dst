@@ -267,8 +267,24 @@ class AgentService:
                     worker.error_code is None
                     or (
                         worker.error_code == "WORKER_DISABLED"
-                        and gate_error == "WORKER_DISABLED"
-                        and not (report.get("error_code") or payload.worker_error_code)
+                        and (
+                            gate_error == "WORKER_DISABLED"
+                            or (
+                                requested_mode == "DISABLED"
+                                and payload.worker_state == "DISABLED"
+                                and report.get("error_code") == "WORKER_DISABLED"
+                            )
+                        )
+                        and (
+                            not (report.get("error_code") or payload.worker_error_code)
+                            or (
+                                requested_mode == "DISABLED"
+                                and payload.worker_state == "DISABLED"
+                                and report.get("error_code") == "WORKER_DISABLED"
+                                and payload.worker_error_code
+                                in {None, "WORKER_DISABLED"}
+                            )
+                        )
                     )
                 )
             ):
