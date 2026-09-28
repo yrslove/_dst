@@ -271,14 +271,15 @@ class ActionLifecycle:
             if (pending.count >= pending.contract.stable_observations
                     and pending.changed):
                 evidence = (
-                    f"; gameplay ROI change={pending.movement_evidence:.6f}"
+                    f"gameplay ROI change={pending.movement_evidence:.6f}; "
                     if pending.movement_evidence is not None
                     else ""
                 )
                 return self._status(
                     ActionStatus.SUCCEEDED,
-                    f"perception verified transition to {observation.screen.value} "
-                    f"({observation.screen_confidence:.4f}){evidence}", clear=True,
+                    f"{evidence}perception verified transition to "
+                    f"{observation.screen.value} ({observation.screen_confidence:.4f})",
+                    clear=True,
                 )
         else:
             pending.candidate, pending.count = DSTScreen.UNKNOWN, 0
