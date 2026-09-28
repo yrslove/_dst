@@ -6,8 +6,49 @@ from runtime_agent.gameworker.xpra_bridge import (
     _server_argv,
     _server_input_capabilities,
     _xpra_mouse_log_tail,
+    key_packet,
 )
 from runtime_agent.gameworker.xpra_input import InputError, XpraInputDriver
+
+
+def test_console_key_packets_cover_only_validation_command_keys():
+    expected = {
+        "grave": 49, "Return": 36, "Control_L": 37, "Shift_L": 50,
+        "underscore": 20, "parenleft": 18, "parenright": 19,
+        "quotedbl": 48,
+        "c": 54, "p": 33, "n": 57, "r": 27, "e": 26,
+        "h": 43, "l": 46, "b": 56,
+    }
+    for key, keycode in expected.items():
+        assert key_packet(key, True)[7] == keycode
+
+    try:
+        key_packet("q", True)
+    except ValueError as exc:
+        assert str(exc) == "unsupported key input"
+    else:
+        raise AssertionError("unneeded arbitrary key was accepted")
+
+
+def test_console_key_packets_propagate_modifier_state():
+    shift_down = key_packet("Shift_L", True)
+    assert shift_down[4] == []
+
+    underscore = key_packet("underscore", True, {"Shift_L"})
+    assert underscore[4] == ["shift"]
+
+    quote = key_packet("quotedbl", True, {"Shift_L"})
+    assert quote[4] == ["shift"]
+
+    shift_up = key_packet("Shift_L", False, {"Shift_L"})
+    assert shift_up[4] == ["shift"]
+
+    control_down = key_packet("Control_L", True, {"Shift_L"})
+    assert control_down[4] == ["shift"]
+    both = key_packet("grave", True, {"Control_L", "Shift_L"})
+    assert both[4] == ["shift", "control"]
+    control_up = key_packet("Control_L", False, {"Control_L"})
+    assert control_up[4] == ["control"]
 
 
 def test_private_server_does_not_expire_during_a_paused_worker():

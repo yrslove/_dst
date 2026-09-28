@@ -107,12 +107,21 @@ def focus_game(expected_pointer):
     }
 
 
-def key_packet(key, pressed):
+def key_packet(key, pressed, held_keys=()):
     # The runtime uses a fixed Xvfb US layout. This is xpra's normal client
     # key-action packet; keycodes are checked against that layout below.
-    codes = {"w": 25, "s": 39, "a": 38, "d": 40, "space": 65,
-             "tab": 23, "Escape": 9}
-    names = {"space": "space", "tab": "Tab", "Escape": "Escape"}
+    codes = {
+        "w": 25, "s": 39, "a": 38, "d": 40, "space": 65,
+        "tab": 23, "Escape": 9, "grave": 49, "Return": 36,
+        "Control_L": 37, "Shift_L": 50, "underscore": 20,
+        "parenleft": 18, "parenright": 19, "quotedbl": 48, "c": 54,
+        "p": 33, "n": 57, "r": 27, "e": 26, "h": 43,
+        "l": 46, "b": 56,
+    }
+    names = {
+        "space": "space", "tab": "Tab", "Escape": "Escape",
+        "Control_L": "Control_L", "Shift_L": "Shift_L",
+    }
     if key not in codes or type(pressed) is not bool:
         raise ValueError("unsupported key input")
     name = names.get(key, key)
@@ -122,7 +131,23 @@ def key_packet(key, pressed):
     keysym = x11.XStringToKeysym(name.encode("ascii"))
     if not keysym:
         raise ValueError("key has no X11 keysym")
-    return ["key-action", 1, name, pressed, [], keysym, "", codes[key], 0]
+    # Xpra expects the modifier state from immediately before the key event.
+    # The currently pressed modifier therefore remains set on key-up and is
+    # absent on its own key-down.
+    modifiers = set(held_keys)
+    if pressed:
+        modifiers.discard(key)
+    else:
+        modifiers.add(key)
+    xpra_modifiers = [
+        value
+        for modifier, value in (("Shift_L", "shift"), ("Control_L", "control"))
+        if modifier in modifiers
+    ]
+    return [
+        "key-action", 1, name, pressed, xpra_modifiers,
+        keysym, "", codes[key], 0,
+    ]
 
 
 def _server_argv(display, directory):
@@ -278,9 +303,9 @@ def main():
                         buttons.discard(button)
                 elif operation == "key":
                     key, pressed = args
-                    packet = key_packet(key, pressed)
                     if pressed:
                         keys.add(key)
+                    packet = key_packet(key, pressed, keys)
                     channel.send(packet)
                     if not pressed:
                         keys.discard(key)
