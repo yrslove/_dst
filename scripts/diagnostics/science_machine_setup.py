@@ -9,7 +9,11 @@ from app.runtime.display import DisplayEnvironment
 from runtime_agent.gameworker.actions import ActionName, ActionStatus, GameActions
 from runtime_agent.gameworker.capture import X11ScreenCapture
 from runtime_agent.gameworker.config import InputBindings, WorkerMode
-from runtime_agent.gameworker.geometry import CalibrationProfile
+from runtime_agent.gameworker.geometry import (
+    CalibrationProfile,
+    NormalizedPoint,
+    Viewport,
+)
 from runtime_agent.gameworker.input import DeadmanSafety, InputController, InputLease
 from runtime_agent.gameworker.transitions import ActionLifecycle, click_request
 from runtime_agent.gameworker.vision import AssetRegistry, DSTScreen, VisionDetector
@@ -124,8 +128,8 @@ def main():
         )
         return frame, observation
 
-    def stable(screen=None):
-        deadline = time.monotonic() + 150
+    def stable(screen=None, timeout=150):
+        deadline = time.monotonic() + timeout
         previous = None
         count = 0
         while time.monotonic() < deadline:
@@ -142,6 +146,17 @@ def main():
                 return frame, observation
             time.sleep(0.4)
         raise TimeoutError(f"no stable verified screen: {screen}")
+
+    def toggle_pause(source, target):
+        _, current = stable(source, timeout=5)
+        if current.screen != source:
+            raise RuntimeError(f"pause toggle source changed: {current.screen.value}")
+        # The live PAUSE_WORLD action timed out without changing the scene.
+        # Use the already visible in-game pause control for this one-time test.
+        controller.click(
+            NormalizedPoint(1224 / 1280, 699 / 720), Viewport(1280, 720)
+        )
+        return stable(target, timeout=8)[1]
 
     def click_action(name, before):
         target, viewport = click_request(name, before)
@@ -170,7 +185,7 @@ def main():
         survivor_retried = False
         for _ in range(8):
             if observation.screen == DSTScreen.PAUSED:
-                raise RuntimeError("world is paused; stop and use the normal resume path")
+                break
             if observation.screen == DSTScreen.IN_WORLD_IDLE:
                 break
             action = ROUTE.get(observation.screen)
@@ -223,14 +238,15 @@ def main():
                 survivor_retried |= action == ActionName.SELECT_SURVIVOR
                 observation = click_action(action, retry_observation)
             frame, observation = stable()
-        if observation.screen != DSTScreen.IN_WORLD_IDLE:
+        if observation.screen not in {DSTScreen.IN_WORLD_IDLE, DSTScreen.PAUSED}:
             raise RuntimeError(f"world entry did not finish: {observation.screen.value}")
+
+        if observation.screen == DSTScreen.IN_WORLD_IDLE:
+            observation = toggle_pause(DSTScreen.IN_WORLD_IDLE, DSTScreen.PAUSED)
 
         frame.image().save(FRAME)
         emit(event="checkpoint", phase="choose_ground", frame=str(FRAME))
         point = await_operator("ground")
-        from runtime_agent.gameworker.geometry import NormalizedPoint, Viewport
-
         ground_point = NormalizedPoint(float(point["x"]), float(point["y"]))
         viewport = Viewport(1280, 720)
         controller.mouse_move(
@@ -240,15 +256,20 @@ def main():
         controller.driver.focus_game_at_pointer()
 
         def keepalive():
+            deadman.touch()
             controller.mouse_move(ground_point, viewport)
+            deadman.touch()
 
-        frame, _ = observe()
+        frame, observation = observe()
         frame.image().save(FRAME)
         emit(event="checkpoint", phase="verify_ground", frame=str(FRAME))
         await_operator(
             "ground_verified", keepalive=keepalive
         )
 
+        observation = toggle_pause(DSTScreen.PAUSED, DSTScreen.IN_WORLD_IDLE)
+
+        controller.driver.focus_game_at_pointer()
         type_shifted(controller, deadman, "grave")
         time.sleep(0.5)
         frame, _ = observe()
@@ -314,6 +335,7 @@ def main():
         frame.image().save(FRAME)
         emit(event="checkpoint", phase="verify_station_and_gift", frame=str(FRAME),
              screen=observation.screen.value)
+        observation = toggle_pause(DSTScreen.IN_WORLD_IDLE, DSTScreen.PAUSED)
         await_operator(
             "setup_verified", keepalive=keepalive
         )
