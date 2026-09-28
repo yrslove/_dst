@@ -47,6 +47,181 @@ from runtime_agent.gameworker.vision import (
 ASSETS = Path(__file__).resolve().parents[2] / "runtime_agent/gameworker/dst/assets"
 
 
+def test_real_world_reset_frame_and_canonical_recovery_route():
+    death = analyze_image(
+        Image.open(ASSETS / "samples/death_world_reset_live.png").convert("RGB"),
+        "death-reset-1", 1,
+    )
+    assert death.validity == ObservationValidity.VALID
+    assert death.screen == DSTScreen.WORLD_RESET_PENDING
+    assert death.screen_confidence >= 0.94
+    assert {"death_world_reset_text", "death_reset_now_button"} <= {
+        item.kind for item in death.detections if item.detected and item.verified
+    }
+    alive = analyze_image(
+        Image.open(ASSETS / "samples/in_world_wilson_live.png").convert("RGB"),
+        "alive-control", 1,
+    )
+    assert alive.screen == DSTScreen.IN_WORLD_IDLE
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(death) is None
+    assert policy.propose(replace(death, source_frame_id="death-reset-2", source_sequence=2)) is None
+    character = analyze_image(
+        Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB"),
+        "character-after-reset-1", 3,
+    )
+    assert policy.propose(character) is None
+    proposal = policy.propose(replace(
+        character, source_frame_id="character-after-reset-2", source_sequence=4,
+    ))
+    assert proposal is not None and proposal.action == ActionName.SELECT_SURVIVOR
+    loadout = analyze_image(
+        Image.open(ASSETS / "samples/character_loadout_live.png").convert("RGB"),
+        "loadout-after-reset-1", 5,
+    )
+    policy.on_verified(loadout, ActionResult(
+        "select-survivor", ActionName.SELECT_SURVIVOR, ActionStatus.SUCCEEDED,
+        0.1, 1, 1, 1,
+    ))
+    assert policy.propose(loadout) is None
+    go = policy.propose(replace(
+        loadout, source_frame_id="loadout-after-reset-2", source_sequence=6,
+    ))
+    assert go is not None and go.action == ActionName.START_SURVIVOR
+    policy.on_verified(alive, ActionResult(
+        "start-survivor", ActionName.START_SURVIVOR, ActionStatus.SUCCEEDED,
+        0.1, 1, 1, 1,
+    ))
+    assert policy._validation_step == 3
+
+
+def test_opt_in_in_world_validation_moves_boundedly_then_returns_to_pause():
+    alive = analyze_image(
+        Image.open(ASSETS / "samples/in_world_wilson_live.png").convert("RGB"),
+        "movement-goal-1",
+        1,
+    )
+    policy = ActivityController(
+        validation_flow_enabled=True, validation_movement_enabled=True
+    )
+    proposal = None
+    observation = alive
+    for sequence in range(1, 7):
+        observation = replace(
+            alive,
+            source_frame_id=f"movement-goal-{sequence}",
+            source_sequence=sequence,
+        )
+        proposal = policy.propose(observation)
+    assert proposal is not None
+    assert proposal.action == ActionName.MOVE_FORWARD
+    assert proposal.duration == 0.35
+    policy.on_action_result(
+        observation,
+        ActionResult(
+            "move-forward", ActionName.MOVE_FORWARD, ActionStatus.VERIFYING,
+            0.35, 1, 1, 1,
+        ),
+    )
+    policy.on_verified(
+        observation,
+        ActionResult(
+            "move-forward", ActionName.MOVE_FORWARD, ActionStatus.SUCCEEDED,
+            0.35, 1, 1, 1,
+        ),
+    )
+
+    backward_observation = replace(
+        alive, source_frame_id="movement-goal-backward", source_sequence=7
+    )
+    backward = policy.propose(backward_observation)
+    assert backward is not None and backward.action == ActionName.MOVE_BACKWARD
+    assert backward.duration == 0.35
+    policy.on_action_result(
+        backward_observation,
+        ActionResult(
+            "move-backward", ActionName.MOVE_BACKWARD, ActionStatus.VERIFYING,
+            0.35, 1, 1, 1,
+        ),
+    )
+    policy.on_verified(
+        backward_observation,
+        ActionResult(
+            "move-backward", ActionName.MOVE_BACKWARD, ActionStatus.SUCCEEDED,
+            0.35, 1, 1, 1,
+        ),
+    )
+
+    pause_observation = replace(
+        alive, source_frame_id="movement-goal-pause", source_sequence=8
+    )
+    pause = policy.propose(pause_observation)
+    assert pause is not None and pause.action == ActionName.CANCEL
+    policy.on_verified(
+        replace(pause_observation, screen=DSTScreen.PAUSED),
+        ActionResult(
+            "pause", ActionName.CANCEL, ActionStatus.SUCCEEDED, 0.2, 1, 1, 1
+        ),
+    )
+    assert policy.validation_complete
+
+
+def test_live_wilson_loadout_has_guarded_go_action():
+    image = Image.open(ASSETS / "samples/character_loadout_live.png").convert("RGB")
+    first = analyze_image(image, "wilson-loadout-1", 1)
+    assert first.validity == ObservationValidity.VALID
+    assert first.screen == DSTScreen.CHARACTER_LOADOUT
+    button = next(
+        item for item in first.detections
+        if item.kind == "character_loadout_go_button"
+    )
+    assert button.detected and button.verified and button.confidence >= 0.94
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(first) is None
+    second = replace(first, source_frame_id="wilson-loadout-2", source_sequence=2)
+    proposal = policy.propose(second)
+    assert proposal is not None and proposal.action == ActionName.START_SURVIVOR
+    target, _ = click_request(proposal.action, second)
+    assert 0.81 < target.x < 0.97 and 0.9 < target.y < 0.98
+
+
+def test_live_wilson_world_requires_both_hud_anchors():
+    for filename in (
+        "in_world_wilson_live.png",
+        "in_world_wilson_later_live.png",
+        "in_world_wilson_reentry_live.png",
+    ):
+        image = Image.open(ASSETS / "samples" / filename).convert("RGB")
+        observation = analyze_image(image, filename, 1)
+        assert observation.validity == ObservationValidity.VALID
+        assert observation.screen == DSTScreen.IN_WORLD_IDLE
+        assert observation.screen_confidence >= 0.94
+        assert {"game_hud", "player_marker"} <= {
+            item.kind for item in observation.detections if item.detected and item.verified
+        }
+    for filename in ("character_selection_live.png", "character_loadout_live.png"):
+        image = Image.open(ASSETS / "samples" / filename).convert("RGB")
+        observation = analyze_image(image, filename, 1)
+        assert observation.screen != DSTScreen.IN_WORLD_IDLE
+
+
+def test_validation_resumes_from_live_world_and_counts_fresh_frames():
+    image = Image.open(ASSETS / "samples/in_world_wilson_later_live.png").convert("RGB")
+    observation = analyze_image(image, "wilson-world-1", 1)
+    policy = ActivityController(validation_flow_enabled=True)
+    for sequence in range(1, 5):
+        fresh = replace(
+            observation,
+            source_frame_id=f"wilson-world-{sequence}",
+            source_sequence=sequence,
+        )
+        assert policy.propose(fresh) is None
+    fifth = replace(observation, source_frame_id="wilson-world-5", source_sequence=5)
+    proposal = policy.propose(fifth)
+    assert proposal is not None and proposal.action == ActionName.CANCEL
+    assert proposal.duration is None
+
+
 def observe(
     *, button: bool = True, title: bool = True, hover: bool = False, shift: int = 0
 ):
@@ -115,6 +290,16 @@ def test_reward_requires_two_anchors_and_click_tracks_match():
     without_button = observe(button=False)
     assert without_button.screen == DSTScreen.UNKNOWN
     assert without_button.validity == ObservationValidity.UNKNOWN
+    button_only = observe(title=False)
+    assert button_only.screen == DSTScreen.LOGIN_REWARD_AVAILABLE
+    assert button_only.validity == ObservationValidity.VALID
+    button_policy = ActivityController()
+    assert button_policy.propose(button_only) is None
+    button_proposal = button_policy.propose(
+        replace(button_only, source_frame_id="button-only-frame-2")
+    )
+    assert button_proposal is not None
+    assert button_proposal.action == ActionName.CLICK_REWARD_OPEN
     menu_only = observe(button=False, title=False)
     assert menu_only.screen == DSTScreen.UNKNOWN
     main_menu_image = Image.open(ASSETS / "samples/main_menu_after_reward.png").convert(
@@ -123,6 +308,35 @@ def test_reward_requires_two_anchors_and_click_tracks_match():
     main_menu = analyze_image(main_menu_image, "manual-main-menu", 2)
     assert main_menu.screen == DSTScreen.MAIN_MENU
     assert main_menu.validity == ObservationValidity.VALID
+
+
+def test_live_reward_result_uses_detected_close_anchor():
+    image = Image.open(ASSETS / "samples/login_reward_result_live.png").convert("RGB")
+    result = analyze_image(image, "live-reward-result-1", 1)
+
+    assert result.validity == ObservationValidity.VALID
+    assert result.screen == DSTScreen.REWARD_RESULT
+    close = next(
+        item for item in result.detections if item.kind == "login_reward_close_button"
+    )
+    assert close.detected and close.verified and close.bounds is not None
+
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(result) is None  # two-frame state hysteresis
+    next_result = replace(
+        result,
+        source_frame_id="live-reward-result-2",
+        source_sequence=2,
+        observation_generation=2,
+    )
+    proposal = policy.propose(next_result)
+    assert proposal is not None
+    assert proposal.action == ActionName.CLICK_REWARD_CLOSE
+
+    target, viewport = click_request(proposal.action, next_result)
+    assert close.bounds.left < target.x < close.bounds.right
+    assert close.bounds.top < target.y < close.bounds.bottom
+    assert viewport.width == 1280 and viewport.height == 720
 
 
 def test_real_host_game_caves_prompt_replays_without_menu_confounds(tmp_path):
@@ -148,6 +362,8 @@ def test_real_host_game_caves_prompt_replays_without_menu_confounds(tmp_path):
         "main-menu-confounder",
         2,
     )
+
+
     assert main_menu.screen == DSTScreen.MAIN_MENU
     assert not any(
         item.detected
@@ -252,6 +468,226 @@ def test_real_host_game_caves_prompt_replays_without_menu_confounds(tmp_path):
         assert worker.input is None
     finally:
         worker.shutdown()
+
+
+def test_real_host_game_world_list_uses_existing_world_anchor():
+    frame = Image.open(
+        ASSETS / "samples/host_game_world_list_live.png"
+    ).convert("RGB")
+    observation = analyze_image(frame, "host-game-world-list-live", 1)
+
+    assert observation.validity == ObservationValidity.VALID
+    assert observation.screen == DSTScreen.HOST_GAME_WORLD_LIST
+    assert observation.screen_confidence >= 0.94
+    detections = {
+        item.kind: item
+        for item in observation.detections
+        if item.detected and item.verified
+    }
+    assert {
+        "host_game_playstyle_title",
+        "host_game_world_list_search",
+        "host_game_world_list_create_new",
+        "host_game_existing_world_row",
+    } <= detections.keys()
+    row = detections["host_game_existing_world_row"]
+    assert row.bounds is not None and row.confidence >= 0.94
+    assert DSTScreen.HOST_GAME_WORLD_LIST != DSTScreen.MAIN_MENU
+    assert DSTScreen.HOST_GAME_WORLD_LIST != DSTScreen.HOST_GAME_PLAYSTYLE
+
+
+def test_selected_saved_world_is_detected_and_targets_resume_button():
+    frame = Image.open(
+        ASSETS / "samples/host_game_world_selected_live.png"
+    ).convert("RGB")
+    observation = analyze_image(frame, "selected-world-live-1", 1)
+
+    assert observation.validity == ObservationValidity.VALID
+    assert observation.screen == DSTScreen.HOST_GAME_WORLD_SELECTED
+    assert observation.screen_confidence >= 0.94
+    detections = {
+        item.kind: item
+        for item in observation.detections
+        if item.detected and item.verified
+    }
+    assert {
+        "host_game_playstyle_title",
+        "host_game_world_selected_name",
+        "host_game_world_selected_start",
+    } <= detections.keys()
+
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(observation) is None
+    proposal = policy.propose(
+        replace(observation, source_frame_id="selected-world-live-2", source_sequence=2)
+    )
+    assert proposal is not None
+    assert proposal.action == ActionName.START_EXISTING_WORLD
+    target, viewport = click_request(proposal.action, observation)
+    assert 0.75 <= target.x <= 0.91
+    assert 0.92 <= target.y <= 0.99
+    assert viewport.width == 1280 and viewport.height == 720
+
+
+def test_live_world_loading_and_survivor_select_states_are_detected():
+    loading = analyze_image(
+        Image.open(ASSETS / "samples/dst_world_loading_live.png").convert("RGB"),
+        "live-world-loading", 1,
+    )
+    assert loading.validity == ObservationValidity.VALID
+    assert loading.screen == DSTScreen.LOADING
+    assert loading.screen_confidence >= 0.94
+    loading_anchor = next(
+        item for item in loading.detections if item.kind == "loading_label"
+    )
+    assert loading_anchor.detected and loading_anchor.verified
+
+    animated_loading = analyze_image(
+        Image.open(
+            ASSETS / "samples/dst_world_loading_animated_live.png"
+        ).convert("RGB"),
+        "live-world-loading-animated",
+        3,
+    )
+    assert animated_loading.validity == ObservationValidity.VALID
+    assert animated_loading.screen == DSTScreen.LOADING
+    assert animated_loading.screen_confidence >= 0.94
+    loading_anchor = next(
+        item for item in animated_loading.detections if item.kind == "loading_label"
+    )
+    assert loading_anchor.detected and loading_anchor.verified
+
+    character_select = analyze_image(
+        Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB"),
+        "live-character-selection", 4,
+    )
+    assert character_select.validity == ObservationValidity.VALID
+    assert character_select.screen == DSTScreen.CHARACTER_SELECTION
+    assert character_select.screen_confidence >= 0.94
+    assert {
+        "character_select_title",
+        "character_select_players",
+        "character_select_wilson_name",
+        "character_select_wilson_icon",
+    } <= {
+        item.kind for item in character_select.detections
+        if item.detected and item.verified
+    }
+    assert not next(
+        item for item in character_select.detections
+        if item.kind == "character_loadout_wilson_name"
+    ).detected
+
+
+def test_validation_activity_enters_host_game_from_main_menu():
+    policy = ActivityController(validation_flow_enabled=True)
+    menu_frame = Image.open(
+        ASSETS / "samples/main_menu_after_reward.png"
+    ).convert("RGB")
+    first = analyze_image(menu_frame, "validation-main-menu-1", 1)
+    assert first.screen == DSTScreen.MAIN_MENU
+    assert policy.propose(first) is None
+    menu = replace(first, source_frame_id="validation-main-menu-2", source_sequence=2)
+    host = policy.propose(menu)
+    assert host is not None and host.action == ActionName.CLICK_HOST_GAME
+
+    verifying = ActionResult(
+        "click-host-game", ActionName.CLICK_HOST_GAME,
+        ActionStatus.VERIFYING, 0.01, 1, 1, 1,
+    )
+    policy.on_action_result(menu, verifying)
+    world_list = analyze_image(
+        Image.open(ASSETS / "samples/host_game_world_list_live.png").convert("RGB"),
+        "validation-world-list-1", 7,
+    )
+    policy.on_verified(
+        world_list, replace(verifying, status=ActionStatus.SUCCEEDED)
+    )
+    assert policy.propose(world_list) is None
+    selected = policy.propose(
+        replace(world_list, source_frame_id="validation-world-list-2", source_sequence=8)
+    )
+    assert selected is not None
+    assert selected.action == ActionName.SELECT_EXISTING_WORLD
+
+    verifying = ActionResult(
+        "select-existing", ActionName.SELECT_EXISTING_WORLD,
+        ActionStatus.VERIFYING, 0.01, 1, 1, 1,
+    )
+    policy.on_action_result(world_list, verifying)
+    loading = replace(
+        world_list, screen=DSTScreen.LOADING,
+        source_frame_id="validation-loading", source_sequence=9,
+    )
+    policy.on_verified(loading, replace(verifying, status=ActionStatus.SUCCEEDED))
+    in_world = replace(
+        loading, screen=DSTScreen.IN_WORLD_IDLE,
+        source_frame_id="validation-world-1", source_sequence=10,
+    )
+    assert policy.propose(in_world) is None
+    assert policy.propose(
+        replace(in_world, source_frame_id="validation-world-2", source_sequence=11)
+    ) is None
+    assert not policy.validation_complete
+    for sequence in range(12, 14):
+        assert policy.propose(
+            replace(
+                in_world,
+                source_frame_id=f"validation-world-{sequence}",
+                source_sequence=sequence,
+            )
+        ) is None
+    pause = policy.propose(replace(
+        in_world, source_frame_id="validation-world-14", source_sequence=14,
+    ))
+    assert pause is not None and pause.action == ActionName.CANCEL
+
+
+def test_validation_selects_survivor_to_open_loadout_panel():
+    character = analyze_image(
+        Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB"),
+        "validation-character-1",
+        1,
+    )
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(character) is None
+    selected = replace(
+        character,
+        source_frame_id="validation-character-2",
+        source_sequence=2,
+        observation_generation=2,
+    )
+    proposal = policy.propose(selected)
+    assert proposal is not None
+    assert proposal.action == ActionName.SELECT_SURVIVOR
+
+    verifying = ActionResult(
+        "select-survivor",
+        ActionName.SELECT_SURVIVOR,
+        ActionStatus.VERIFYING,
+        0.01,
+        1,
+        1,
+        1,
+    )
+    policy.on_action_result(selected, verifying)
+    loadout = replace(
+        selected,
+        screen=DSTScreen.CHARACTER_LOADOUT,
+        source_frame_id="validation-character-loadout",
+        source_sequence=3,
+        observation_generation=3,
+    )
+    policy.on_verified(loadout, replace(verifying, status=ActionStatus.SUCCEEDED))
+    next_step = policy.propose(
+        replace(
+            loadout,
+            source_frame_id="validation-character-loadout-2",
+            source_sequence=4,
+            observation_generation=4,
+        )
+    )
+    assert next_step is None
 
 
 def test_reward_click_is_one_shot_and_observe_has_no_input():
@@ -398,6 +834,7 @@ def test_visual_click_focuses_dst_before_mouse_event():
     controller.activate()
     controller.click(NormalizedPoint(0.5, 0.88), Viewport(1280, 720))
     assert [event.operation for event in driver.events] == [
+        "mouse_move",
         "mouse_move",
         "focus_game",
         "mouse_down",

@@ -11,7 +11,12 @@ import pytest
 from PIL import Image
 
 from app.runtime.display import DisplayEnvironment
-from runtime_agent.gameworker.actions import ActionName, ActionStatus, GameActions
+from runtime_agent.gameworker.actions import (
+    ActionName,
+    ActionResult,
+    ActionStatus,
+    GameActions,
+)
 from runtime_agent.gameworker.activity import ActionProposal, FakePlanner
 from runtime_agent.gameworker.capture import (
     CaptureError,
@@ -462,6 +467,84 @@ def test_end_to_end_observe_pipeline_returns_suppressed_without_input(
     assert outcome.proposal == planner.proposal
     assert planner.observations == [outcome.observation]
     assert driver.events == []
+
+
+def test_pipeline_blocks_interact_without_verified_prompt_before_input(
+    monkeypatch,
+):
+    from test_dst_behavior import ASSETS, analyze_image
+
+    now = [11.0]
+    character_image = Image.open(
+        ASSETS / "samples/in_world_wilson_live.png"
+    ).convert("RGB")
+    character = analyze_image(character_image, "fixture-character", 1)
+    frames = [
+        make_frame(
+            sequence,
+            captured_monotonic=11.0 + sequence / 10,
+            runtime_generation=7,
+            worker_generation=3,
+            image=character_image,
+        )
+        for sequence in (1, 2)
+    ]
+
+    class CharacterEngine:
+        def analyze(self, frame, **_kwargs):
+            return replace(
+                character,
+                observation_generation=frame.sequence,
+                source_frame_id=frame.frame_id,
+                source_sequence=frame.sequence,
+                source_captured_monotonic=frame.captured_monotonic,
+                observed_monotonic=frame.captured_monotonic,
+                fresh_until=frame.captured_monotonic + 5,
+                runtime_id=frame.runtime_id,
+                runtime_generation=frame.runtime_generation,
+                worker_generation=frame.worker_generation,
+            )
+
+    class ActionSink:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, action, *, duration=None, target=None, viewport=None):
+            self.calls.append((action, duration, target, viewport))
+            return ActionResult(
+                "interact-sent",
+                action,
+                ActionStatus.SENT,
+                0.01,
+                7,
+                3,
+                2,
+            )
+
+    def unexpected_click_request(*_args):
+        raise AssertionError("anchorless key action must not resolve a click target")
+
+    monkeypatch.setattr(
+        "runtime_agent.gameworker.perception.click_request",
+        unexpected_click_request,
+    )
+    actions = ActionSink()
+    pipeline = make_pipeline(
+        FakeCaptureSource(frames, runtime_generation=7, worker_generation=3),
+        CharacterEngine(),
+        FakePlanner(ActionProposal(ActionName.INTERACT)),
+        actions,
+        now,
+    )
+    pipeline.on_game_ready()
+    first = pipeline.tick()
+    second = pipeline.tick()
+    pipeline.close()
+
+    assert first.status == "ACTION_FAILED"
+    assert second.status == "ACTION_FAILED"
+    assert second.action_result.status == ActionStatus.SAFETY_BLOCKED
+    assert actions.calls == []
 
 
 def test_unknown_observation_never_reaches_planner_or_action():

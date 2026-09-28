@@ -21,6 +21,7 @@ class ActionContract:
     min_screen_change: float = 0.0
     required_detections: tuple[str, ...] = ()
     interaction_prompt_hidden: bool = False
+    anchor_point: tuple[float, float] = (0.5, 0.5)
 
 
 CONTRACTS = {
@@ -83,6 +84,9 @@ CONTRACTS = {
     ActionName.CLICK_HOST_GAME: ActionContract(
         ("main_menu_host_game",), frozenset({DSTScreen.MAIN_MENU}),
         frozenset({DSTScreen.HOST_GAME_WORLD_LIST}),
+        # This template includes extra dark space after the rendered label.
+        # Keep the live click near the center of the text, not the padded box.
+        anchor_point=(0.4, 0.5),
     ),
     ActionName.SELECT_EXISTING_WORLD: ActionContract(
         ("host_game_existing_world_row",),
@@ -297,6 +301,9 @@ def click_request(action: ActionName, observation: GameObservation):
     if detection is None or detection.bounds is None:
         raise ValueError("verified action anchor is unavailable")
     bounds = detection.bounds
-    return NormalizedPoint((bounds.left + bounds.right) / 2,
-                           (bounds.top + bounds.bottom) / 2), Viewport(
+    point_x, point_y = contract.anchor_point
+    return NormalizedPoint(
+        bounds.left + point_x * (bounds.right - bounds.left),
+        bounds.top + point_y * (bounds.bottom - bounds.top),
+    ), Viewport(
                                observation.frame_width, observation.frame_height)
