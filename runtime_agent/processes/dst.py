@@ -30,6 +30,8 @@ class DSTProcess:
         )
         self.readiness_timeout_seconds = readiness_timeout_seconds
         self._terminal_error = False
+        self._ever_ready = False
+        self._readiness_lost_at: float | None = None
         previous_before_start = supervisor.before_start
 
         def reset_marker() -> None:
@@ -56,13 +58,33 @@ class DSTProcess:
             return DSTState.ERROR
         if self.supervisor.alive:
             if self._ready_marker() and self.supervisor.alive:
+                self._ever_ready = True
+                self._readiness_lost_at = None
                 return DSTState.READY
+            if self._ever_ready:
+                now = self.supervisor.clock()
+                if self._readiness_lost_at is None:
+                    self._readiness_lost_at = now
+                elif now - self._readiness_lost_at >= 15:
+                    # A previously ready game disappeared while its launcher
+                    # process group lingered. Stop that group before the next
+                    # supervised launch, without making startup terminal.
+                    self.supervisor.shutdown(timeout=3)
+                    self._ever_ready = False
+                    self._readiness_lost_at = None
+                    self._state = DSTState.CRASHED
+                    return self._state
+                return DSTState.RUNNING
             if self.supervisor.running_for >= self.readiness_timeout_seconds:
                 self.supervisor.shutdown(timeout=3)
                 self._terminal_error = True
                 self._state = DSTState.ERROR
                 return self._state
             return DSTState.RUNNING
+        if self._ever_ready:
+            self._ever_ready = False
+            self._readiness_lost_at = None
+            self._state = DSTState.CRASHED
         return self._state
 
     def wait_ready(self):

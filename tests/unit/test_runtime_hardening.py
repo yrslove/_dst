@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import queue
 import subprocess
+import sys
 
 import pytest
 
@@ -16,7 +17,9 @@ from runtime_agent.gameworker.base import WorkerContext
 from runtime_agent.gameworker.config import WorkerConfig, WorkerMode
 from runtime_agent.gameworker.dst.worker import DSTGameWorker
 from runtime_agent.gameworker.process import WorkerProcessHost
+from runtime_agent.main import _handoff_environment
 from runtime_agent.process_supervisor import ProcessSupervisor, RestartPolicy
+from runtime_agent.processes.dst import DSTProcess, DSTState
 from runtime_agent.processes.steam import SteamProcess, SteamState
 
 
@@ -40,6 +43,41 @@ class FakeProcess:
     def kill(self):
         self.kill_called = True
         self.exit_code = -9
+
+
+def test_ready_dst_loss_restarts_after_grace_instead_of_terminal_timeout(tmp_path):
+    class Supervisor:
+        def __init__(self):
+            self.now = 0.0
+            self.alive = True
+            self.running_for = 2200.0
+            self.status = type("Status", (), {"exhausted": False,
+                                               "started_at": "started"})()
+            self.before_start = None
+            self.stops = 0
+
+        def clock(self):
+            return self.now
+
+        def shutdown(self, timeout=3):
+            self.stops += 1
+            self.alive = False
+
+        def request_start(self):
+            self.alive = True
+
+    supervisor = Supervisor()
+    marker = tmp_path / "dst.ready"
+    marker.touch()
+    dst = DSTProcess(supervisor, marker, readiness_timeout_seconds=300)
+    assert dst.status() == DSTState.READY
+    marker.unlink()
+    assert dst.status() == DSTState.RUNNING
+    supervisor.now = 16.0
+    assert dst.status() == DSTState.CRASHED
+    assert supervisor.stops == 1
+    assert dst.start() == DSTState.STARTING
+    assert not dst._terminal_error
 
 
 def test_supervisor_stop_during_backoff_allows_fresh_start():
@@ -141,6 +179,53 @@ def test_supervisor_uses_only_canonical_graphical_environment(monkeypatch):
     assert "XDG_RUNTIME_DIR" not in captured
     assert "RUNTIME_TOKEN" not in captured
     supervisor.shutdown()
+
+
+def test_supervisor_adopts_only_exact_isolated_launcher_identity():
+    command = (sys.executable, "-c", "import time; time.sleep(30)")
+    process = subprocess.Popen(command, start_new_session=True)
+    original = ProcessSupervisor("dst", command, popen=lambda *_a, **_k: process)
+    replacement = ProcessSupervisor("dst", command)
+    try:
+        original.request_start()
+        identity = original.adoption_identity()
+        assert identity is not None
+        pid, start_ticks = identity
+        with pytest.raises(RuntimeError, match="cannot safely adopt"):
+            replacement.adopt(pid, start_ticks + 1)
+        with pytest.raises(RuntimeError, match="cannot safely adopt"):
+            ProcessSupervisor("other", ("sleep", "30")).adopt(pid, start_ticks)
+
+        replacement.adopt(pid, start_ticks)
+        assert replacement.alive
+        assert replacement.status.process_group == pid
+    finally:
+        if replacement.alive:
+            replacement.shutdown(timeout=1, kill_timeout=1)
+        elif process.poll() is None:
+            process.kill()
+            process.wait(timeout=1)
+
+
+def test_reload_handoff_requires_identity_for_every_managed_process(monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    class Managed:
+        def __init__(self, identity):
+            self.identity = identity
+
+        def adoption_identity(self):
+            return self.identity
+
+    complete = _handoff_environment(
+        Managed((21, 101)), Managed((22, 202)), Managed((23, 303))
+    )
+    assert complete["RUNTIME_ADOPT_DISPLAY"] == "21:101"
+    assert complete["RUNTIME_ADOPT_STEAM"] == "22:202"
+    assert complete["RUNTIME_ADOPT_DST"] == "23:303"
+    assert _handoff_environment(
+        Managed((21, 101)), Managed(None), Managed((23, 303))
+    ) is None
 
 
 def test_stale_readiness_marker_is_removed_before_spawn(tmp_path):

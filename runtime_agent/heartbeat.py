@@ -42,6 +42,17 @@ def send_heartbeat(
         "agent_version": settings.agent_version,
         "protocol_version": settings.protocol_version,
     }
+    results = [
+        {"id": item.get("id"), "result": item.get("result")}
+        for item in payload["worker_command_results"]
+        if isinstance(item, dict)
+    ]
+    if results:
+        logger.info(
+            "worker_ack_control_plane_submit runtime_id=%s results=%s",
+            settings.runtime_id,
+            results,
+        )
     try:
         response = httpx.post(
             f"{settings.control_plane_url}/api/v1/runtime-agent/heartbeat",
@@ -51,7 +62,23 @@ def send_heartbeat(
         )
         response.raise_for_status()
         value = response.json()
+        if results:
+            logger.info(
+                "worker_ack_control_plane_response runtime_id=%s results=%s "
+                "http_status=%s response_ok=%s",
+                settings.runtime_id,
+                results,
+                response.status_code,
+                value.get("ok") if isinstance(value, dict) else None,
+            )
         return value if isinstance(value, dict) else {"ok": True}
     except (httpx.HTTPError, ValueError) as exc:
+        if results:
+            logger.warning(
+                "worker_ack_control_plane_failed runtime_id=%s results=%s error=%s",
+                settings.runtime_id,
+                results,
+                exc,
+            )
         logger.warning("runtime heartbeat failed: %s", exc)
         return {"ok": False, "commands": []}

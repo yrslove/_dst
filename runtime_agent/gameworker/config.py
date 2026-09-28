@@ -80,6 +80,8 @@ class WorkerConfig:
     max_observation_age: float = 3.0
     planner_timeout: float = 0.5
     calibration_verified: bool = False
+    validation_flow_enabled: bool = False
+    validation_movement_enabled: bool = False
     capture_max_width: int = 1280
     capture_max_height: int = 720
     diagnostic_capture: bool = True
@@ -116,6 +118,8 @@ class WorkerConfig:
             raise ValueError("action_timeout must be between 0.1 and 5 seconds")
         if self.recovery_attempts < 0 or self.recovery_attempts > 10:
             raise ValueError("recovery_attempts must be between 0 and 10")
+        if self.validation_movement_enabled and not self.validation_flow_enabled:
+            raise ValueError("validation movement requires the validation flow")
         if not 0.0 <= self.vision_threshold <= 1.0:
             raise ValueError("vision_threshold must be between 0 and 1")
         if not 0.1 <= self.max_actions_per_second <= 20:
@@ -146,6 +150,12 @@ class WorkerConfig:
             raise ValueError("planner_timeout must be between 0.05 and 5 seconds")
         if not isinstance(self.calibration_verified, bool):
             raise TypeError("calibration_verified must be boolean")
+        if not isinstance(self.profile, str) or not self.profile or len(self.profile) > 128:
+            raise ValueError("calibration profile ID is invalid")
+        if not isinstance(self.profile_version, int) or self.profile_version < 1:
+            raise ValueError("calibration profile version is invalid")
+        if not isinstance(self.validation_flow_enabled, bool):
+            raise TypeError("validation_flow_enabled must be boolean")
         if self.capture_max_width < 320 or self.capture_max_height < 240:
             raise ValueError("capture bounds are too small")
         if self.capture_max_width > 3840 or self.capture_max_height > 2160:
@@ -239,6 +249,8 @@ class WorkerConfig:
         config = cls(
             schema_version=int(os.getenv("WORKER_CONFIG_SCHEMA_VERSION", "1")),
             plugin=(plugin or os.getenv("WORKER_PLUGIN", "noop")).lower(),
+            profile=os.getenv("WORKER_CALIBRATION_PROFILE", "dst-default-v1"),
+            profile_version=int(os.getenv("WORKER_CALIBRATION_PROFILE_VERSION", "1")),
             mode=WorkerMode(os.getenv("WORKER_MODE", "DISABLED").upper()),
             autostart=_strict_bool("WORKER_AUTOSTART", False),
             tick_interval=float(os.getenv("WORKER_TICK_INTERVAL", "1")),
@@ -264,6 +276,12 @@ class WorkerConfig:
             max_observation_age=float(os.getenv("WORKER_MAX_OBSERVATION_AGE", "3")),
             planner_timeout=float(os.getenv("WORKER_PLANNER_TIMEOUT", "0.5")),
             calibration_verified=_strict_bool("WORKER_CALIBRATION_VERIFIED", False),
+            validation_flow_enabled=_strict_bool(
+                "WORKER_VALIDATION_FLOW_ENABLED", False
+            ),
+            validation_movement_enabled=_strict_bool(
+                "WORKER_VALIDATION_MOVEMENT_ENABLED", False
+            ),
             capture_max_width=int(os.getenv("WORKER_CAPTURE_MAX_WIDTH", "1280")),
             capture_max_height=int(os.getenv("WORKER_CAPTURE_MAX_HEIGHT", "720")),
             diagnostic_capture=_strict_bool("WORKER_DIAGNOSTIC_CAPTURE", True),

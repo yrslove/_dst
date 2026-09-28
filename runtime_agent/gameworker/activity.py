@@ -50,9 +50,20 @@ class FakePlanner:
 
 
 class ActivityController:
-    """Conservative visual policy: only a verified login reward is actionable."""
+    """Conservative visual policy with an optional one-shot validation route."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        validation_flow_enabled: bool = False,
+        validation_movement_enabled: bool = False,
+    ) -> None:
+        self.validation_flow_enabled = validation_flow_enabled
+        self.validation_movement_enabled = validation_movement_enabled
+        self.validation_complete = False
+        self._validation_step = 0
+        self._validation_world_frames = 0
+        self._validation_last_world_sequence: int | None = None
         self.state = DSTScreen.UNKNOWN
         self._candidate = DSTScreen.UNKNOWN
         self._candidate_frames = 0
@@ -98,6 +109,8 @@ class ActivityController:
 
     def propose(self, observation: GameObservation) -> ActionProposal | None:
         if not observation.production_ready:
+            self._validation_world_frames = 0
+            self._validation_last_world_sequence = None
             self.counters["unknown_frames"] += 1
             self._record(observation, "NONE", "unverified observation")
             return None
@@ -125,6 +138,210 @@ class ActivityController:
         if self.state != observation.screen or self._candidate_frames < 2:
             self._record(observation, "NONE", "hysteresis")
             return None
+        if self.state == DSTScreen.REWARD_RESULT and not self.intervention_required:
+            close_button = next(
+                (
+                    item
+                    for item in observation.detections
+                    if item.kind == "login_reward_close_button"
+                    and item.detected
+                    and item.verified
+                    and item.bounds is not None
+                    and item.confidence >= 0.94
+                ),
+                None,
+            )
+            if close_button is None or observation.screen_confidence < 0.94:
+                self._record(observation, "NONE", "reward close anchor insufficient")
+                return None
+            proposal = ActionProposal(
+                ActionName.CLICK_REWARD_CLOSE,
+                reason="close the visually verified reward result modal",
+            )
+            self._record(observation, proposal.action.value, proposal.reason or "")
+            return proposal
+        if self.validation_flow_enabled:
+            if self.state in {DSTScreen.DEAD, DSTScreen.WORLD_RESET_PENDING}:
+                self._validation_step = 3
+                self._validation_world_frames = 0
+                self._validation_last_world_sequence = None
+                self._record(observation, "NONE", "waiting for world reset")
+                return None
+            if self._validation_step == 0:
+                if self.state == DSTScreen.PAUSED:
+                    proposal = ActionProposal(
+                        ActionName.RESUME_WORLD,
+                        reason="resume a visually verified auto-paused world for validation",
+                    )
+                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    return proposal
+                if self.state == DSTScreen.HOST_GAME_WORLD_LIST:
+                    # Resume from the already-open saved-world list without
+                    # replaying the menu click when validation starts mid-flow.
+                    self._validation_step = 1
+                elif self.state == DSTScreen.HOST_GAME_WORLD_SELECTED:
+                    # Continue a world the worker already selected and verified.
+                    self._validation_step = 2
+                elif self.state == DSTScreen.CHARACTER_SELECTION:
+                    # Resume at the live survivor-selection screen.
+                    self._validation_step = 3
+                elif self.state == DSTScreen.CHARACTER_LOADOUT:
+                    self._validation_step = 4
+                elif self.state == DSTScreen.IN_WORLD_IDLE:
+                    self._validation_step = 3
+            route = (
+                (DSTScreen.MAIN_MENU, 0, ActionName.CLICK_HOST_GAME,
+                 "open the detected Host Game menu"),
+                (DSTScreen.HOST_GAME_WORLD_LIST, 1, ActionName.SELECT_EXISTING_WORLD,
+                 "select the detected existing saved world"),
+                (DSTScreen.HOST_GAME_WORLD_SELECTED, 2,
+                 ActionName.START_EXISTING_WORLD,
+                 "start the selected existing world"),
+            )
+            if (
+                self.validation_movement_enabled
+                and self.state == DSTScreen.IN_WORLD_IDLE
+            ):
+                if self._validation_step == 5:
+                    proposal = ActionProposal(
+                        ActionName.MOVE_BACKWARD,
+                        duration=0.35,
+                        reason="verify a short bounded backward movement",
+                    )
+                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    return proposal
+                if self._validation_step == 6:
+                    prompt = observation.interaction_prompt_visible
+                    if prompt.detected and prompt.verified and prompt.confidence >= 0.94:
+                        proposal = ActionProposal(
+                            ActionName.INTERACT,
+                            reason="interact once with the visually verified nearby target",
+                        )
+                    else:
+                        proposal = ActionProposal(
+                            ActionName.CANCEL,
+                            reason="no verified interaction target; return to safe pause",
+                        )
+                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    return proposal
+                if self._validation_step == 7:
+                    proposal = ActionProposal(
+                        ActionName.CANCEL,
+                        reason="return to safe pause after bounded in-world actions",
+                    )
+                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    return proposal
+            if self._validation_step == 3:
+                if self.state == DSTScreen.IN_WORLD_IDLE:
+                    if (
+                        observation.source_sequence
+                        != self._validation_last_world_sequence
+                    ):
+                        self._validation_world_frames += 1
+                        self._validation_last_world_sequence = (
+                            observation.source_sequence
+                        )
+                    if self._validation_world_frames >= 4:
+                        if self.validation_movement_enabled:
+                            self._validation_step = 3
+                            proposal = ActionProposal(
+                                ActionName.MOVE_FORWARD,
+                                duration=0.35,
+                                reason=(
+                                    "perform a short bounded forward movement after "
+                                    "four fresh in-world observations"
+                                ),
+                            )
+                        else:
+                            proposal = ActionProposal(
+                                ActionName.CANCEL,
+                                reason="open the pause menu after four fresh world frames",
+                            )
+                        self._record(observation, proposal.action.value, proposal.reason or "")
+                        return proposal
+                    else:
+                        self._record(
+                            observation,
+                            "NONE",
+                            "confirming stable in-world observations",
+                        )
+                    return None
+                self._validation_world_frames = 0
+                self._validation_last_world_sequence = None
+                if self.state == DSTScreen.CHARACTER_SELECTION:
+                    required_anchors = {
+                        item.kind
+                        for item in observation.detections
+                        if item.detected
+                        and item.verified
+                        and item.confidence >= 0.94
+                    }
+                    if not {
+                        "character_select_wilson_name",
+                        "character_select_wilson_icon",
+                    } <= required_anchors or observation.screen_confidence < 0.94:
+                        self._record(
+                            observation,
+                            "NONE",
+                            "selected character is not sufficiently verified",
+                        )
+                        return None
+                    proposal = ActionProposal(
+                        ActionName.SELECT_SURVIVOR,
+                        reason=(
+                            "click the detected selected survivor to advance "
+                            "the lobby to its loadout panel"
+                        ),
+                    )
+                    self._record(observation, proposal.action.value, proposal.reason)
+                    return proposal
+                if self.state == DSTScreen.CHARACTER_LOADOUT:
+                    self._validation_step = 4
+                    self._record(
+                        observation,
+                        "NONE",
+                        "loadout screen verified; waiting for its start target",
+                    )
+                    return None
+            if self._validation_step == 4 and self.state == DSTScreen.CHARACTER_LOADOUT:
+                button = next((
+                    item for item in observation.detections
+                    if item.kind == "character_loadout_go_button"
+                    and item.detected and item.verified
+                    and item.bounds is not None and item.confidence >= 0.94
+                ), None)
+                if button is None or observation.screen_confidence < 0.94:
+                    self._record(observation, "NONE", "loadout Go anchor insufficient")
+                    return None
+                proposal = ActionProposal(
+                    ActionName.START_SURVIVOR,
+                    reason="start the verified Wilson loadout",
+                )
+                self._record(observation, proposal.action.value, proposal.reason)
+                return proposal
+            for source, step, action, reason in route:
+                if self._validation_step == step and self.state == source:
+                    contract_anchors = {
+                        ActionName.CLICK_HOST_GAME: "main_menu_host_game",
+                        ActionName.SELECT_EXISTING_WORLD:
+                            "host_game_existing_world_row",
+                        ActionName.START_EXISTING_WORLD:
+                            "host_game_world_selected_start",
+                        ActionName.SELECT_SURVIVAL:
+                            "host_game_playstyle_survival",
+                    }
+                    anchor = next((
+                        item for item in observation.detections
+                        if item.kind == contract_anchors[action]
+                        and item.detected and item.verified
+                        and item.bounds is not None and item.confidence >= 0.94
+                    ), None)
+                    if anchor is None or observation.screen_confidence < 0.94:
+                        self._record(observation, "NONE", "validation anchor insufficient")
+                        return None
+                    proposal = ActionProposal(action, reason=reason)
+                    self._record(observation, action.value, reason)
+                    return proposal
         if (
             self.state == DSTScreen.LOGIN_REWARD_AVAILABLE
             and not self.intervention_required
@@ -162,7 +379,16 @@ class ActivityController:
     ) -> ActionResult:
         if result.action in {
             ActionName.CLICK_REWARD_OPEN, ActionName.CLICK_OPTIONS,
-            ActionName.CLICK_BACK, ActionName.DISCARD_OPTIONS,
+            ActionName.CLICK_REWARD_CLOSE, ActionName.CLICK_BACK,
+            ActionName.DISCARD_OPTIONS,
+            ActionName.CLICK_HOST_GAME, ActionName.SELECT_SURVIVAL,
+            ActionName.SELECT_NO_CAVES, ActionName.SELECT_EXISTING_WORLD,
+            ActionName.START_EXISTING_WORLD,
+            ActionName.SELECT_SURVIVOR,
+            ActionName.START_SURVIVOR,
+            ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
+            ActionName.CANCEL, ActionName.RESUME_WORLD,
+            ActionName.INTERACT,
         }:
             if result.status == ActionStatus.VERIFYING:
                 self.counters["active_actions"] += 1
@@ -180,7 +406,40 @@ class ActivityController:
     def on_verified(self, observation: GameObservation, result: ActionResult) -> None:
         self._awaiting_reward_transition = False
         if result.status == ActionStatus.SUCCEEDED:
+            self.counters["verified_actions"] += 1
             self.state = observation.screen
+            if self.validation_flow_enabled:
+                validation_steps = {
+                    ActionName.CLICK_HOST_GAME: 1,
+                }
+                expected = validation_steps.get(result.action)
+                if expected is not None and self._validation_step == expected - 1:
+                    self._validation_step = expected
+                elif result.action == ActionName.SELECT_EXISTING_WORLD:
+                    self._validation_step = (
+                        3 if observation.screen in {
+                            DSTScreen.LOADING, DSTScreen.IN_WORLD_IDLE,
+                        } else 2
+                    )
+                elif (
+                    result.action == ActionName.START_EXISTING_WORLD
+                    and self._validation_step == 2
+                ):
+                    self._validation_step = 3
+                elif result.action == ActionName.SELECT_SURVIVOR:
+                    self._validation_step = 4
+                elif result.action == ActionName.START_SURVIVOR:
+                    self._validation_step = 3
+                elif result.action == ActionName.MOVE_FORWARD:
+                    self._validation_step = 5
+                elif result.action == ActionName.MOVE_BACKWARD:
+                    self._validation_step = 6
+                elif result.action == ActionName.INTERACT:
+                    self._validation_step = 7
+                elif result.action == ActionName.CANCEL:
+                    self.validation_complete = True
+                elif result.action == ActionName.RESUME_WORLD:
+                    self._validation_step = 3
             if result.action == ActionName.CLICK_REWARD_OPEN:
                 self.counters["reward_opened"] += 1
         else:

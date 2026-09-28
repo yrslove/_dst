@@ -39,6 +39,7 @@ from runtime_agent.gameworker.replay import (
 )
 from runtime_agent.gameworker.vision import (
     Detection,
+    DSTScreen,
     GameObservation,
     ObservationValidity,
 )
@@ -281,6 +282,61 @@ def test_existing_observe_pipeline_records_the_complete_causal_chain(tmp_path):
     assert kinds.index("FRAME_CAPTURED") < kinds.index("OBSERVATION_PRODUCED")
     assert kinds.index("OBSERVATION_PRODUCED") < kinds.index("PLANNER_PROPOSAL")
     assert kinds.index("PLANNER_PROPOSAL") < kinds.index("ACTION_RESULT")
+
+
+def test_recording_includes_action_transition_timeout_and_last_observation(tmp_path):
+    value = recorder(tmp_path)
+    clock = [time.monotonic()]
+    captured = frame(captured=clock[0] + 1)
+    pipeline = ObservePipeline(
+        FakeCaptureSource([captured], runtime_generation=1, worker_generation=3),
+        DeterministicEngine(),
+        FakePlanner(None),
+        ReplayActionSink(runtime_id=7, runtime_generation=1, worker_generation=3),
+        CalibrationProfile("test", 1, 2, 2, verified=True),
+        runtime_generation=1,
+        worker_generation=3,
+        max_frame_age=5,
+        max_observation_age=5,
+        perception_timeout=1,
+        planner_timeout=1,
+        clock=lambda: clock[0],
+        recorder=value,
+    )
+    pipeline.on_game_ready()
+    observed = pipeline.tick().observation
+    assert observed is not None
+    observed = replace(observed, screen=DSTScreen.MAIN_MENU, screen_confidence=1.0)
+    pending = pipeline.action_lifecycle.begin(
+        ActionResult(
+            "click-timeout",
+            ActionName.CLICK_HOST_GAME,
+            ActionStatus.SENT,
+            0.5,
+            1,
+            3,
+            7,
+        ),
+        observed,
+    )
+    assert pending.status == ActionStatus.VERIFYING
+
+    clock[0] += 46
+    failed = pipeline.tick()
+    pipeline.close()
+    assert value.close()
+
+    assert failed.status == "ACTION_FAILED"
+    assert failed.action_result is not None
+    assert failed.action_result.status == ActionStatus.TIMED_OUT
+    timeout_event = next(
+        event
+        for event in read_events(value.path)
+        if event["event_type"] == "ACTION_RESULT"
+        and event["payload"]["result"]["status"] == "TIMED_OUT"
+    )
+    assert timeout_event["frame_id"] == observed.source_frame_id
+    assert timeout_event["payload"]["result"]["reason"]
 
 
 def test_recording_bounds_finish_as_truncated_without_unbounded_queue(tmp_path):
@@ -792,6 +848,14 @@ def test_replay_config_rejects_missing_session_and_live_recording_mix(tmp_path):
             mode=WorkerMode.REPLAY,
             recording_enabled=True,
             replay_session_path=tmp_path,
+        ).validate()
+
+
+def test_validation_movement_requires_opt_in_validation_flow():
+    with pytest.raises(ValueError, match="requires the validation flow"):
+        WorkerConfig(
+            plugin="dst",
+            validation_movement_enabled=True,
         ).validate()
 
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
+import multiprocessing as mp
 import pickle
 import queue
 import threading
 import time
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.runtime.display import DisplayEnvironment
@@ -21,9 +24,12 @@ from runtime_agent.gameworker.ipc import (
 from runtime_agent.gameworker.process import (
     WorkerProcessHost,
     WorkerProcessState,
+    _trace_command_pipe_writer,
     _worker_main,
 )
 from runtime_agent.gameworker.state import WorkerState
+from runtime_agent.heartbeat import send_heartbeat
+from runtime_agent.worker_bridge import WorkerBridge
 
 
 class FakeQueue(queue.Queue):
@@ -109,10 +115,17 @@ def test_ipc_contract_and_worker_context_are_pickle_safe():
     )
 
 
-def test_worker_generation_is_monotonic_and_stale_ack_is_ignored(monkeypatch):
+def test_worker_generation_is_monotonic_and_stale_ack_is_ignored(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
     host = fake_host(monkeypatch, max_restarts=1)
     host.start()
     first_generation = host.worker_generation
+    host.command("STATUS", command_id=21)
+    host._ack_reports.put_nowait(
+        WorkerIPCAcknowledgement(first_generation, 21, "OK", report_payload())
+    )
+    assert host.acknowledgements() == [{"id": 21, "result": "OK"}]
+    assert 21 not in host._pending_command_ids
     first_process = host._process
     first_process.alive = False
 
@@ -126,11 +139,121 @@ def test_worker_generation_is_monotonic_and_stale_ack_is_ignored(monkeypatch):
     )
     assert host.acknowledgements() == []
     assert 22 in host._pending_command_ids
+    assert "reason=stale_generation" in caplog.text
 
     host._ack_reports.put_nowait(
         WorkerIPCAcknowledgement(host.worker_generation, 22, "OK", report_payload())
     )
     assert host.acknowledgements() == [{"id": 22, "result": "OK"}]
+    assert 22 not in host._pending_command_ids
+    assert "worker_ack_host_accepted" in caplog.text
+    assert "pending_after=[]" in caplog.text
+
+    host.command("STATUS", command_id=24)
+    assert 24 in host._pending_command_ids
+
+
+def test_worker_bridge_forwards_terminal_ack_and_allows_next_command(
+    monkeypatch, caplog
+):
+    caplog.set_level(logging.INFO)
+    host = fake_host(monkeypatch)
+    monkeypatch.setattr(
+        "runtime_agent.worker_bridge.WorkerProcessHost",
+        lambda *_args, **_kwargs: host,
+    )
+    bridge = WorkerBridge(1, 2, DisplayEnvironment(":99"), WorkerConfig(plugin="dst"))
+    bridge.apply_commands([{"id": 60, "command": "STATUS"}])
+    host._ack_reports.put_nowait(
+        WorkerIPCAcknowledgement(host.worker_generation, 60, "OK", report_payload())
+    )
+
+    assert bridge.acknowledgements() == [{"id": 60, "result": "OK"}]
+    assert bridge._pending_commands == set()
+    assert "worker_ack_bridge_received" in caplog.text
+    assert "worker_ack_bridge_forward" in caplog.text
+
+    bridge.apply_commands([{"id": 61, "command": "STATUS"}])
+    assert 61 in bridge._pending_commands
+    assert 61 in host._pending_command_ids
+
+
+def test_control_plane_submission_logs_terminal_ack_response(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    sent = []
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True, "commands": []}
+
+    def post(_url, *, json, headers, timeout):
+        sent.append(json)
+        return Response()
+
+    monkeypatch.setattr("runtime_agent.heartbeat.httpx.post", post)
+    settings = SimpleNamespace(
+        runtime_id=2,
+        control_plane_url="http://127.0.0.1:8080",
+        runtime_token="test-token",
+        request_timeout_seconds=1,
+        agent_version="test",
+        protocol_version=1,
+    )
+
+    response = send_heartbeat(
+        settings,
+        phase="GAME_READY",
+        steam_running=True,
+        dst_running=True,
+        healthy=True,
+        details={
+            "worker": report_payload(),
+            "worker_command_results": [{"id": 60, "result": "OK"}],
+        },
+    )
+
+    assert response["ok"] is True
+    assert sent[0]["worker_command_results"] == [{"id": 60, "result": "OK"}]
+    assert "worker_ack_control_plane_submit" in caplog.text
+    assert "worker_ack_control_plane_response" in caplog.text
+
+
+def test_control_plane_submission_logs_terminal_ack_failure(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+
+    def post(_url, *, json, headers, timeout):
+        raise httpx.ConnectError("control plane unavailable")
+
+    monkeypatch.setattr("runtime_agent.heartbeat.httpx.post", post)
+    settings = SimpleNamespace(
+        runtime_id=2,
+        control_plane_url="http://127.0.0.1:8080",
+        runtime_token="test-token",
+        request_timeout_seconds=1,
+        agent_version="test",
+        protocol_version=1,
+    )
+
+    response = send_heartbeat(
+        settings,
+        phase="GAME_READY",
+        steam_running=True,
+        dst_running=True,
+        healthy=True,
+        details={
+            "worker": report_payload(),
+            "worker_command_results": [{"id": 60, "result": "OK"}],
+        },
+    )
+
+    assert response == {"ok": False, "commands": []}
+    assert "worker_ack_control_plane_failed" in caplog.text
+    assert "test-token" not in caplog.text
 
 
 def test_crash_release_finishes_before_replacement_generation_starts(monkeypatch):
@@ -219,6 +342,32 @@ def test_duplicate_ack_for_completed_command_is_ignored(monkeypatch):
     assert host.acknowledgements() == [{"id": 23, "result": "OK"}]
 
 
+def test_parent_drain_logs_report_and_ack_boundaries(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    host = fake_host(monkeypatch)
+    host.start()
+    command_id = 51
+    host._pending_command_ids.add(command_id)
+    host._command_transport_state[command_id] = "pipe_write_complete"
+    host._reports.put_nowait(WorkerIPCReport(host.worker_generation, report_payload()))
+    host._ack_reports.put_nowait(
+        WorkerIPCAcknowledgement(
+            host.worker_generation,
+            command_id,
+            "OK",
+            report_payload(),
+        )
+    )
+
+    assert host.acknowledgements() == [{"id": command_id, "result": "OK"}]
+    assert "worker_ipc_report_drain_begin" in caplog.text
+    assert "worker_ipc_report_drain_end" in caplog.text
+    assert "messages_drained=1" in caplog.text
+    assert "worker_ipc_ack_drain_begin" in caplog.text
+    assert "worker_ipc_ack_drain_end" in caplog.text
+    assert "pending_after=[]" in caplog.text
+
+
 def test_command_envelope_is_bound_to_current_worker_generation(monkeypatch):
     host = fake_host(monkeypatch)
     host.start()
@@ -233,7 +382,37 @@ def test_command_envelope_is_bound_to_current_worker_generation(monkeypatch):
     assert message.command == "STATUS"
 
 
-def test_periodic_status_saturation_cannot_evict_command_ack():
+def test_command_queue_logs_the_actual_pipe_write(caplog):
+    caplog.set_level(logging.INFO)
+    channel = mp.get_context("spawn").Queue(maxsize=2)
+    _trace_command_pipe_writer(
+        channel,
+        runtime_id=2,
+        generation=5,
+        transport_state={},
+        transport_lock=threading.Lock(),
+    )
+    command = WorkerIPCCommand(5, "STATUS", 44)
+    try:
+        channel.put_nowait(command)
+        assert channel.get(timeout=2) == command
+
+        deadline = time.monotonic() + 1
+        while "worker_command_pipe_write_complete" not in caplog.text:
+            if time.monotonic() >= deadline:
+                raise AssertionError("command pipe write was not logged")
+            threading.Event().wait(0.01)
+
+        assert "worker_command_pipe_write_begin" in caplog.text
+        assert "command_id=44" in caplog.text
+        assert "payload_bytes=" in caplog.text
+    finally:
+        channel.close()
+        channel.join_thread()
+
+
+def test_periodic_status_saturation_cannot_evict_command_ack(caplog):
+    caplog.set_level(logging.INFO)
     commands = FakeQueue(maxsize=4)
     reports = FakeQueue(maxsize=1)
     acknowledgements = FakeQueue(maxsize=2)
@@ -260,6 +439,9 @@ def test_periodic_status_saturation_cannot_evict_command_ack():
     assert acknowledgements.get(timeout=1).command_id == 42
     thread.join(timeout=1)
     assert not thread.is_alive()
+    assert "worker_ack_child_enqueued" in caplog.text
+    assert "worker_command_child_received" in caplog.text
+    assert "command_id=41" in caplog.text
 
 
 def test_noop_runs_through_real_process_lifecycle_without_game():

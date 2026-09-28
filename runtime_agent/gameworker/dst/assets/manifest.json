@@ -3,6 +3,34 @@
   "profile": "dst-1280x720-linux-v1",
   "templates": [
     {
+      "id": "game_hud",
+      "filename": "game_hud_inventory_slot.png",
+      "expected_region": [
+        0.14,
+        0.92,
+        0.22,
+        1.0
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "First empty inventory slot on the live Wilson world HUD",
+      "verified": true
+    },
+    {
+      "id": "player_marker",
+      "filename": "player_marker_health.png",
+      "expected_region": [
+        0.92,
+        0.13,
+        1.0,
+        0.25
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Player health heart on the live in-world HUD",
+      "verified": true
+    },
+    {
       "id": "login_reward_title",
       "filename": "login_reward_title.png",
       "expected_region": [
@@ -42,6 +70,132 @@
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Hovered Open Now button and click anchor",
+      "verified": true
+    },
+    {
+      "id": "login_reward_result_title",
+      "filename": "login_reward_result_title.png",
+      "expected_region": [
+        0.4,
+        0.32,
+        0.6,
+        0.46
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "You Received title on the live reward result modal",
+      "verified": true
+    },
+    {
+      "id": "login_reward_close_button",
+      "filename": "login_reward_close_button.png",
+      "expected_region": [
+        0.4,
+        0.8,
+        0.6,
+        0.95
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Close button and click anchor on the live reward result modal",
+      "verified": true
+    },
+    {
+      "id": "loading_label",
+      "filename": "loading_label.png",
+      "expected_region": [
+        0.02,
+        0.02,
+        0.18,
+        0.1
+      ],
+      "threshold": 0.94,
+      "version": 2,
+      "expected_use": "Stable Loading word glyphs across animated ellipsis frames",
+      "verified": true
+    },
+    {
+      "id": "character_select_title",
+      "filename": "character_select_title.png",
+      "expected_region": [
+        0.26,
+        0.02,
+        0.46,
+        0.11
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Survivor Select title on the live character-selection screen",
+      "verified": true
+    },
+    {
+      "id": "character_select_players",
+      "filename": "character_select_players.png",
+      "expected_region": [
+        0.01,
+        0.02,
+        0.11,
+        0.11
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Players heading on the live character-selection screen",
+      "verified": true
+    },
+    {
+      "id": "character_select_wilson_name",
+      "filename": "character_select_wilson_name.png",
+      "expected_region": [
+        0.68,
+        0.02,
+        0.96,
+        0.24
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Wilson profile title selected on the live survivor screen",
+      "verified": true
+    },
+    {
+      "id": "character_select_wilson_icon",
+      "filename": "character_select_wilson_icon.png",
+      "expected_region": [
+        0.28,
+        0.18,
+        0.38,
+        0.33
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Wilson portrait as its detected character-selection target",
+      "verified": true
+    },
+    {
+      "id": "character_loadout_wilson_name",
+      "filename": "character_loadout_wilson_name.png",
+      "expected_region": [
+        0.28,
+        0.04,
+        0.72,
+        0.43
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Wilson name asset in the Redux loadout panel after portrait selection",
+      "verified": true
+    },
+    {
+      "id": "character_loadout_go_button",
+      "filename": "character_loadout_go_button.png",
+      "expected_region": [
+        0.81,
+        0.9,
+        0.97,
+        0.98
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Go button on the live Wilson Wardrobe loadout",
       "verified": true
     },
     {
@@ -159,7 +313,12 @@
     {
       "id": "host_game_playstyle_title",
       "filename": "host_game_playstyle_title.png",
-      "expected_region": [0.035, 0.035, 0.16, 0.1],
+      "expected_region": [
+        0.035,
+        0.035,
+        0.16,
+        0.1
+      ],
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Host Game page title on playstyle picker",
@@ -168,7 +327,12 @@
     {
       "id": "host_game_playstyle_prompt",
       "filename": "host_game_playstyle_prompt.png",
-      "expected_region": [0.34, 0.28, 0.66, 0.37],
+      "expected_region": [
+        0.34,
+        0.28,
+        0.66,
+        0.37
+      ],
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Pick your server's playstyle prompt",
@@ -177,16 +341,96 @@
     {
       "id": "host_game_playstyle_survival",
       "filename": "host_game_playstyle_survival.png",
-      "expected_region": [0.42, 0.36, 0.59, 0.62],
+      "expected_region": [
+        0.42,
+        0.36,
+        0.59,
+        0.62
+      ],
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Selected Survival card on captured Host Game playstyle screen",
       "verified": true
     },
     {
+      "id": "host_game_world_list_search",
+      "filename": "host_game_world_list_search.png",
+      "expected_region": [
+        0.36,
+        0.14,
+        0.64,
+        0.24
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Search field on the saved Host Game world list",
+      "verified": true
+    },
+    {
+      "id": "host_game_world_list_create_new",
+      "filename": "host_game_world_list_create_new.png",
+      "expected_region": [
+        0.34,
+        0.86,
+        0.66,
+        0.99
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Create New World footer button on the saved-world list",
+      "verified": true
+    },
+    {
+      "id": "host_game_existing_world_row",
+      "filename": "host_game_existing_world_row.png",
+      "expected_region": [
+        0.25,
+        0.24,
+        0.45,
+        0.34
+      ],
+      "threshold": 0.94,
+      "version": 2,
+      "expected_use": "Farm 01 title in the existing saved-world row",
+      "verified": true
+    },
+    {
+      "id": "host_game_world_selected_name",
+      "filename": "host_game_world_selected_name.png",
+      "expected_region": [
+        0.24,
+        0.14,
+        0.39,
+        0.23
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Farm 01 name on its selected Host Game settings screen",
+      "verified": true
+    },
+    {
+      "id": "host_game_world_selected_start",
+      "filename": "host_game_world_selected_start.png",
+      "expected_region": [
+        0.74,
+        0.89,
+        0.94,
+        0.99
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Resume World button and click anchor for the selected saved world",
+      "verified": true
+    },
+    {
       "id": "host_game_caves_prompt_title",
       "filename": "host_game_caves_prompt_title.png",
-      "expected_region": [0.39, 0.22, 0.61, 0.31],
+      "expected_region": [
+        0.39,
+        0.22,
+        0.61,
+        0.31
+      ],
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Caves or no Caves setup prompt title",
@@ -195,7 +439,12 @@
     {
       "id": "host_game_caves_option_caves",
       "filename": "host_game_caves_option_caves.png",
-      "expected_region": [0.39, 0.31, 0.49, 0.37],
+      "expected_region": [
+        0.39,
+        0.31,
+        0.49,
+        0.37
+      ],
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Caves option label (perception only)",
@@ -204,7 +453,12 @@
     {
       "id": "host_game_caves_option_no_caves",
       "filename": "host_game_caves_option_no_caves.png",
-      "expected_region": [0.51, 0.31, 0.62, 0.37],
+      "expected_region": [
+        0.51,
+        0.31,
+        0.62,
+        0.37
+      ],
       "threshold": 0.94,
       "version": 1,
       "expected_use": "No Caves option label (perception only)",
@@ -213,10 +467,47 @@
     {
       "id": "host_game_caves_back",
       "filename": "host_game_caves_back.png",
-      "expected_region": [0.02, 0.87, 0.16, 0.99],
+      "expected_region": [
+        0.02,
+        0.87,
+        0.16,
+        0.99
+      ],
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Back control anchor on Caves setup prompt; no action enabled",
+      "verified": true
+    },
+    {
+      "id": "pause_menu",
+      "filename": "pause_menu_auto_paused.png",
+      "expected_region": [
+        0.41,
+        0.14,
+        0.59,
+        0.26
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Auto-Paused title on the live in-world pause menu",
+      "verified": true
+    },
+    {
+      "id": "death_world_reset_text",
+      "filename": "death_world_reset_text.png",
+      "expected_region": [0.28, 0.91, 0.56, 1.0],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Everyone is dead and world reset message on a real ghost frame",
+      "verified": true
+    },
+    {
+      "id": "death_reset_now_button",
+      "filename": "death_reset_now_button.png",
+      "expected_region": [0.56, 0.91, 0.75, 1.0],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Reset Now button on the real world reset frame; perception only",
       "verified": true
     }
   ]

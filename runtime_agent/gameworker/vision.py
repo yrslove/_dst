@@ -39,6 +39,8 @@ class DSTScreen(StrEnum):
     OPTIONS_DISCARD_CONFIRM = "OPTIONS_DISCARD_CONFIRM"
     LOGIN_REWARD_AVAILABLE = "LOGIN_REWARD_AVAILABLE"
     REWARD_RESULT = "REWARD_RESULT"
+    HOST_GAME_WORLD_LIST = "HOST_GAME_WORLD_LIST"
+    HOST_GAME_WORLD_SELECTED = "HOST_GAME_WORLD_SELECTED"
     HOST_GAME_PLAYSTYLE = "HOST_GAME_PLAYSTYLE"
     HOST_GAME_CAVES_PROMPT = "HOST_GAME_CAVES_PROMPT"
     IN_WORLD_IDLE = "IN_WORLD_IDLE"
@@ -47,7 +49,9 @@ class DSTScreen(StrEnum):
     DISCONNECTED = "DISCONNECTED"
     PAUSED = "PAUSED"
     DEAD = "DEAD"
+    WORLD_RESET_PENDING = "WORLD_RESET_PENDING"
     CHARACTER_SELECTION = "CHARACTER_SELECTION"
+    CHARACTER_LOADOUT = "CHARACTER_LOADOUT"
     UNEXPECTED_MODAL = "UNEXPECTED_MODAL"
 
 
@@ -495,20 +499,41 @@ class VisionDetector:
         confidence = 0.0
         reward_buttons = ("login_reward_open_button", "login_reward_open_hover")
         matched_buttons = [detected[name] for name in reward_buttons if found(name)]
+        reward_close = "login_reward_close_button"
         discard_anchors = (
             "options_discard_title",
             "options_discard_body",
             "options_discard_yes",
         )
-        if all(found(key) for key in discard_anchors):
+        if found("loading_label"):
+            screen = DSTScreen.LOADING
+            confidence = detected["loading_label"].confidence
+        elif found("death_world_reset_text") and found("death_reset_now_button"):
+            screen = DSTScreen.WORLD_RESET_PENDING
+            confidence = min(
+                detected["death_world_reset_text"].confidence,
+                detected["death_reset_now_button"].confidence,
+            )
+        elif all(found(key) for key in discard_anchors):
             screen = DSTScreen.OPTIONS_DISCARD_CONFIRM
             confidence = min(detected[key].confidence for key in discard_anchors)
+        elif found("login_reward_result_title") and found(reward_close):
+            screen = DSTScreen.REWARD_RESULT
+            confidence = min(
+                detected["login_reward_result_title"].confidence,
+                detected[reward_close].confidence,
+            )
         elif found("login_reward_title") and matched_buttons:
             screen = DSTScreen.LOGIN_REWARD_AVAILABLE
             confidence = min(
                 detected["login_reward_title"].confidence,
                 max(button.confidence for button in matched_buttons),
             )
+        elif matched_buttons:
+            # The Open Now button is a verified, specific anchor. The modal can
+            # dim its title far below threshold while the button remains clear.
+            screen = DSTScreen.LOGIN_REWARD_AVAILABLE
+            confidence = max(button.confidence for button in matched_buttons)
         elif found("login_reward_title"):
             # A reward overlay obscures the menu even if its button animates.
             screen = DSTScreen.UNKNOWN
@@ -518,6 +543,67 @@ class VisionDetector:
                 detected["options_title"].confidence,
                 detected["options_back"].confidence,
             )
+        elif all(
+            found(key)
+            for key in (
+                "character_select_title",
+                "character_select_players",
+                "character_select_wilson_name",
+                "character_select_wilson_icon",
+            )
+        ):
+            screen = DSTScreen.CHARACTER_SELECTION
+            confidence = min(
+                detected[key].confidence
+                for key in (
+                    "character_select_title",
+                    "character_select_players",
+                    "character_select_wilson_name",
+                    "character_select_wilson_icon",
+                )
+            )
+        elif (
+            found("character_select_players")
+            and found("character_loadout_wilson_name")
+            and not found("character_select_title")
+        ):
+            screen = DSTScreen.CHARACTER_LOADOUT
+            confidence = min(
+                detected["character_select_players"].confidence,
+                detected["character_loadout_wilson_name"].confidence,
+            )
+        elif all(
+            found(key)
+            for key in (
+                "host_game_playstyle_title",
+                "host_game_world_selected_name",
+                "host_game_world_selected_start",
+            )
+        ):
+            keys = (
+                "host_game_playstyle_title",
+                "host_game_world_selected_name",
+                "host_game_world_selected_start",
+            )
+            screen = DSTScreen.HOST_GAME_WORLD_SELECTED
+            confidence = min(detected[key].confidence for key in keys)
+        elif all(
+            found(key)
+            for key in (
+                "host_game_playstyle_title",
+                "host_game_world_list_search",
+                "host_game_world_list_create_new",
+                "host_game_existing_world_row",
+            )
+        ):
+            keys = (
+                "host_game_playstyle_title",
+                "host_game_world_list_search",
+                "host_game_world_list_create_new",
+                "host_game_existing_world_row",
+            )
+            screen = DSTScreen.HOST_GAME_WORLD_LIST
+            confidence = min(detected[key].confidence for key in keys)
         elif all(
             found(key)
             for key in (

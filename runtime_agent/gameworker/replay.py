@@ -663,6 +663,8 @@ class ReplayCaptureSource:
 class ReplayActionSink:
     """Input-free terminal action boundary; no InputDriver is reachable."""
 
+    input_free = True
+
     def __init__(
         self, *, runtime_id: int, runtime_generation: int, worker_generation: int
     ):

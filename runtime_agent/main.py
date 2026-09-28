@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import signal
+import sys
 import threading
 
 from app.runtime.display import GRAPHICAL_ENVIRONMENT_KEYS
@@ -19,6 +20,15 @@ from runtime_agent.worker_bridge import WorkerBridge
 
 logger = logging.getLogger("runtime_agent")
 stop_event = threading.Event()
+reload_event = threading.Event()
+
+
+def _adoption_identity(name: str) -> tuple[int, int] | None:
+    value = os.getenv(f"RUNTIME_ADOPT_{name}")
+    if not value:
+        return None
+    pid, start_ticks = value.split(":", 1)
+    return int(pid), int(start_ticks)
 
 _CHILD_ENVIRONMENT_SECRETS = {
     "RUNTIME_TOKEN",
@@ -34,9 +44,30 @@ def _stop(*_args) -> None:
     stop_event.set()
 
 
+def _reload(*_args) -> None:
+    reload_event.set()
+    stop_event.set()
+
+
+def _handoff_environment(display, steam, dst) -> dict[str, str] | None:
+    identities = {
+        "DISPLAY": display.adoption_identity(),
+        "STEAM": steam.adoption_identity(),
+        "DST": dst.adoption_identity(),
+    }
+    if any(identity is None for identity in identities.values()):
+        return None
+    environment = os.environ.copy()
+    for name, identity in identities.items():
+        assert identity is not None
+        environment[f"RUNTIME_ADOPT_{name}"] = f"{identity[0]}:{identity[1]}"
+    return environment
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO)
     stop_event.clear()
+    reload_event.clear()
     settings = RuntimeAgentSettings.from_env()
     # Settings retains the runtime bearer in parent memory. Child processes inherit
     # no control-plane or account credentials through os.environ.
@@ -45,6 +76,7 @@ def main() -> int:
         os.environ.pop(name, None)
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGHUP, _reload)
     display = DisplayManager(
         backend=settings.display_backend,
         environment=DisplayEnvironment(
@@ -74,6 +106,13 @@ def main() -> int:
         backoff_seconds=settings.restart_backoff_seconds,
         environment=process_environment,
     )
+    adoption = {name: _adoption_identity(name) for name in ("DISPLAY", "STEAM", "DST")}
+    if any(adoption.values()):
+        if not all(adoption.values()):
+            raise RuntimeError("agent replacement requires all managed process identities")
+        display.adopt(*adoption["DISPLAY"])
+        steam.adopt(*adoption["STEAM"])
+        dst.adopt(*adoption["DST"])
     assert settings.worker_config is not None
     worker = WorkerBridge(
         settings.account_id,
@@ -198,32 +237,72 @@ def main() -> int:
             worker.apply_commands(response.get("commands", []))
             stop_event.wait(settings.heartbeat_seconds)
     finally:
+        try:
+            worker_report = worker.shutdown()
+        except Exception:
+            logger.exception("runtime cleanup failed for worker")
+            worker_report = None
+        if reload_event.is_set():
+            try:
+                identities = _handoff_environment(display, steam, dst)
+                runtime_ready = (
+                    worker_report is not None
+                    and worker_report.healthy
+                    and display.status().value == "READY"
+                    and steam_process.status() == SteamState.READY
+                    and dst_process.status() == DSTState.READY
+                    and steam.alive
+                    and dst.alive
+                )
+                if runtime_ready and identities is not None:
+                    logger.info(
+                        "runtime_agent_reload_preserving_managed_processes "
+                        "runtime_id=%s display_pid=%s steam_pid=%s dst_pid=%s",
+                        settings.runtime_id,
+                        identities["RUNTIME_ADOPT_DISPLAY"].split(":", 1)[0],
+                        identities["RUNTIME_ADOPT_STEAM"].split(":", 1)[0],
+                        identities["RUNTIME_ADOPT_DST"].split(":", 1)[0],
+                    )
+                    os.execve(
+                        sys.executable,
+                        [sys.executable, "-m", "runtime_agent.main"],
+                        identities,
+                    )
+                logger.warning(
+                    "runtime_agent_reload_falling_back_to_full_shutdown "
+                    "runtime_id=%s worker_healthy=%s display=%s steam=%s dst=%s",
+                    settings.runtime_id,
+                    bool(worker_report and worker_report.healthy),
+                    display.status(),
+                    steam_process.status(),
+                    dst_process.status(),
+                )
+            except Exception:
+                logger.exception("agent-only reload failed; using full shutdown")
         cleanup_steps = (
-            ("worker", worker.shutdown),
             ("dst", lambda: dst.shutdown(timeout=3)),
             ("steam", lambda: steam.shutdown(timeout=3)),
             ("display", lambda: display.stop(timeout=3)),
         )
         for component, cleanup in cleanup_steps:
             try:
-                result = cleanup()
-                if component == "worker":
-                    worker_report = result
+                cleanup()
             except Exception:
                 logger.exception("runtime cleanup failed for %s", component)
-        send_heartbeat(
-            settings,
-            phase="SHUTTING_DOWN",
-            steam_running=False,
-            dst_running=False,
-            healthy=False,
-            details={
-                "worker": worker_report.as_dict(),
-                "worker_command_results": worker.acknowledgements(),
-            },
-            capabilities={"worker_plugin": worker_report.plugin},
-        )
-    return 0
+        if worker_report is not None:
+            send_heartbeat(
+                settings,
+                phase="SHUTTING_DOWN",
+                steam_running=False,
+                dst_running=False,
+                healthy=False,
+                details={
+                    "worker": worker_report.as_dict(),
+                    "worker_command_results": worker.acknowledgements(),
+                },
+                capabilities={"worker_plugin": worker_report.plugin},
+            )
+    return 1 if reload_event.is_set() else 0
 
 
 if __name__ == "__main__":

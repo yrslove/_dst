@@ -6,7 +6,9 @@ import queue
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime, timezone
 from enum import StrEnum
+from multiprocessing.reduction import ForkingPickler
 
 from runtime_agent.gameworker.base import WorkerContext, WorkerReport
 from runtime_agent.gameworker.config import WorkerConfig, WorkerMode
@@ -24,6 +26,106 @@ from runtime_agent.gameworker.noop import NoopGameWorker
 logger = logging.getLogger("runtime_agent.gameworker.process")
 
 
+def _trace_command_pipe_writer(
+    channel,
+    *,
+    runtime_id: int,
+    generation: int,
+    transport_state: dict[int, str],
+    transport_lock: threading.Lock,
+) -> None:
+    """Trace the existing QueueFeederThread's actual command-pipe writes."""
+    send_bytes = getattr(channel, "_send_bytes", None)
+    if not callable(send_bytes):
+        logger.debug(
+            "worker_command_pipe_trace_unavailable runtime_id=%s generation=%s "
+            "queue_type=%s",
+            runtime_id,
+            generation,
+            type(channel).__name__,
+        )
+        return
+
+    def traced_send_bytes(data) -> None:
+        try:
+            message = ForkingPickler.loads(data)
+        except Exception:  # noqa: BLE001 - diagnostics must not affect delivery
+            message = None
+        if not isinstance(message, WorkerIPCCommand):
+            send_bytes(data)
+            return
+
+        command_id = message.command_id
+        started = time.monotonic()
+        if command_id is not None:
+            with transport_lock:
+                if int(command_id) in transport_state:
+                    transport_state[int(command_id)] = "pipe_write_in_progress"
+        logger.info(
+            "worker_command_pipe_write_begin runtime_id=%s command_id=%s "
+            "command=%s producing_generation=%s expected_generation=%s "
+            "payload_bytes=%s feeder_thread=%s",
+            runtime_id,
+            command_id,
+            message.command,
+            message.worker_generation,
+            generation,
+            len(data),
+            threading.current_thread().name,
+        )
+        try:
+            send_bytes(data)
+        except Exception as exc:
+            if command_id is not None:
+                with transport_lock:
+                    if int(command_id) in transport_state:
+                        transport_state[int(command_id)] = "pipe_write_failed"
+            logger.exception(
+                "worker_command_pipe_write_failed runtime_id=%s command_id=%s "
+                "command=%s producing_generation=%s expected_generation=%s "
+                "payload_bytes=%s reason=%s",
+                runtime_id,
+                command_id,
+                message.command,
+                message.worker_generation,
+                generation,
+                len(data),
+                type(exc).__name__,
+            )
+            raise
+        if command_id is not None:
+            with transport_lock:
+                if int(command_id) in transport_state:
+                    transport_state[int(command_id)] = "pipe_write_complete"
+        logger.info(
+            "worker_command_pipe_write_complete runtime_id=%s command_id=%s "
+            "command=%s producing_generation=%s expected_generation=%s "
+            "payload_bytes=%s elapsed_ms=%.3f",
+            runtime_id,
+            command_id,
+            message.command,
+            message.worker_generation,
+            generation,
+            len(data),
+            (time.monotonic() - started) * 1000,
+        )
+
+    channel._send_bytes = traced_send_bytes
+
+
+def _configure_child_command_logging() -> None:
+    if mp.current_process().name == "MainProcess":
+        return
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(levelname)s:%(name)s:%(message)s")
+        )
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+
 def _worker_main(
     config: WorkerConfig,
     context: WorkerContext,
@@ -32,6 +134,7 @@ def _worker_main(
     reports,
     acknowledgements,
 ) -> None:
+    _configure_child_command_logging()
     worker = (
         DSTGameWorker(config, worker_generation=worker_generation)
         if config.plugin == "dst"
@@ -60,6 +163,15 @@ def _worker_main(
         )
         try:
             acknowledgements.put(payload, timeout=0.2)
+            logger.info(
+                "worker_ack_child_enqueued runtime_id=%s command_id=%s "
+                "producing_generation=%s result=%s timestamp_utc=%s",
+                context.runtime_id,
+                command_id,
+                worker_generation,
+                result,
+                datetime.now(timezone.utc).isoformat(),
+            )
             return True
         except (queue.Full, OSError, ValueError):
             # The parent will deterministically fail every still-pending command
@@ -127,6 +239,15 @@ def _worker_main(
                 continue
             command = message.command
             command_id = message.command_id
+            logger.info(
+                "worker_command_child_received runtime_id=%s command_id=%s "
+                "command=%s producing_generation=%s expected_generation=%s",
+                context.runtime_id,
+                command_id,
+                command,
+                message.worker_generation,
+                worker_generation,
+            )
             if message.worker_generation != worker_generation:
                 if not publish_ack(
                     current_status(), command_id, WorkerCommandResult.STALE_GENERATION
@@ -308,6 +429,8 @@ class WorkerProcessHost:
         )
         self._acks: list[dict] = []
         self._pending_command_ids: set[int] = set()
+        self._command_transport_state: dict[int, str] = {}
+        self._command_transport_lock = threading.Lock()
 
     @property
     def worker_generation(self) -> int:
@@ -354,6 +477,8 @@ class WorkerProcessHost:
     def _fail_pending_commands(self, result: str) -> None:
         for command_id in sorted(self._pending_command_ids):
             self._acks.append({"id": command_id, "result": result})
+            with self._command_transport_lock:
+                self._command_transport_state.pop(command_id, None)
         self._pending_command_ids.clear()
 
     def _mark_crashed(self) -> None:
@@ -372,8 +497,29 @@ class WorkerProcessHost:
         **values,
     ) -> bool:
         if self._commands is None:
+            if command_id is not None:
+                logger.warning(
+                    "worker_command_host_not_written runtime_id=%s command_id=%s "
+                    "command=%s generation=%s reason=command_queue_unavailable "
+                    "pending=%s",
+                    self.context.runtime_id,
+                    command_id,
+                    command,
+                    self._worker_generation,
+                    sorted(self._pending_command_ids),
+                )
             return False
         if command_id is not None and command_id in self._pending_command_ids:
+            logger.warning(
+                "worker_command_host_not_written runtime_id=%s command_id=%s "
+                "command=%s generation=%s reason=command_id_already_pending "
+                "pending=%s",
+                self.context.runtime_id,
+                command_id,
+                command,
+                self._worker_generation,
+                sorted(self._pending_command_ids),
+            )
             return False
         payload = WorkerIPCCommand(
             worker_generation=self._worker_generation,
@@ -381,18 +527,55 @@ class WorkerProcessHost:
             command_id=command_id,
             values=values,
         )
+        pending_before = sorted(self._pending_command_ids)
+        if command_id is not None:
+            with self._command_transport_lock:
+                self._command_transport_state[int(command_id)] = "parent_queue_put"
+            logger.info(
+                "worker_command_host_queue_put_begin runtime_id=%s command_id=%s "
+                "command=%s generation=%s pending_before=%s",
+                self.context.runtime_id,
+                command_id,
+                command,
+                self._worker_generation,
+                pending_before,
+            )
         try:
             self._commands.put_nowait(payload)
             if command_id is not None:
                 self._pending_command_ids.add(int(command_id))
+                logger.info(
+                    "worker_command_host_queued runtime_id=%s command_id=%s "
+                    "command=%s generation=%s queue_stage=parent_local_buffer "
+                    "pending_after=%s",
+                    self.context.runtime_id,
+                    command_id,
+                    command,
+                    self._worker_generation,
+                    sorted(self._pending_command_ids),
+                )
             return True
-        except (queue.Full, OSError, ValueError):
+        except (queue.Full, OSError, ValueError) as exc:
+            if command_id is not None:
+                with self._command_transport_lock:
+                    self._command_transport_state[int(command_id)] = "queue_put_failed"
             if command_id is not None and report_failure:
                 self._acks.append(
                     {
                         "id": int(command_id),
                         "result": WorkerCommandResult.IPC_QUEUE_FULL,
                     }
+                )
+            if command_id is not None:
+                logger.warning(
+                    "worker_command_host_not_written runtime_id=%s command_id=%s "
+                    "command=%s generation=%s reason=%s pending=%s",
+                    self.context.runtime_id,
+                    command_id,
+                    command,
+                    self._worker_generation,
+                    type(exc).__name__,
+                    sorted(self._pending_command_ids),
                 )
             return False
 
@@ -466,6 +649,14 @@ class WorkerProcessHost:
         assert self._reports is not None
         assert self._ack_reports is not None
         generation = self._worker_generation
+        assert self._commands is not None
+        _trace_command_pipe_writer(
+            self._commands,
+            runtime_id=self.context.runtime_id,
+            generation=generation,
+            transport_state=self._command_transport_state,
+            transport_lock=self._command_transport_lock,
+        )
         self._process = self._ctx.Process(
             target=_worker_main,
             args=(
@@ -521,17 +712,53 @@ class WorkerProcessHost:
         return self._spawn()
 
     def _drain(self) -> None:
+        pending_at_start = sorted(self._pending_command_ids)
+        with self._command_transport_lock:
+            transport_at_start = sorted(self._command_transport_state.items())
+        trace_drain = bool(pending_at_start)
+        report_count = 0
+        ack_count = 0
+        if trace_drain:
+            logger.info(
+                "worker_ipc_report_drain_begin runtime_id=%s generation=%s "
+                "pending=%s transport_state=%s",
+                self.context.runtime_id,
+                self._worker_generation,
+                pending_at_start,
+                transport_at_start,
+            )
         if self._reports is not None:
             while True:
                 try:
                     payload = self._reports.get_nowait()
                 except (queue.Empty, OSError, ValueError):
                     break
+                report_count += 1
                 if not isinstance(payload, WorkerIPCReport):
                     self._stale_messages += 1
+                    if self._stale_messages == 1 or self._stale_messages % 64 == 0:
+                        logger.warning(
+                            "worker_ipc_discard runtime_id=%s message_type=report "
+                            "reason=invalid_type received_type=%s expected_generation=%s "
+                            "dropped_count=%s",
+                            self.context.runtime_id,
+                            type(payload).__name__,
+                            self._worker_generation,
+                            self._stale_messages,
+                        )
                     continue
                 if payload.worker_generation != self._worker_generation:
                     self._stale_messages += 1
+                    if self._stale_messages == 1 or self._stale_messages % 64 == 0:
+                        logger.warning(
+                            "worker_ipc_discard runtime_id=%s message_type=report "
+                            "reason=stale_generation received_generation=%s "
+                            "expected_generation=%s dropped_count=%s",
+                            self.context.runtime_id,
+                            payload.worker_generation,
+                            self._worker_generation,
+                            self._stale_messages,
+                        )
                     continue
                 self._last_report = WorkerReport(**payload.report)
                 self._last_report.restart_count = self.restart_count
@@ -544,26 +771,99 @@ class WorkerProcessHost:
                     WorkerProcessState.RUNNING,
                 }:
                     self._state = WorkerProcessState.RUNNING
+        if trace_drain:
+            logger.info(
+                "worker_ipc_report_drain_end runtime_id=%s generation=%s "
+                "messages_drained=%s pending=%s",
+                self.context.runtime_id,
+                self._worker_generation,
+                report_count,
+                sorted(self._pending_command_ids),
+            )
+            logger.info(
+                "worker_ipc_ack_drain_begin runtime_id=%s generation=%s "
+                "pending=%s",
+                self.context.runtime_id,
+                self._worker_generation,
+                sorted(self._pending_command_ids),
+            )
         if self._ack_reports is not None:
             while True:
                 try:
                     payload = self._ack_reports.get_nowait()
                 except (queue.Empty, OSError, ValueError):
                     break
+                ack_count += 1
                 if not isinstance(payload, WorkerIPCAcknowledgement):
                     self._stale_messages += 1
+                    logger.warning(
+                        "worker_ipc_discard runtime_id=%s message_type=ack "
+                        "reason=invalid_type received_type=%s expected_generation=%s "
+                        "dropped_count=%s",
+                        self.context.runtime_id,
+                        type(payload).__name__,
+                        self._worker_generation,
+                        self._stale_messages,
+                    )
                     continue
+                pending_before = sorted(self._pending_command_ids)
+                logger.info(
+                    "worker_ack_host_received runtime_id=%s command_id=%s "
+                    "producing_generation=%s expected_generation=%s result=%s "
+                    "pending_before=%s",
+                    self.context.runtime_id,
+                    payload.command_id,
+                    payload.worker_generation,
+                    self._worker_generation,
+                    payload.result,
+                    pending_before,
+                )
                 if payload.worker_generation != self._worker_generation:
                     self._stale_messages += 1
+                    logger.warning(
+                        "worker_ipc_discard runtime_id=%s message_type=ack "
+                        "command_id=%s reason=stale_generation received_generation=%s "
+                        "expected_generation=%s dropped_count=%s pending_after=%s",
+                        self.context.runtime_id,
+                        payload.command_id,
+                        payload.worker_generation,
+                        self._worker_generation,
+                        self._stale_messages,
+                        pending_before,
+                    )
                     continue
                 self._last_report = WorkerReport(**payload.report)
                 self._last_report.restart_count = self.restart_count
                 command_id = int(payload.command_id)
                 if command_id not in self._pending_command_ids:
                     self._stale_messages += 1
+                    logger.warning(
+                        "worker_ipc_discard runtime_id=%s message_type=ack "
+                        "command_id=%s reason=no_pending_command "
+                        "received_generation=%s expected_generation=%s "
+                        "dropped_count=%s pending_after=%s",
+                        self.context.runtime_id,
+                        command_id,
+                        payload.worker_generation,
+                        self._worker_generation,
+                        self._stale_messages,
+                        pending_before,
+                    )
                     continue
                 self._pending_command_ids.discard(command_id)
+                with self._command_transport_lock:
+                    self._command_transport_state.pop(command_id, None)
                 self._acks.append({"id": command_id, "result": payload.result})
+                logger.info(
+                    "worker_ack_host_accepted runtime_id=%s command_id=%s "
+                    "generation=%s result=%s pending_before=%s pending_after=%s",
+                    self.context.runtime_id,
+                    command_id,
+                    self._worker_generation,
+                    payload.result,
+                    pending_before,
+                    sorted(self._pending_command_ids),
+                )
                 if self._ready_at is None:
                     self._ready_at = self._clock()
                     if self._state == WorkerProcessState.STARTING:
@@ -573,6 +873,20 @@ class WorkerProcessHost:
                     WorkerProcessState.RUNNING,
                 }:
                     self._state = WorkerProcessState.RUNNING
+        if trace_drain:
+            with self._command_transport_lock:
+                transport_at_end = sorted(self._command_transport_state.items())
+            logger.info(
+                "worker_ipc_ack_drain_end runtime_id=%s generation=%s "
+                "messages_drained=%s pending_before=%s pending_after=%s "
+                "transport_state=%s",
+                self.context.runtime_id,
+                self._worker_generation,
+                ack_count,
+                pending_at_start,
+                sorted(self._pending_command_ids),
+                transport_at_end,
+            )
 
     def _may_have_live_input(self) -> bool:
         return self.config.plugin == "dst" and (

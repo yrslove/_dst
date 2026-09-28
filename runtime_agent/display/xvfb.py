@@ -25,6 +25,11 @@ class XvfbDisplayBackend:
         self._terminal_error = False
         self._terminal_reason = "Xvfb readiness timeout"
 
+    def adopt(self, pid: int, start_ticks: int) -> None:
+        if not self._socket().exists():
+            raise RuntimeError("cannot adopt Xvfb without its display socket")
+        self.supervisor.adopt(pid, start_ticks)
+
     def _socket(self) -> Path:
         number = self.environment.display.rsplit(":", 1)[-1].split(".", 1)[0]
         return Path("/tmp/.X11-unix") / f"X{number}"

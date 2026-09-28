@@ -25,15 +25,24 @@ class ActionName(StrEnum):
     TURN_RIGHT = "TURN_RIGHT"
     INTERACT = "INTERACT"
     CANCEL = "CANCEL"
+    RESUME_WORLD = "RESUME_WORLD"
     OPEN_INVENTORY = "OPEN_INVENTORY"
     STOP_MOVEMENT = "STOP_MOVEMENT"
     RELEASE_ALL = "RELEASE_ALL"
     RECOVERY = "RECOVERY"
     PAUSE = "PAUSE"
     CLICK_REWARD_OPEN = "CLICK_REWARD_OPEN"
+    CLICK_REWARD_CLOSE = "CLICK_REWARD_CLOSE"
     CLICK_OPTIONS = "CLICK_OPTIONS"
     CLICK_BACK = "CLICK_BACK"
     DISCARD_OPTIONS = "DISCARD_OPTIONS"
+    CLICK_HOST_GAME = "CLICK_HOST_GAME"
+    SELECT_EXISTING_WORLD = "SELECT_EXISTING_WORLD"
+    START_EXISTING_WORLD = "START_EXISTING_WORLD"
+    SELECT_SURVIVOR = "SELECT_SURVIVOR"
+    START_SURVIVOR = "START_SURVIVOR"
+    SELECT_SURVIVAL = "SELECT_SURVIVAL"
+    SELECT_NO_CAVES = "SELECT_NO_CAVES"
 
 
 class ActionStatus(StrEnum):
@@ -155,13 +164,24 @@ _OPPOSITES = {
 _PRESS_KEYS = {
     ActionName.INTERACT: "interact",
     ActionName.CANCEL: "cancel",
+    ActionName.RESUME_WORLD: "cancel",
     ActionName.OPEN_INVENTORY: "inventory",
 }
 CLICK_REGIONS = {
     ActionName.CLICK_REWARD_OPEN: (0.35, 0.75, 0.65, 0.97),
+    ActionName.CLICK_REWARD_CLOSE: (0.35, 0.75, 0.65, 0.97),
     ActionName.CLICK_OPTIONS: (0.02, 0.66, 0.18, 0.75),
     ActionName.CLICK_BACK: (0.02, 0.87, 0.15, 0.99),
     ActionName.DISCARD_OPTIONS: (0.32, 0.54, 0.50, 0.61),
+    ActionName.CLICK_HOST_GAME: (0.02, 0.42, 0.28, 0.65),
+    ActionName.SELECT_EXISTING_WORLD: (0.15, 0.20, 0.86, 0.40),
+    # Match the selected-world Resume World detector region. The click point is
+    # still resolved from that live template detection; this is only its guard.
+    ActionName.START_EXISTING_WORLD: (0.74, 0.89, 0.94, 0.99),
+    ActionName.SELECT_SURVIVOR: (0.25, 0.14, 0.42, 0.37),
+    ActionName.START_SURVIVOR: (0.81, 0.9, 0.97, 0.98),
+    ActionName.SELECT_SURVIVAL: (0.40, 0.35, 0.60, 0.67),
+    ActionName.SELECT_NO_CAVES: (0.48, 0.30, 0.64, 0.60),
 }
 _SAFETY_ACTIONS = {ActionName.STOP_MOVEMENT, ActionName.RELEASE_ALL}
 
@@ -899,6 +919,8 @@ class GameActions:
 
 class ObserveActions:
     """OBSERVE-only action boundary with no input driver or executor thread."""
+
+    input_free = True
 
     def __init__(
         self, *, runtime_id: int, runtime_generation: int, worker_generation: int

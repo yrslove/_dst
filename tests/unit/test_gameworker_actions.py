@@ -54,6 +54,7 @@ def executor(
     queue_size: int = 4,
     driver: FakeInputDriver | None = None,
     deadman_timeout: float = 1.0,
+    allowed_actions: frozenset[ActionName] | None = None,
 ):
     driver = driver or FakeInputDriver()
     controller = InputController(
@@ -73,6 +74,7 @@ def executor(
         mode=mode,
         action_timeout=1.0,
         queue_size=queue_size,
+        allowed_actions=allowed_actions,
     )
     return value, controller, driver, deadman
 
@@ -223,7 +225,7 @@ def test_revoke_during_click_settle_prevents_new_button_input():
     thread.join(timeout=1)
     assert not thread.is_alive()
     assert failures
-    assert [event.operation for event in driver.events] == ["mouse_move", "focus_game"]
+    assert [event.operation for event in driver.events] == ["mouse_move", "mouse_move", "focus_game"]
     assert not controller.has_held_inputs
 
 
@@ -400,6 +402,69 @@ def test_worker_config_validates_stage2_bounds():
         except ValueError:
             continue
         raise AssertionError("invalid Stage 2 configuration was accepted")
+
+
+def test_reward_close_click_uses_canonical_executor_and_allowed_anchor():
+    value, _controller, driver, _deadman = executor(
+        allowed_actions=frozenset({ActionName.CLICK_REWARD_CLOSE})
+    )
+    request = Action(
+        "reward-close",
+        ActionName.CLICK_REWARD_CLOSE,
+        7,
+        3,
+        runtime_id=2,
+        deadline=time.monotonic() + 0.9,
+        parameters=(
+            ("x", 0.5),
+            ("y", 0.88),
+            ("width", 1280),
+            ("height", 720),
+        ),
+    )
+
+    result = value.execute(request)
+    value.shutdown()
+
+    assert result.status == ActionStatus.SENT
+    assert [event.operation for event in driver.events] == [
+        "mouse_move",
+        "mouse_move",
+        "focus_game",
+        "mouse_down",
+        "mouse_up",
+    ]
+    assert driver.events[0].value == (656, 633)
+    assert driver.events[1].value == (640, 633)
+
+
+def test_start_existing_world_guard_accepts_saved_live_resume_anchor():
+    value, _controller, driver, _deadman = executor(
+        allowed_actions=frozenset({ActionName.START_EXISTING_WORLD})
+    )
+    point = NormalizedPoint(0.828515625, 0.9527777777777777)
+    viewport = Viewport(1280, 720)
+    request = Action(
+        "resume-world",
+        ActionName.START_EXISTING_WORLD,
+        7,
+        3,
+        runtime_id=2,
+        deadline=time.monotonic() + 0.9,
+        parameters=(
+            ("x", point.x),
+            ("y", point.y),
+            ("width", viewport.width),
+            ("height", viewport.height),
+        ),
+    )
+
+    result = value.execute(request)
+    value.shutdown()
+
+    assert result.status == ActionStatus.SENT
+    assert driver.events[0].operation == "mouse_move"
+    assert driver.events[1].value == viewport.point(point)
 
 
 def test_parent_emergency_release_attempts_every_binding_independently(monkeypatch):

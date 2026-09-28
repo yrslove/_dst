@@ -68,7 +68,10 @@ class DSTGameWorker:
         self.input: InputController | None = None
         self.deadman: DeadmanSafety | None = None
         self.actions: GameActions | None = None
-        self.activity = ActivityController()
+        self.activity = ActivityController(
+            validation_flow_enabled=config.validation_flow_enabled,
+            validation_movement_enabled=config.validation_movement_enabled,
+        )
         self.navigation: NavigationController | None = None
         self.recovery: RecoveryController | None = None
         self.vision: VisionDetector | None = None
@@ -214,7 +217,7 @@ class DSTGameWorker:
                     worker_generation=self.worker_generation,
                     runtime_id=context.runtime_id,
                     queue_size=self.config.action_queue_size,
-                    allowed_actions=frozenset({ActionName.CLICK_REWARD_OPEN}),
+                    allowed_actions=self._permitted_active_actions(),
                 )
                 navigation = NavigationController(
                     actions,
@@ -447,7 +450,10 @@ class DSTGameWorker:
                 self.pause()
                 return self.status()
             self.mode = mode
-            self.activity = ActivityController()
+            self.activity = ActivityController(
+                validation_flow_enabled=self.config.validation_flow_enabled,
+                validation_movement_enabled=self.config.validation_movement_enabled,
+            )
             if self.context:
                 self.prepare(self.context)
             self._sync_action_mode()
@@ -493,7 +499,10 @@ class DSTGameWorker:
             WorkerState.DISABLED,
             WorkerState.PAUSED,
         }:
-            self.activity = ActivityController()
+            self.activity = ActivityController(
+                validation_flow_enabled=self.config.validation_flow_enabled,
+                validation_movement_enabled=self.config.validation_movement_enabled,
+            )
             if self.machine.state == WorkerState.DISABLED:
                 self.machine.transition(WorkerState.INITIALIZING, "worker mode enabled")
             if self.context:
@@ -607,6 +616,19 @@ class DSTGameWorker:
             )
             if outcome.action_result is not None:
                 self._record_action(outcome.action_result)
+            if self.activity.validation_complete:
+                logger.info(
+                    "worker validation route complete runtime_id=%s "
+                    "worker_generation=%s final_screen=%s",
+                    self.context.runtime_id if self.context else 0,
+                    self.worker_generation,
+                    observation.screen.value if observation else "UNKNOWN",
+                )
+                self.set_mode(WorkerMode.OBSERVE)
+                self._last_action = "VALIDATION_COMPLETE"
+                self._last_action_at = time.monotonic()
+                self._error_code = None
+                return self.status()
             if outcome.status == "CAPTURE_FAILED":
                 self._capture_errors += 1
                 self._error_code = "WORKER_CAPTURE_FAILED"
@@ -638,7 +660,11 @@ class DSTGameWorker:
                 self._error_code = None
             if self.mode == WorkerMode.ACTIVE and (
                 self.activity.intervention_required
-                or (self._unknown_since is not None and now - self._unknown_since > 20)
+                or (
+                    self._unknown_since is not None
+                    and now - self._unknown_since > 20
+                    and not (self.pipeline and self.pipeline.verification_pending)
+                )
             ):
                 self.activity.counters["recovery_failures"] += 1
                 try:
@@ -756,10 +782,12 @@ class DSTGameWorker:
 
     def _record_action(self, result) -> None:
         action, dry_run = result.action, result.dry_run
-        self._last_action = (
-            f"{action} {result.duration:.2f}s {result.result}"
-            f"{' (dry run)' if dry_run else ''}"
-        )[:80]
+        summary = f"{action} {result.duration:.2f}s {result.result}"
+        if result.reason:
+            summary += f" reason={result.reason}"
+        if dry_run:
+            summary += " (dry run)"
+        self._last_action = summary[:80]
         self._last_action_at = time.monotonic()
         self._would_execute = action if dry_run else None
         if result.status == ActionStatus.COMPLETED:
@@ -876,6 +904,33 @@ class DSTGameWorker:
             return WorkerMode.OBSERVE
         return WorkerMode.ACTIVE
 
+    def _permitted_active_actions(self) -> frozenset[ActionName]:
+        actions = {
+            ActionName.CLICK_REWARD_OPEN,
+            ActionName.CLICK_REWARD_CLOSE,
+        }
+        if self.config.validation_flow_enabled:
+            actions.update(
+                {
+                    ActionName.CLICK_OPTIONS,
+                    ActionName.CLICK_BACK,
+                    ActionName.DISCARD_OPTIONS,
+                    ActionName.CLICK_HOST_GAME,
+                    ActionName.SELECT_EXISTING_WORLD,
+                    ActionName.START_EXISTING_WORLD,
+                    ActionName.SELECT_SURVIVOR,
+                    ActionName.START_SURVIVOR,
+                    ActionName.MOVE_FORWARD,
+                    ActionName.MOVE_BACKWARD,
+                    ActionName.TURN_LEFT,
+                    ActionName.TURN_RIGHT,
+                    ActionName.CANCEL,
+                    ActionName.RESUME_WORLD,
+                    ActionName.INTERACT,
+                }
+            )
+        return frozenset(actions)
+
     def _sync_action_mode(self) -> None:
         if self.actions:
             state = self.machine.state
@@ -986,7 +1041,9 @@ class DSTGameWorker:
                 "last_behavior_decision": self.activity.decisions[-1]
                 if self.activity.decisions
                 else None,
-                "permitted_active_actions": [ActionName.CLICK_REWARD_OPEN.value],
+                "permitted_active_actions": sorted(
+                    action.value for action in self._permitted_active_actions()
+                ),
                 "transitions": self.machine.history()[-10:],
                 "diagnostics": {
                     "worker_mode": self._effective_mode(),

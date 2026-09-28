@@ -11,6 +11,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--sdl-library', required=True)
     parser.add_argument('--seconds', type=float, default=45)
+    parser.add_argument('--window-title', default='DST input diagnostic')
     args = parser.parse_args()
     if not 1 <= args.seconds <= 120:
         parser.error('seconds must be 1..120')
@@ -24,7 +25,9 @@ def main():
     sdl.SDL_GetError.restype = C.c_char_p
     if sdl.SDL_Init(0x20):
         raise RuntimeError(sdl.SDL_GetError())
-    window = sdl.SDL_CreateWindow(b'DST input diagnostic', 0, 0, 400, 300, 4)
+    window = sdl.SDL_CreateWindow(
+        args.window_title.encode('utf-8'), 0, 0, 400, 300, 4
+    )
     if not window:
         raise RuntimeError(sdl.SDL_GetError())
     sdl.SDL_RaiseWindow(window)

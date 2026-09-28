@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import selectors
 import subprocess
@@ -10,6 +11,8 @@ from pathlib import Path
 
 from app.runtime.display import GRAPHICAL_ENVIRONMENT_KEYS, DisplayEnvironment
 from app.subprocess_env import sanitized_subprocess_environment
+
+logger = logging.getLogger("runtime_agent.gameworker.input")
 
 
 class InputError(RuntimeError):
@@ -74,7 +77,18 @@ class XpraInputDriver:
             raise InputError("xpra input channel is closed")
         try:
             self._process.stdin.write(json.dumps([operation, *args]).encode() + b"\n")
-            return self._read(self.timeout)
+            result = self._read(self.timeout)
+            if operation == "button" and len(args) > 1 and args[1] is False:
+                logger.warning(
+                    "xpra_button_ack %s",
+                    json.dumps(result, sort_keys=True, separators=(",", ":")),
+                )
+            elif operation in {"move", "focus", "button"}:
+                logger.info(
+                    "xpra_input_ack %s",
+                    json.dumps(result, sort_keys=True, separators=(",", ":")),
+                )
+            return result
         except (OSError, InputError) as exc:
             # EOF makes the bridge release inputs before destroying its server.
             self.close()

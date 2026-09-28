@@ -6,17 +6,23 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Protocol
 
-from runtime_agent.gameworker.actions import ActionName, ActionResult, ActionStatus
+from runtime_agent.gameworker.actions import (
+    ActionName,
+    ActionResult,
+    ActionStatus,
+)
 from runtime_agent.gameworker.activity import ActionProposal, Planner
 from runtime_agent.gameworker.capture import (
     CaptureError,
     CaptureSource,
     LatestFrameSlot,
 )
+from runtime_agent.gameworker.config import WorkerMode
 from runtime_agent.gameworker.geometry import CalibrationProfile
 from runtime_agent.gameworker.transitions import (
     CONTRACTS,
     ActionLifecycle,
+    action_precondition_error,
     click_request,
 )
 from runtime_agent.gameworker.vision import (
@@ -206,6 +212,17 @@ class ObservePipeline:
             failure = getattr(self.planner, "on_action_failure", None)
             if failure is not None:
                 failure(expired)
+            if self.recorder is not None:
+                observation = self.latest_observation
+                self.recorder.record_action_result(
+                    expired,
+                    frame_id=observation.source_frame_id if observation else None,
+                    observation_id=(
+                        f"observation-{observation.observation_generation}"
+                        if observation
+                        else None
+                    ),
+                )
             return PipelineOutcome(
                 "ACTION_FAILED", action_result=expired, reason=expired.reason
             )
@@ -404,18 +421,24 @@ class ObservePipeline:
             except Exception:
                 logger.warning("recording rejected a planner proposal", exc_info=True)
         if proposal.action in CONTRACTS:
-            try:
-                target, viewport = click_request(proposal.action, observation)
-            except ValueError as exc:
+            contract = CONTRACTS[proposal.action]
+            target = viewport = None
+            precondition_error = (
+                None
+                if getattr(self.actions, "input_free", False)
+                or getattr(self.actions, "mode", None) == WorkerMode.OBSERVE
+                else action_precondition_error(proposal.action, observation)
+            )
+            if precondition_error is not None:
                 result = ActionResult(
-                    f"anchor-missing-{observation.observation_generation}",
+                    f"precondition-{observation.observation_generation}",
                     proposal.action,
-                    ActionStatus.REJECTED,
+                    ActionStatus.SAFETY_BLOCKED,
                     0.0,
                     self.runtime_generation,
                     self.worker_generation,
                     observation.runtime_id,
-                    str(exc),
+                    precondition_error,
                 )
                 on_result = getattr(self.planner, "on_action_result", None)
                 if on_result is not None:
@@ -426,8 +449,33 @@ class ObservePipeline:
                     observation,
                     proposal,
                     result,
-                    reason=str(exc),
+                    reason=precondition_error,
                 )
+            if contract.anchors:
+                try:
+                    target, viewport = click_request(proposal.action, observation)
+                except ValueError as exc:
+                    result = ActionResult(
+                        f"anchor-missing-{observation.observation_generation}",
+                        proposal.action,
+                        ActionStatus.REJECTED,
+                        0.0,
+                        self.runtime_generation,
+                        self.worker_generation,
+                        observation.runtime_id,
+                        str(exc),
+                    )
+                    on_result = getattr(self.planner, "on_action_result", None)
+                    if on_result is not None:
+                        result = on_result(observation, result)
+                    return PipelineOutcome(
+                        "ACTION_FAILED",
+                        frame.frame_id,
+                        observation,
+                        proposal,
+                        result,
+                        reason=str(exc),
+                    )
             result = self.actions.execute(
                 proposal.action,
                 duration=proposal.duration,

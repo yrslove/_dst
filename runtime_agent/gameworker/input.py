@@ -290,7 +290,16 @@ class InputController:
             if point is not None:
                 if viewport is None:
                     raise ValueError("viewport is required for normalized mouse input")
-                self.driver.mouse_move(*viewport.point(point))
+                x, y = viewport.point(point)
+                # A restarted game can inherit a pointer already on a menu
+                # button without receiving the motion that establishes hover.
+                # Always generate a fresh motion before pressing the target.
+                if viewport.width > 1:
+                    near_x = min(x + 16, viewport.left + viewport.width - 1)
+                    if near_x == x:
+                        near_x = max(viewport.left, x - 16)
+                    self.driver.mouse_move(near_x, y)
+                self.driver.mouse_move(x, y)
                 self._require_active()
                 self.driver.focus_game_at_pointer()
                 self._revocation.wait(getattr(self.driver, "settle_seconds", 0.0))

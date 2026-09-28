@@ -96,6 +96,12 @@ class WorkerBridge:
                     )
                     continue
                 if command_id in self._completed_commands:
+                    logger.info(
+                        "worker_ack_bridge_replay runtime_id=%s command_id=%s result=%s",
+                        self.context.runtime_id,
+                        command_id,
+                        self._completed_commands[command_id],
+                    )
                     self._outgoing_acks.append(
                         {
                             "id": command_id,
@@ -106,6 +112,14 @@ class WorkerBridge:
                 if command_id in self._pending_commands:
                     continue
                 self._pending_commands.add(command_id)
+                logger.info(
+                    "worker_command_bridge_accepted runtime_id=%s command_id=%s "
+                    "command=%s pending_after=%s",
+                    self.context.runtime_id,
+                    command_id,
+                    command,
+                    sorted(self._pending_commands),
+                )
                 if command == "STOP":
                     self._host.request_stop(command_id)
                 elif command == "RESUME":
@@ -135,10 +149,28 @@ class WorkerBridge:
             for item in self._host.acknowledgements():
                 command_id = int(item["id"])
                 result = str(item["result"])
+                pending_before = sorted(self._pending_commands)
                 self._pending_commands.discard(command_id)
                 self._remember_completion(command_id, result)
                 self._outgoing_acks.append(item)
+                logger.info(
+                    "worker_ack_bridge_received runtime_id=%s command_id=%s "
+                    "result=%s pending_match=%s pending_before=%s pending_after=%s",
+                    self.context.runtime_id,
+                    command_id,
+                    result,
+                    command_id in pending_before,
+                    pending_before,
+                    sorted(self._pending_commands),
+                )
             values, self._outgoing_acks = self._outgoing_acks, []
+            for item in values:
+                logger.info(
+                    "worker_ack_bridge_forward runtime_id=%s command_id=%s result=%s",
+                    self.context.runtime_id,
+                    item["id"],
+                    item["result"],
+                )
             return values
 
     def shutdown(self) -> WorkerReport:

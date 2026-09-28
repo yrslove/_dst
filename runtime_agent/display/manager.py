@@ -61,6 +61,16 @@ class DisplayManager:
             self._state = DisplayState.STOPPED
         return self._state
 
+    def adopt(self, pid: int, start_ticks: int) -> None:
+        if self._xvfb is None:
+            raise RuntimeError("Xvfb adoption requires the xvfb backend")
+        self._xvfb.adopt(pid, start_ticks)
+
+    def adoption_identity(self) -> tuple[int, int] | None:
+        if self._xvfb is None:
+            return None
+        return self._xvfb.supervisor.adoption_identity()
+
     def start(self) -> DisplayState:
         if self._state == DisplayState.NOT_CONFIGURED:
             self.prepare()

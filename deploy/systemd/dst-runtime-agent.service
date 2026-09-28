@@ -14,6 +14,7 @@ RuntimeDirectoryMode=0700
 WorkingDirectory=/opt/dst-orchestrator
 EnvironmentFile=/etc/dst-runtime/agent.env
 ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=45

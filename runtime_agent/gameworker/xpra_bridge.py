@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 
 class Channel:
@@ -36,7 +37,9 @@ class Channel:
             "share": False, "wants_aliases": False, "rencode": False,
             "bencode": True, "encodings": ["rgb24"], "network-state": False,
         }])
-        self.receive_until(b"hello")
+        self.server_readonly, self.server_pointer = _server_input_capabilities(
+            self.receive_until(b"hello")
+        )
 
     def send(self, packet):
         data = self.encode(packet)
@@ -83,14 +86,25 @@ def query(*args):
     ).stdout.strip()
 
 
-def focus_game():
+def focus_game(expected_pointer):
     location = dict(line.split("=", 1) for line in query("getmouselocation", "--shell").splitlines())
+    pointer = [int(location["X"]), int(location["Y"])]
+    if pointer != expected_pointer:
+        raise ValueError("xpra pointer did not reach the resolved target")
     window = location["WINDOW"]
-    if not window.isdecimal() or query("getwindowname", window) != "Don't Starve Together":
+    name = query("getwindowname", window) if window.isdecimal() else ""
+    if name != "Don't Starve Together":
         raise ValueError("anchor is not over DST")
     query("windowfocus", "--sync", window)
-    if query("getwindowfocus") != window:
+    focused = query("getwindowfocus")
+    if focused != window:
         raise ValueError("DST focus unavailable")
+    return {
+        "pointer": pointer,
+        "window": window,
+        "window_name": name,
+        "focused_window": focused,
+    }
 
 
 def key_packet(key, pressed):
@@ -109,6 +123,75 @@ def key_packet(key, pressed):
     if not keysym:
         raise ValueError("key has no X11 keysym")
     return ["key-action", 1, name, pressed, [], keysym, "", codes[key], 0]
+
+
+def _server_argv(display, directory):
+    return [
+        "/usr/bin/xpra", "shadow", display, "--daemon=no",
+        f"--socket-dir={directory}", f"--socket-dirs={directory}",
+        f"--bind={directory}/input.sock", "--html=off", "--mdns=no",
+        f"--log-file={directory}/xpra.log", "--debug=mouse", "--readonly=no",
+        "--pulseaudio=no", "--speaker=off", "--microphone=off",
+        "--clipboard=no", "--notifications=no", "--dbus-control=no",
+        "--dbus-launch=", "--tray=no", "--exit-with-client=yes",
+        # The worker owns this server's lifetime and closes it when input
+        # ownership ends. A short idle timer can kill the bridge during an
+        # intentional worker pause, leaving a stale driver for its next action.
+        "--server-idle-timeout=0",
+    ]
+
+
+def _server_input_capabilities(packet):
+    if not isinstance(packet, (list, tuple)) or len(packet) < 2:
+        raise ValueError("xpra server input capabilities are missing")
+    capabilities = packet[1]
+    if not isinstance(capabilities, dict):
+        raise TypeError("xpra server capabilities are malformed")
+
+    def read_bool(name, default):
+        value = capabilities.get(name, capabilities.get(name.encode(), default))
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, bytes):
+            value = value.decode("ascii", "ignore")
+        if isinstance(value, str):
+            if value.lower() in {"1", "true", "yes"}:
+                return True
+            if value.lower() in {"0", "false", "no"}:
+                return False
+        return default
+
+    return read_bool("readonly", True), read_bool("pointer", False)
+
+
+def _xpra_mouse_log_tail(path, stderr=None):
+    """Return a small, filtered tail for one bounded input diagnostic."""
+    chunks = []
+    try:
+        with Path(path).open("rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            handle.seek(max(0, size - 8192))
+            chunks.append(handle.read(8192))
+    except OSError:
+        pass
+    if stderr is not None:
+        try:
+            stderr.flush()
+            end = stderr.seek(0, os.SEEK_END)
+            stderr.seek(max(0, end - 8192))
+            chunks.append(stderr.read(8192))
+            stderr.seek(0, os.SEEK_END)
+        except OSError:
+            pass
+    markers = ("button", "pointer", "mouse", "xtest", "readonly", "error")
+    return [
+        line[-220:]
+        for raw in chunks
+        for line in raw.decode("utf-8", "replace").splitlines()
+        if any(marker in line.lower() for marker in markers)
+    ][-16:]
 
 
 def reply(**values):
@@ -131,7 +214,10 @@ def main():
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
-    with tempfile.TemporaryDirectory(prefix="dst-input-") as directory:
+    with (
+        tempfile.TemporaryDirectory(prefix="dst-input-") as directory,
+        tempfile.TemporaryFile() as server_stderr,
+    ):
         try:
             env = os.environ.copy()
             for name in ("XPRA_SYSTEM_CONF_DIRS", "XPRA_USER_CONF_DIRS", "XPRA_DEFAULT_CONF_DIRS"):
@@ -139,16 +225,10 @@ def main():
             env["XDG_RUNTIME_DIR"] = directory
             # Ignore system/user xpra config: it may contain startup commands,
             # TCP listeners, or clipboard forwarding from an operator's VIEW.
-            argv = ["/usr/bin/xpra", "shadow", display, "--daemon=no",
-                    f"--socket-dir={directory}", f"--socket-dirs={directory}",
-                    f"--bind={directory}/input.sock", "--html=off", "--mdns=no",
-                    "--pulseaudio=no", "--speaker=off", "--microphone=off",
-                    "--clipboard=no", "--notifications=no", "--dbus-control=no",
-                    "--dbus-launch=", "--tray=no", "--exit-with-client=yes",
-                    "--server-idle-timeout=15"]
+            argv = _server_argv(display, directory)
             process = subprocess.Popen(
                 argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, close_fds=True,
+                stderr=server_stderr, close_fds=True,
                 preexec_fn=parent_death_signal,  # noqa: PLW1509 - single-threaded bridge
             )
             path = directory + "/input.sock"
@@ -165,12 +245,19 @@ def main():
                     if process.poll() is not None or time.monotonic() > deadline:
                         raise RuntimeError("xpra input handshake failed") from None
                     time.sleep(.05)
+            if channel.server_readonly or not channel.server_pointer:
+                raise RuntimeError("xpra shadow server input is unavailable")
             channel.barrier()
-            reply(ready=1)
+            reply(
+                ready=1,
+                server_readonly=channel.server_readonly,
+                server_pointer=channel.server_pointer,
+            )
             for line in sys.stdin.buffer:
                 if len(line) > 1024:
                     raise ValueError("request too large")
                 operation, *args = json.loads(line)
+                diagnostics = {"operation": operation, "pointer": list(point)}
                 if operation == "move":
                     x, y = args
                     if not all(type(v) is int and 0 <= v < 4096 for v in (x, y)):
@@ -178,7 +265,7 @@ def main():
                     point = [x, y]
                     channel.send(["pointer-position", 1, point, [], []])
                 elif operation == "focus":
-                    focus_game()
+                    diagnostics.update(focus_game(point))
                 elif operation == "button":
                     button, pressed = args
                     if button not in range(1, 6) or type(pressed) is not bool:
@@ -186,6 +273,7 @@ def main():
                     if pressed:
                         buttons.add(button)
                     channel.send(["button-action", 1, button, pressed, point, [], []])
+                    diagnostics.update(button=button, pressed=pressed)
                     if not pressed:
                         buttons.discard(button)
                 elif operation == "key":
@@ -199,7 +287,12 @@ def main():
                 else:
                     raise ValueError("unsupported input operation")
                 channel.barrier()
-                reply()
+                diagnostics["pointer"] = list(point)
+                if operation == "button":
+                    diagnostics["server_input_log"] = _xpra_mouse_log_tail(
+                        Path(directory) / "xpra.log", server_stderr
+                    )
+                reply(**diagnostics)
         finally:
             if channel:
                 try:
