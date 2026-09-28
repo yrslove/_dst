@@ -31,6 +31,20 @@
       "verified": true
     },
     {
+      "id": "world_present_banner",
+      "filename": "world_present_banner.png",
+      "expected_region": [
+        0.115,
+        0.0,
+        0.2,
+        0.14
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Wrapped present banner visible in the live world; availability is not established",
+      "verified": true
+    },
+    {
       "id": "login_reward_title",
       "filename": "login_reward_title.png",
       "expected_region": [
@@ -168,6 +182,20 @@
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Wilson portrait as its detected character-selection target",
+      "verified": true
+    },
+    {
+      "id": "character_select_wilson_hover",
+      "filename": "character_select_wilson_hover.png",
+      "expected_region": [
+        0.28,
+        0.18,
+        0.38,
+        0.33
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Gold bordered Wilson portrait while pointer rests on the live Survivor Select screen",
       "verified": true
     },
     {

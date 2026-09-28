@@ -217,14 +217,28 @@ def test_reload_handoff_requires_identity_for_every_managed_process(monkeypatch)
         def adoption_identity(self):
             return self.identity
 
+    monkeypatch.setenv("CONTROL_PLANE_URL", "https://control.example")
+    monkeypatch.setenv("RUNTIME_ID", "1")
+    monkeypatch.setenv("ACCOUNT_ID", "2")
+    monkeypatch.setenv("NODE_ID", "3")
+    monkeypatch.setenv("RUNTIME_TOKEN", "runtime-secret")
+    settings = RuntimeAgentSettings.from_env()
+    monkeypatch.delenv("RUNTIME_TOKEN")
     complete = _handoff_environment(
-        Managed((21, 101)), Managed((22, 202)), Managed((23, 303))
+        Managed((21, 101)), Managed((22, 202)), Managed((23, 303)),
+        runtime_token=settings.runtime_token,
     )
     assert complete["RUNTIME_ADOPT_DISPLAY"] == "21:101"
     assert complete["RUNTIME_ADOPT_STEAM"] == "22:202"
     assert complete["RUNTIME_ADOPT_DST"] == "23:303"
+    assert complete["RUNTIME_TOKEN"] == "runtime-secret"
+    assert "RUNTIME_TOKEN" not in os.environ
+    with monkeypatch.context() as handoff:
+        handoff.setattr(os, "environ", complete)
+        assert RuntimeAgentSettings.from_env().runtime_token == "runtime-secret"
     assert _handoff_environment(
-        Managed((21, 101)), Managed(None), Managed((23, 303))
+        Managed((21, 101)), Managed(None), Managed((23, 303)),
+        runtime_token=settings.runtime_token,
     ) is None
 
 

@@ -65,6 +65,9 @@ class ActivityController:
         self._validation_host_retry_count = 0
         self._validation_host_retry_pending = False
         self._validation_host_source_sequence: int | None = None
+        self._validation_survivor_retry_count = 0
+        self._validation_survivor_retry_pending = False
+        self._validation_survivor_source_sequence: int | None = None
         self._validation_world_frames = 0
         self._validation_last_world_sequence: int | None = None
         self.state = DSTScreen.UNKNOWN
@@ -177,6 +180,53 @@ class ActivityController:
                     "retry Host Game once after a fresh unchanged menu frame "
                     "confirmed the verified anchor"
                 ),
+            )
+            self._record(observation, proposal.action.value, proposal.reason or "")
+            return proposal
+        if self._validation_survivor_retry_pending:
+            self._validation_survivor_retry_pending = False
+            if (
+                observation.screen == DSTScreen.CHARACTER_LOADOUT
+                and observation.screen_confidence >= 0.94
+                and observation.source_sequence
+                > (self._validation_survivor_source_sequence or 0)
+            ):
+                self._validation_step = 4
+                self._record(
+                    observation, "NONE", "loadout verified after survivor action deadline",
+                )
+                return None
+            anchor_name = (
+                "character_select_wilson_hover"
+                if observation.screen == DSTScreen.CHARACTER_SELECTION_HOVERED
+                else "character_select_wilson_icon"
+            )
+            anchor = next((
+                item for item in observation.detections
+                if item.kind == anchor_name and item.detected and item.verified
+                and item.bounds is not None and item.confidence >= 0.94
+            ), None)
+            if (
+                observation.screen not in {
+                    DSTScreen.CHARACTER_SELECTION,
+                    DSTScreen.CHARACTER_SELECTION_HOVERED,
+                }
+                or observation.screen_confidence < 0.94
+                or observation.source_sequence
+                <= (self._validation_survivor_source_sequence or 0)
+                or observation.screen_change is None
+                or observation.screen_change >= 0.02
+                or anchor is None
+            ):
+                self.intervention_required = True
+                self._record(
+                    observation, "NONE",
+                    "survivor retry withheld; fresh unchanged portrait required",
+                )
+                return None
+            proposal = ActionProposal(
+                ActionName.SELECT_SURVIVOR,
+                reason="retry the verified Wilson portrait once after no loadout transition",
             )
             self._record(observation, proposal.action.value, proposal.reason or "")
             return proposal
@@ -321,7 +371,15 @@ class ActivityController:
                     return None
                 self._validation_world_frames = 0
                 self._validation_last_world_sequence = None
-                if self.state == DSTScreen.CHARACTER_SELECTION:
+                if self.state in {
+                    DSTScreen.CHARACTER_SELECTION,
+                    DSTScreen.CHARACTER_SELECTION_HOVERED,
+                }:
+                    icon = (
+                        "character_select_wilson_hover"
+                        if self.state == DSTScreen.CHARACTER_SELECTION_HOVERED
+                        else "character_select_wilson_icon"
+                    )
                     required_anchors = {
                         item.kind
                         for item in observation.detections
@@ -331,7 +389,7 @@ class ActivityController:
                     }
                     if not {
                         "character_select_wilson_name",
-                        "character_select_wilson_icon",
+                        icon,
                     } <= required_anchors or observation.screen_confidence < 0.94:
                         self._record(
                             observation,
@@ -345,6 +403,9 @@ class ActivityController:
                             "click the detected selected survivor to advance "
                             "the lobby to its loadout panel"
                         ),
+                    )
+                    self._validation_survivor_source_sequence = (
+                        observation.source_sequence
                     )
                     self._record(observation, proposal.action.value, proposal.reason)
                     return proposal
@@ -524,6 +585,17 @@ class ActivityController:
         ):
             self._validation_host_retry_count = 1
             self._validation_host_retry_pending = True
+            return
+        if (
+            self.validation_flow_enabled
+            and result.action == ActionName.SELECT_SURVIVOR
+            and result.status == ActionStatus.TIMED_OUT
+            and result.reason == "verified transition deadline elapsed"
+            and self._validation_survivor_retry_count == 0
+            and self._validation_step == 3
+        ):
+            self._validation_survivor_retry_count = 1
+            self._validation_survivor_retry_pending = True
             return
         self.intervention_required = True
         self.counters["recovery_failures"] += 1

@@ -51,6 +51,7 @@ class DSTScreen(StrEnum):
     DEAD = "DEAD"
     WORLD_RESET_PENDING = "WORLD_RESET_PENDING"
     CHARACTER_SELECTION = "CHARACTER_SELECTION"
+    CHARACTER_SELECTION_HOVERED = "CHARACTER_SELECTION_HOVERED"
     CHARACTER_LOADOUT = "CHARACTER_LOADOUT"
     UNEXPECTED_MODAL = "UNEXPECTED_MODAL"
 
@@ -563,6 +564,25 @@ class VisionDetector:
             confidence = min(
                 detected["options_title"].confidence,
                 detected["options_back"].confidence,
+            )
+        elif all(
+            found(key)
+            for key in (
+                "character_select_title",
+                "character_select_players",
+                "character_select_wilson_name",
+                "character_select_wilson_hover",
+            )
+        ):
+            screen = DSTScreen.CHARACTER_SELECTION_HOVERED
+            confidence = min(
+                detected[key].confidence
+                for key in (
+                    "character_select_title",
+                    "character_select_players",
+                    "character_select_wilson_name",
+                    "character_select_wilson_hover",
+                )
             )
         elif all(
             found(key)

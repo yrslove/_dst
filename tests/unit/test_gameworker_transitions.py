@@ -23,9 +23,37 @@ def frame(name, sequence):
                          f"frame-{sequence}", sequence)
 
 
+def hovered_survivor(sequence):
+    image = Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB")
+    image.paste(
+        Image.open(ASSETS / "character_select_wilson_hover.png").convert("RGB"),
+        (376, 135),
+    )
+    return analyze_image(image, f"hovered-{sequence}", sequence)
+
+
 def sent(action):
     return ActionResult(f"action-{action.value}", action, ActionStatus.SENT,
                         .5, 1, 1, 1)
+
+
+def test_survivor_hover_is_known_but_requires_loadout_to_complete():
+    selection = frame("character_selection_live.png", 1)
+    hover = hovered_survivor(2)
+    assert selection.screen == DSTScreen.CHARACTER_SELECTION
+    assert hover.screen == DSTScreen.CHARACTER_SELECTION_HOVERED
+    assert hover.screen_confidence >= .94
+    target, _ = click_request(ActionName.SELECT_SURVIVOR, hover)
+    assert .28 < target.x < .38 and .18 < target.y < .33
+
+    clock = [selection.observed_monotonic + .0001]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    assert lifecycle.begin(sent(ActionName.SELECT_SURVIVOR), selection).status == ActionStatus.VERIFYING
+    assert lifecycle.observe(hover) is None
+    assert lifecycle.observe(replace(hover, source_sequence=3, source_frame_id="hovered-3")) is None
+    loadout = frame("character_loadout_live.png", 4)
+    assert lifecycle.observe(loadout) is None
+    assert lifecycle.observe(replace(loadout, source_sequence=5, source_frame_id="loadout-5")).status == ActionStatus.SUCCEEDED
 
 
 def test_saved_menu_roundtrip_requires_two_fresh_frames_per_transition():
@@ -221,6 +249,7 @@ def test_selected_survivor_click_is_verified_by_loadout_screen():
     assert ActionName.SELECT_SURVIVOR in CONTRACTS
     assert CONTRACTS[ActionName.SELECT_SURVIVOR].anchors == (
         "character_select_wilson_icon",
+        "character_select_wilson_hover",
     )
     target, viewport = click_request(ActionName.SELECT_SURVIVOR, selected)
     anchor = next(

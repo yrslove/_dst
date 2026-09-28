@@ -113,11 +113,15 @@ CONTRACTS = {
         }),
         timeout=120.0,
     ),
-    # The Redux lobby advances from Survivor Select when the selected portrait
-    # is clicked. A keyboard interact key does not trigger this UI callback.
+    # The Redux lobby advances from Survivor Select when Wilson's portrait is
+    # clicked. The pointer can leave its gold hover border visible while the
+    # loadout transition is pending.
     ActionName.SELECT_SURVIVOR: ActionContract(
-        ("character_select_wilson_icon",),
-        frozenset({DSTScreen.CHARACTER_SELECTION}),
+        ("character_select_wilson_icon", "character_select_wilson_hover"),
+        frozenset({
+            DSTScreen.CHARACTER_SELECTION,
+            DSTScreen.CHARACTER_SELECTION_HOVERED,
+        }),
         frozenset({DSTScreen.CHARACTER_LOADOUT}),
         timeout=30.0,
     ),

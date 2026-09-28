@@ -788,6 +788,79 @@ def test_validation_selects_survivor_to_open_loadout_panel():
     assert next_step is None
 
 
+def test_survivor_timeout_retries_once_from_fresh_unchanged_hover():
+    image = Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB")
+    selection = analyze_image(image, "survivor-1", 1)
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(selection) is None
+    assert policy.propose(replace(
+        selection, source_frame_id="survivor-2", source_sequence=2,
+    )).action == ActionName.SELECT_SURVIVOR
+    policy.on_action_failure(ActionResult(
+        "survivor-timeout", ActionName.SELECT_SURVIVOR, ActionStatus.TIMED_OUT,
+        30.0, 1, 1, 1, "verified transition deadline elapsed",
+    ))
+    image.paste(
+        Image.open(ASSETS / "character_select_wilson_hover.png").convert("RGB"),
+        (376, 135),
+    )
+    hover = replace(
+        analyze_image(image, "survivor-hover-3", 3), screen_change=.001,
+    )
+    assert hover.screen == DSTScreen.CHARACTER_SELECTION_HOVERED
+    assert policy.propose(hover) is None
+    retry = policy.propose(replace(
+        hover, source_frame_id="survivor-hover-4", source_sequence=4,
+    ))
+    assert retry is not None and retry.action == ActionName.SELECT_SURVIVOR
+    policy.on_action_failure(ActionResult(
+        "survivor-timeout-2", ActionName.SELECT_SURVIVOR,
+        ActionStatus.TIMED_OUT, 30.0, 1, 1, 1,
+        "verified transition deadline elapsed",
+    ))
+    assert policy.intervention_required
+
+
+def test_late_verified_loadout_cancels_survivor_retry():
+    selection = analyze_image(
+        Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB"),
+        "late-selection-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(selection) is None
+    assert policy.propose(replace(
+        selection, source_frame_id="late-selection-2", source_sequence=2,
+    )).action == ActionName.SELECT_SURVIVOR
+    policy.on_action_failure(ActionResult(
+        "late-timeout", ActionName.SELECT_SURVIVOR, ActionStatus.TIMED_OUT,
+        30.0, 1, 1, 1, "verified transition deadline elapsed",
+    ))
+    loadout = analyze_image(
+        Image.open(ASSETS / "samples/character_loadout_live.png").convert("RGB"),
+        "late-loadout-3", 3,
+    )
+    assert policy.propose(loadout) is None
+    assert policy.propose(replace(
+        loadout, source_frame_id="late-loadout-4", source_sequence=4,
+    )) is None
+    assert policy._validation_step == 4
+    assert not policy.intervention_required
+
+
+def test_world_present_banner_does_not_imply_gift_available():
+    image = Image.open(ASSETS / "samples/in_world_wilson_live.png").convert("RGB")
+    image.paste(
+        Image.open(ASSETS / "world_present_banner.png").convert("RGB"),
+        (168, 10),
+    )
+    observation = analyze_image(image, "world-present-banner", 1)
+    assert observation.screen == DSTScreen.IN_WORLD_IDLE
+    assert any(
+        item.kind == "world_present_banner" and item.detected and item.verified
+        for item in observation.detections
+    )
+
+
 def test_reward_click_is_one_shot_and_observe_has_no_input():
     observation = observe()
     policy = ActivityController()

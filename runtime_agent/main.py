@@ -49,7 +49,7 @@ def _reload(*_args) -> None:
     stop_event.set()
 
 
-def _handoff_environment(display, steam, dst) -> dict[str, str] | None:
+def _handoff_environment(display, steam, dst, *, runtime_token: str) -> dict[str, str] | None:
     identities = {
         "DISPLAY": display.adoption_identity(),
         "STEAM": steam.adoption_identity(),
@@ -58,6 +58,9 @@ def _handoff_environment(display, steam, dst) -> dict[str, str] | None:
     if any(identity is None for identity in identities.values()):
         return None
     environment = os.environ.copy()
+    # The bearer was removed from os.environ before managed children started.
+    # Restore it only in the replacement agent's exec environment.
+    environment["RUNTIME_TOKEN"] = runtime_token
     for name, identity in identities.items():
         assert identity is not None
         environment[f"RUNTIME_ADOPT_{name}"] = f"{identity[0]}:{identity[1]}"
@@ -244,7 +247,9 @@ def main() -> int:
             worker_report = None
         if reload_event.is_set():
             try:
-                identities = _handoff_environment(display, steam, dst)
+                identities = _handoff_environment(
+                    display, steam, dst, runtime_token=settings.runtime_token
+                )
                 runtime_ready = (
                     worker_report is not None
                     and worker_report.healthy
