@@ -100,6 +100,59 @@ def test_host_game_click_uses_the_center_of_the_rendered_anchor_text():
     assert viewport.width == 1280 and viewport.height == 720
 
 
+def test_host_game_fresh_unchanged_menu_decisively_ends_verification():
+    menu = frame("main_menu_after_reward.png", 1)
+    clock = [menu.observed_monotonic + .001]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    assert lifecycle.begin(sent(ActionName.CLICK_HOST_GAME), menu).status == ActionStatus.VERIFYING
+
+    first = replace(
+        menu, source_frame_id="host-unchanged-2", source_sequence=2,
+        observed_monotonic=clock[0] + .01, screen_change=.001,
+    )
+    clock[0] = first.observed_monotonic + .001
+    assert lifecycle.observe(first) is None
+    second = replace(
+        first, source_frame_id="host-unchanged-3", source_sequence=3,
+        observed_monotonic=clock[0] + .01,
+    )
+    clock[0] = second.observed_monotonic + .001
+    result = lifecycle.observe(second)
+    assert result is not None and result.status == ActionStatus.TIMED_OUT
+    assert result.reason == "fresh unchanged MAIN_MENU proves Host Game click had no effect"
+    assert lifecycle.pending is None
+
+
+def test_host_game_world_list_succeeds_without_classifying_source_as_no_effect():
+    menu = frame("main_menu_after_reward.png", 1)
+    clock = [menu.observed_monotonic + .001]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    assert lifecycle.begin(sent(ActionName.CLICK_HOST_GAME), menu).status == ActionStatus.VERIFYING
+    target = frame("host_game_world_list_live.png", 2)
+    assert lifecycle.observe(target) is None
+    target2 = replace(
+        target, source_frame_id="host-world-list-3", source_sequence=3,
+        observed_monotonic=target.observed_monotonic + .02,
+    )
+    clock[0] = target2.observed_monotonic + .001
+    result = lifecycle.observe(target2)
+    assert result is not None and result.status == ActionStatus.SUCCEEDED
+    assert result.reason.startswith("perception verified transition to HOST_GAME_WORLD_LIST")
+
+
+def test_host_game_loading_state_fails_closed_without_a_retry_signal():
+    menu = frame("main_menu_after_reward.png", 1)
+    lifecycle = ActionLifecycle(clock=lambda: menu.observed_monotonic + .1)
+    assert lifecycle.begin(sent(ActionName.CLICK_HOST_GAME), menu).status == ActionStatus.VERIFYING
+    loading = replace(
+        menu, screen=DSTScreen.LOADING, source_frame_id="host-loading",
+        source_sequence=2, observed_monotonic=menu.observed_monotonic + .2,
+    )
+    result = lifecycle.observe(loading)
+    assert result is not None and result.status == ActionStatus.FAILED
+    assert "unexpected state LOADING" in result.reason
+
+
 def test_transport_success_wrong_screen_and_timeout_never_succeed():
     menu = frame("main_menu_after_reward.png", 1)
     clock = [menu.observed_monotonic + .0001]

@@ -583,7 +583,10 @@ class ActivityController:
             self.validation_flow_enabled
             and result.action == ActionName.CLICK_HOST_GAME
             and result.status == ActionStatus.TIMED_OUT
-            and result.reason == "verified transition deadline elapsed"
+            and result.reason in {
+                "verified transition deadline elapsed",
+                "fresh unchanged MAIN_MENU proves Host Game click had no effect",
+            }
             and self._validation_host_retry_count == 0
             and self._validation_step == 0
         ):

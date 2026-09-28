@@ -88,7 +88,7 @@ CONTRACTS = {
     ),
     ActionName.CLICK_HOST_GAME: ActionContract(
         ("main_menu_host_game",), frozenset({DSTScreen.MAIN_MENU}),
-        frozenset({DSTScreen.HOST_GAME_WORLD_LIST}),
+        frozenset({DSTScreen.HOST_GAME_WORLD_LIST}), timeout=8.0,
         # This template includes extra dark space after the rendered label.
         # Keep the live click near the center of the text, not the padded box.
         anchor_point=(0.4, 0.5),
@@ -285,9 +285,34 @@ class ActionLifecycle:
                     f"{observation.screen.value} ({observation.screen_confidence:.4f})",
                     clear=True,
                 )
+        elif (
+            pending.result.action == ActionName.CLICK_HOST_GAME
+            and observation.screen == DSTScreen.MAIN_MENU
+            and observation.screen_change is not None
+            and observation.screen_change < 0.02
+            and self._has_fresh_verified_anchor(observation, "main_menu_host_game")
+        ):
+            if observation.screen == pending.candidate:
+                pending.count += 1
+            else:
+                pending.candidate, pending.count = observation.screen, 1
+            if pending.count >= pending.contract.stable_observations:
+                return self._status(
+                    ActionStatus.TIMED_OUT,
+                    "fresh unchanged MAIN_MENU proves Host Game click had no effect",
+                    clear=True,
+                )
         else:
             pending.candidate, pending.count = DSTScreen.UNKNOWN, 0
         return None
+
+    @staticmethod
+    def _has_fresh_verified_anchor(observation: GameObservation, kind: str) -> bool:
+        return any(
+            item.kind == kind and item.detected and item.verified
+            and item.bounds is not None and item.confidence >= 0.94
+            for item in observation.detections
+        )
 
     def poll(self) -> ActionResult | None:
         pending = self.pending

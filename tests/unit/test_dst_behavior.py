@@ -705,7 +705,7 @@ def test_validation_activity_enters_host_game_from_main_menu():
     assert pause is not None and pause.action == ActionName.PAUSE_WORLD
 
 
-def test_host_game_timeout_retries_only_from_fresh_unchanged_verified_menu():
+def test_host_game_unchanged_menu_allows_exactly_one_guarded_retry():
     menu_frame = Image.open(
         ASSETS / "samples/main_menu_after_reward.png"
     ).convert("RGB")
@@ -718,7 +718,8 @@ def test_host_game_timeout_retries_only_from_fresh_unchanged_verified_menu():
 
     timed_out = ActionResult(
         "host-first", ActionName.CLICK_HOST_GAME, ActionStatus.TIMED_OUT,
-        45.0, 1, 1, 1, "verified transition deadline elapsed",
+        0.5, 1, 1, 1,
+        "fresh unchanged MAIN_MENU proves Host Game click had no effect",
     )
     policy.on_action_failure(timed_out)
     assert not policy.intervention_required
@@ -736,6 +737,27 @@ def test_host_game_timeout_retries_only_from_fresh_unchanged_verified_menu():
     assert policy.propose(
         replace(fresh_menu, source_frame_id="host-retry-4", source_sequence=4)
     ) is None
+
+
+def test_host_game_retry_is_withheld_for_ambiguous_non_menu_state():
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "host-ambiguous-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(menu) is None
+    menu = replace(menu, source_frame_id="host-ambiguous-2", source_sequence=2)
+    assert policy.propose(menu).action == ActionName.CLICK_HOST_GAME
+    policy.on_action_failure(ActionResult(
+        "host-ambiguous", ActionName.CLICK_HOST_GAME, ActionStatus.FAILED,
+        0.5, 1, 1, 1, "unexpected state LOADING during action verification",
+    ))
+    loading = replace(
+        menu, screen=DSTScreen.LOADING, source_frame_id="host-loading",
+        source_sequence=3, screen_confidence=1.0,
+    )
+    assert policy.propose(loading) is None
+    assert policy.intervention_required
 
 
 def test_host_game_timeout_does_not_retry_after_source_state_changes():

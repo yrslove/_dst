@@ -487,6 +487,29 @@ def test_reward_close_click_uses_canonical_executor_and_allowed_anchor():
     assert driver.events[1].value == (640, 633)
 
 
+def test_each_allowed_host_game_attempt_refreshes_pointer_and_focus():
+    value, _controller, driver, _deadman = executor(
+        allowed_actions=frozenset({ActionName.CLICK_HOST_GAME})
+    )
+    for action_id in ("host-first", "host-guarded-retry"):
+        result = value.execute(Action(
+            action_id,
+            ActionName.CLICK_HOST_GAME,
+            7,
+            3,
+            runtime_id=2,
+            deadline=time.monotonic() + 0.9,
+            parameters=(("x", .1), ("y", .5), ("width", 1280), ("height", 720)),
+        ))
+        assert result.status == ActionStatus.SENT
+    value.shutdown()
+
+    assert [event.operation for event in driver.events] == [
+        "mouse_move", "mouse_move", "focus_game", "mouse_down", "mouse_up",
+        "mouse_move", "mouse_move", "focus_game", "mouse_down", "mouse_up",
+    ]
+
+
 def test_start_existing_world_guard_accepts_saved_live_resume_anchor():
     value, _controller, driver, _deadman = executor(
         allowed_actions=frozenset({ActionName.START_EXISTING_WORLD})
