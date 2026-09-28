@@ -611,6 +611,7 @@ class DSTGameWorker:
                     self._unknown_since = None
                 elif self.mode == WorkerMode.ACTIVE and self._unknown_since is None:
                     self._unknown_since = now
+                self._sync_action_mode()
             self._would_execute = (
                 outcome.proposal.action if outcome.proposal is not None else None
             )
@@ -658,22 +659,24 @@ class DSTGameWorker:
                 self._error_code = "WORKER_PERCEPTION_UNVERIFIED"
             else:
                 self._error_code = None
-            if self.mode == WorkerMode.ACTIVE and (
-                self.activity.intervention_required
-                or (
-                    self._unknown_since is not None
-                    and now - self._unknown_since > 20
-                    and not (self.pipeline and self.pipeline.verification_pending)
+            unknown_timed_out = (
+                self._unknown_since is not None
+                and now - self._unknown_since > 20
+                and not (self.pipeline and self.pipeline.verification_pending)
+            )
+            if self.mode == WorkerMode.ACTIVE and unknown_timed_out:
+                return self._handle_unknown_timeout()
+            if self.mode == WorkerMode.ACTIVE and self.activity.intervention_required:
+                # Failed action contracts remain fail-closed and require explicit
+                # resume, but preserve the operator's configured ACTIVE intent.
+                if self.actions:
+                    self.actions.release_all()
+                self.machine.transition(
+                    WorkerState.NEEDS_ATTENTION,
+                    "action contract requires operator recovery",
                 )
-            ):
-                self.activity.counters["recovery_failures"] += 1
-                try:
-                    if self.capture is not None:
-                        self._diagnose(self.capture.capture())
-                except CaptureError:
-                    logger.warning("unknown-screen diagnostic capture failed")
-                self.set_mode(WorkerMode.DISABLED)
                 self._error_code = "WORKER_INTERVENTION_REQUIRED"
+                self._sync_action_mode()
                 return self.status()
             if self.machine.state not in {
                 WorkerState.PAUSED,
@@ -736,6 +739,20 @@ class DSTGameWorker:
             self._error_code = "WORKER_REPLAY_FAILED"
             if self.machine.state != WorkerState.ERROR:
                 self.machine.transition(WorkerState.ERROR, "REPLAY processing failed")
+        return self.status()
+
+    def _handle_unknown_timeout(self) -> WorkerReport:
+        """Hold safely in observation until a fresh verified frame recovers."""
+        self.activity.counters["recovery_failures"] += 1
+        try:
+            if self.capture is not None:
+                self._diagnose(self.capture.capture())
+        except CaptureError:
+            logger.warning("unknown-screen diagnostic capture failed")
+        self._error_code = "WORKER_INTERVENTION_REQUIRED"
+        if self.actions:
+            self.actions.release_all()
+        self._sync_action_mode()
         return self.status()
 
     def _handle_unknown(self, frame, *, unconfigured: bool) -> WorkerReport:
@@ -871,8 +888,14 @@ class DSTGameWorker:
                 self.machine.transition(WorkerState.OBSERVING, "DST is already ready")
             if self.machine.state == WorkerState.ERROR:
                 return self.status()
+        recovering_intervention = self.machine.state == WorkerState.NEEDS_ATTENTION
         if self.machine.state in {WorkerState.PAUSED, WorkerState.NEEDS_ATTENTION}:
             self.machine.transition(WorkerState.OBSERVING, "explicit operator resume")
+        if recovering_intervention:
+            self.activity.intervention_required = False
+            # Keep the executor in observe-only mode until the resumed worker
+            # receives a fresh production-ready frame.
+            self._unknown_since = time.monotonic()
         if self.actions:
             self.actions.reset_cancel()
         if self.recorder:
@@ -889,6 +912,7 @@ class DSTGameWorker:
             or not self.context.runtime_verified
             or not self._game_ready
             or self.capture is None
+            or self._unknown_since is not None
             or self.machine.state
             in {
                 WorkerState.DISABLED,
@@ -905,32 +929,30 @@ class DSTGameWorker:
         return WorkerMode.ACTIVE
 
     def _permitted_active_actions(self) -> frozenset[ActionName]:
-        actions = {
-            ActionName.CLICK_REWARD_OPEN,
-            ActionName.CLICK_REWARD_CLOSE,
-        }
-        if self.config.validation_flow_enabled:
-            actions.update(
-                {
-                    ActionName.CLICK_OPTIONS,
-                    ActionName.CLICK_BACK,
-                    ActionName.DISCARD_OPTIONS,
-                    ActionName.CLICK_HOST_GAME,
-                    ActionName.SELECT_EXISTING_WORLD,
-                    ActionName.START_EXISTING_WORLD,
-                    ActionName.SELECT_SURVIVOR,
-                    ActionName.START_SURVIVOR,
-                    ActionName.MOVE_FORWARD,
-                    ActionName.MOVE_BACKWARD,
-                    ActionName.TURN_LEFT,
-                    ActionName.TURN_RIGHT,
-                    ActionName.CANCEL,
-                    ActionName.PAUSE_WORLD,
-                    ActionName.RESUME_WORLD,
-                    ActionName.INTERACT,
-                }
-            )
-        return frozenset(actions)
+        # These are reusable canonical capabilities. The optional validation
+        # route decides when (or whether) to propose them.
+        return frozenset(
+            {
+                ActionName.CLICK_REWARD_OPEN,
+                ActionName.CLICK_REWARD_CLOSE,
+                ActionName.CLICK_OPTIONS,
+                ActionName.CLICK_BACK,
+                ActionName.DISCARD_OPTIONS,
+                ActionName.CLICK_HOST_GAME,
+                ActionName.SELECT_EXISTING_WORLD,
+                ActionName.START_EXISTING_WORLD,
+                ActionName.SELECT_SURVIVOR,
+                ActionName.START_SURVIVOR,
+                ActionName.MOVE_FORWARD,
+                ActionName.MOVE_BACKWARD,
+                ActionName.TURN_LEFT,
+                ActionName.TURN_RIGHT,
+                ActionName.CANCEL,
+                ActionName.PAUSE_WORLD,
+                ActionName.RESUME_WORLD,
+                ActionName.INTERACT,
+            }
+        )
 
     def _sync_action_mode(self) -> None:
         if self.actions:

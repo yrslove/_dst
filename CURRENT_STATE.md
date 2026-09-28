@@ -58,7 +58,15 @@ infrastructure that can persist in the world.
 - Control Plane `STALE` state can remain stale despite healthy Runtime Agent/DST heartbeats.
 - The first actionable gift frame has not yet been captured.
 - In-world gift actions/contracts are not implemented.
-- Production behavior still relies too much on validation-flow concepts.
+- Production goal composition remains future work; the gift loop is still pending.
+
+## Completed worker semantics
+
+- Reusable gameplay primitives are independent of validation-flow orchestration; the
+  validation flag enables only the legacy one-shot test route.
+- Recoverable worker intervention no longer rewrites configured ACTIVE intent to
+  DISABLED. Unsafe states suppress action execution until observation or recovery is
+  verified.
 
 The gift milestone is not complete from the gray-present observation alone. The next
 concrete evidence is an enabled-present frame from Farm 01, followed by the real claim

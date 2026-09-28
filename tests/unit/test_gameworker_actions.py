@@ -14,6 +14,7 @@ from runtime_agent.gameworker.actions import (
     ActionStatus,
 )
 from runtime_agent.gameworker.config import InputBindings, WorkerConfig, WorkerMode
+from runtime_agent.gameworker.dst.worker import DSTGameWorker
 from runtime_agent.gameworker.geometry import NormalizedPoint, Viewport
 from runtime_agent.gameworker.input import (
     DeadmanSafety,
@@ -107,6 +108,33 @@ def test_canonical_pause_and_resume_use_the_bound_cancel_key():
     ] == [
         ("key_down", "Escape"), ("key_up", "Escape"),
         ("key_down", "Escape"), ("key_up", "Escape"),
+    ]
+    assert not controller.has_held_inputs
+
+
+def test_pause_resume_and_movement_capabilities_are_available_without_validation():
+    worker = DSTGameWorker(
+        WorkerConfig(
+            plugin="dst",
+            mode=WorkerMode.ACTIVE,
+            validation_flow_enabled=False,
+        )
+    )
+    value, controller, _driver, _deadman = executor(
+        allowed_actions=worker._permitted_active_actions()
+    )
+
+    results = (
+        value.execute(action("explicit-pause", ActionName.PAUSE_WORLD)),
+        value.execute(action("explicit-resume", ActionName.RESUME_WORLD)),
+        value.execute(action("explicit-move", ActionName.MOVE_FORWARD, duration=0.2)),
+    )
+    value.shutdown()
+
+    assert [result.status for result in results] == [
+        ActionStatus.SENT,
+        ActionStatus.SENT,
+        ActionStatus.SENT,
     ]
     assert not controller.has_held_inputs
 

@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from app.runtime.display import DisplayEnvironment
+from runtime_agent.gameworker.actions import ActionName
 from runtime_agent.gameworker.base import WorkerContext, WorkerReport
 from runtime_agent.gameworker.config import WorkerConfig, WorkerMode
 from runtime_agent.gameworker.dst.worker import DSTGameWorker
@@ -651,6 +652,125 @@ def test_configured_active_mode_reports_safe_effective_mode_without_gate():
     assert result.mode == WorkerMode.OBSERVE
     assert result.details["requested_mode"] == WorkerMode.ACTIVE
     assert result.error_code == "WORKER_DISABLED"
+
+
+def test_reusable_action_permissions_do_not_depend_on_validation_flow():
+    worker = DSTGameWorker(
+        WorkerConfig(
+            plugin="dst",
+            mode=WorkerMode.ACTIVE,
+            validation_flow_enabled=False,
+        )
+    )
+
+    permitted = worker._permitted_active_actions()
+
+    assert {
+        # Explicit canonical calls remain available; ActivityController does not
+        # propose these as autonomous behavior unless the validation route is on.
+        ActionName.MOVE_FORWARD,
+        ActionName.PAUSE_WORLD,
+        ActionName.RESUME_WORLD,
+        ActionName.INTERACT,
+    } <= permitted
+
+
+def test_recoverable_unknown_suppresses_effective_mode_without_disabling_intent():
+    worker = DSTGameWorker(WorkerConfig(plugin="dst", mode=WorkerMode.ACTIVE))
+    worker.context = context()
+    worker._game_ready = True
+    worker.capture = object()
+    worker.machine.transition(WorkerState.WAITING_FOR_GAME, "test ready")
+    worker.machine.transition(WorkerState.OBSERVING, "test observation")
+    worker._unknown_since = time.monotonic() - 21
+
+    class Actions:
+        safety = None
+
+        def set_safety(self, **values):
+            self.safety = values
+
+    worker.actions = Actions()
+
+    assert worker.mode == WorkerMode.ACTIVE
+    assert worker._effective_mode() == WorkerMode.OBSERVE
+
+    worker._unknown_since = None  # fresh production-ready observation
+
+    assert worker._effective_mode() == WorkerMode.ACTIVE
+    worker._sync_action_mode()
+    assert worker.actions.safety["effective_mode"] == WorkerMode.ACTIVE
+
+
+def test_unknown_intervention_releases_input_and_retains_active_intent():
+    worker = DSTGameWorker(WorkerConfig(plugin="dst", mode=WorkerMode.ACTIVE))
+    worker.context = context()
+    worker._game_ready = True
+    worker.capture = None
+    worker.machine.transition(WorkerState.WAITING_FOR_GAME, "test ready")
+    worker.machine.transition(WorkerState.OBSERVING, "test observation")
+    worker._unknown_since = time.monotonic() - 21
+
+    class Actions:
+        released = False
+        safety = None
+
+        def release_all(self):
+            self.released = True
+
+        def set_safety(self, **values):
+            self.safety = values
+
+    actions = Actions()
+    worker.actions = actions
+
+    report = worker._handle_unknown_timeout()
+
+    assert actions.released
+    assert actions.safety["effective_mode"] == WorkerMode.OBSERVE
+    assert worker.mode == WorkerMode.ACTIVE
+    assert report.mode == WorkerMode.OBSERVE
+    assert report.error_code == "WORKER_INTERVENTION_REQUIRED"
+
+
+def test_explicit_disable_is_not_overridden_by_recovery():
+    worker = DSTGameWorker(WorkerConfig(plugin="dst", mode=WorkerMode.DISABLED))
+    worker._unknown_since = None
+
+    report = worker.set_mode(WorkerMode.DISABLED)
+
+    assert worker.mode == WorkerMode.DISABLED
+    assert report.mode == WorkerMode.DISABLED
+
+
+def test_explicit_intervention_resume_preserves_configured_active_intent():
+    worker = DSTGameWorker(WorkerConfig(plugin="dst", mode=WorkerMode.ACTIVE))
+    worker.context = context()
+    worker._game_ready = True
+    worker.capture = object()
+    worker.machine.transition(WorkerState.WAITING_FOR_GAME, "test ready")
+    worker.machine.transition(WorkerState.OBSERVING, "test observation")
+    worker.machine.transition(WorkerState.NEEDS_ATTENTION, "test intervention")
+    worker.activity.intervention_required = True
+
+    class Actions:
+        def reset_cancel(self):
+            pass
+
+        def set_safety(self, **_values):
+            pass
+
+    worker.actions = Actions()
+
+    report = worker.resume()
+
+    assert worker.mode == WorkerMode.ACTIVE
+    assert not worker.activity.intervention_required
+    assert report.state == WorkerState.OBSERVING
+    assert report.mode == WorkerMode.OBSERVE
+    worker._unknown_since = None  # fresh verified observation after resume
+    worker._sync_action_mode()
+    assert worker.status().mode == WorkerMode.ACTIVE
 
 
 def test_worker_context_rejects_unbounded_metadata():

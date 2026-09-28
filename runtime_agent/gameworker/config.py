@@ -80,6 +80,8 @@ class WorkerConfig:
     max_observation_age: float = 3.0
     planner_timeout: float = 0.5
     calibration_verified: bool = False
+    # Enables the legacy one-shot acceptance route; action capabilities remain
+    # available independently through the canonical GameWorker action path.
     validation_flow_enabled: bool = False
     validation_movement_enabled: bool = False
     capture_max_width: int = 1280

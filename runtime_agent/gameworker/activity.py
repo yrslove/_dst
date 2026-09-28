@@ -50,7 +50,7 @@ class FakePlanner:
 
 
 class ActivityController:
-    """Conservative visual policy with an optional one-shot validation route."""
+    """Conservative policy; validation flags enable only its one-shot test route."""
 
     def __init__(
         self,
@@ -147,7 +147,7 @@ class ActivityController:
         if self.state != observation.screen or self._candidate_frames < 2:
             self._record(observation, "NONE", "hysteresis")
             return None
-        if self._validation_host_retry_pending:
+        if self.validation_flow_enabled and self._validation_host_retry_pending:
             self._validation_host_retry_pending = False
             host_anchor = next(
                 (
@@ -565,7 +565,10 @@ class ActivityController:
                     and self._validation_step == 7
                 ):
                     self._validation_step = 8
-                elif result.action in {ActionName.CANCEL, ActionName.PAUSE_WORLD}:
+                elif (
+                    self.validation_flow_enabled
+                    and result.action in {ActionName.CANCEL, ActionName.PAUSE_WORLD}
+                ):
                     self.validation_complete = True
                 elif result.action == ActionName.RESUME_WORLD:
                     self._validation_step = 3
@@ -577,7 +580,8 @@ class ActivityController:
     def on_action_failure(self, result: ActionResult) -> None:
         self._awaiting_reward_transition = False
         if (
-            result.action == ActionName.CLICK_HOST_GAME
+            self.validation_flow_enabled
+            and result.action == ActionName.CLICK_HOST_GAME
             and result.status == ActionStatus.TIMED_OUT
             and result.reason == "verified transition deadline elapsed"
             and self._validation_host_retry_count == 0

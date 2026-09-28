@@ -96,6 +96,28 @@ def test_real_world_reset_frame_and_canonical_recovery_route():
     assert policy._validation_step == 3
 
 
+def test_validation_disabled_does_not_propose_validation_actions_in_world():
+    alive = analyze_image(
+        Image.open(ASSETS / "samples/in_world_wilson_live.png").convert("RGB"),
+        "ordinary-world-1",
+        1,
+    )
+    policy = ActivityController(validation_flow_enabled=False)
+
+    proposal = None
+    for sequence in range(1, 8):
+        proposal = policy.propose(
+            replace(
+                alive,
+                source_frame_id=f"ordinary-world-{sequence}",
+                source_sequence=sequence,
+            )
+        )
+
+    assert proposal is None
+    assert policy._validation_step == 0
+
+
 def test_opt_in_in_world_validation_moves_boundedly_then_returns_to_pause():
     alive = analyze_image(
         Image.open(ASSETS / "samples/in_world_wilson_live.png").convert("RGB"),
