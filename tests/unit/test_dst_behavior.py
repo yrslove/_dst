@@ -169,6 +169,40 @@ def test_opt_in_in_world_validation_moves_boundedly_then_returns_to_pause():
             "pause", ActionName.PAUSE_WORLD, ActionStatus.SUCCEEDED, 0.2, 1, 1, 1
         ),
     )
+    assert policy._validation_step == 7
+    paused = replace(
+        pause_observation,
+        screen=DSTScreen.PAUSED,
+        source_frame_id="movement-goal-paused",
+        source_sequence=9,
+    )
+    assert policy.propose(paused) is None
+    paused = replace(
+        paused, source_frame_id="movement-goal-paused-2", source_sequence=10
+    )
+    resume = policy.propose(paused)
+    assert resume is not None and resume.action == ActionName.RESUME_WORLD
+    policy.on_verified(
+        alive,
+        ActionResult(
+            "resume", ActionName.RESUME_WORLD, ActionStatus.SUCCEEDED, 0.2, 1, 1, 1
+        ),
+    )
+    resumed_world = replace(
+        alive, source_frame_id="movement-goal-resumed-1", source_sequence=11
+    )
+    assert policy.propose(resumed_world) is None
+    final_pause = policy.propose(
+        replace(resumed_world, source_frame_id="movement-goal-final-pause", source_sequence=12)
+    )
+    assert final_pause is not None and final_pause.action == ActionName.PAUSE_WORLD
+    policy.on_verified(
+        replace(alive, screen=DSTScreen.PAUSED),
+        ActionResult(
+            "final-pause", ActionName.PAUSE_WORLD, ActionStatus.SUCCEEDED,
+            0.2, 1, 1, 1,
+        ),
+    )
     assert policy.validation_complete
 
 

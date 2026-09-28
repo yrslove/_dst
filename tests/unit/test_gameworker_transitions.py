@@ -121,7 +121,9 @@ def test_movement_requires_fresh_meaningful_frame_change_and_fails_on_pause():
         gameplay_change=0.02,
     )
     clock[0] = changed.observed_monotonic + 0.001
-    assert lifecycle.observe(changed).status == ActionStatus.SUCCEEDED
+    verified = lifecycle.observe(changed)
+    assert verified.status == ActionStatus.SUCCEEDED
+    assert "gameplay ROI change=0.020000" in verified.reason
 
     clock[0] = changed.observed_monotonic + 0.01
     assert lifecycle.begin(sent(ActionName.MOVE_BACKWARD), changed).status == ActionStatus.VERIFYING
@@ -296,7 +298,9 @@ def test_movement_requires_fresh_world_frames_with_visible_change():
                                      source_frame_id="still-3")) is None
     moved = replace(unchanged, source_sequence=4, source_frame_id="moved-4",
                     screen_change=0.001, gameplay_change=0.01)
-    assert lifecycle.observe(moved).status == ActionStatus.SUCCEEDED
+    verified = lifecycle.observe(moved)
+    assert verified.status == ActionStatus.SUCCEEDED
+    assert "gameplay ROI change=0.010000" in verified.reason
 
 
 def test_canonical_pause_and_resume_require_fresh_perceived_states():

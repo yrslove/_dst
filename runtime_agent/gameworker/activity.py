@@ -209,6 +209,17 @@ class ActivityController:
                 self._validation_last_world_sequence = None
                 self._record(observation, "NONE", "waiting for world reset")
                 return None
+            if (
+                self.validation_movement_enabled
+                and self._validation_step == 7
+                and self.state == DSTScreen.PAUSED
+            ):
+                proposal = ActionProposal(
+                    ActionName.RESUME_WORLD,
+                    reason="resume the world for bounded pause/resume validation",
+                )
+                self._record(observation, proposal.action.value, proposal.reason or "")
+                return proposal
             if self._validation_step == 0:
                 if self.state == DSTScreen.PAUSED:
                     proposal = ActionProposal(
@@ -263,6 +274,13 @@ class ActivityController:
                     proposal = ActionProposal(
                         ActionName.PAUSE_WORLD,
                         reason="return to safe pause after bounded in-world actions",
+                    )
+                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    return proposal
+                if self._validation_step == 8:
+                    proposal = ActionProposal(
+                        ActionName.PAUSE_WORLD,
+                        reason="leave DST in a verified safe pause after validation",
                     )
                     self._record(observation, proposal.action.value, proposal.reason or "")
                     return proposal
@@ -474,8 +492,18 @@ class ActivityController:
                     self._validation_step = 5
                 elif result.action == ActionName.MOVE_BACKWARD:
                     self._validation_step = 6
-                elif result.action == ActionName.INTERACT:
+                elif result.action == ActionName.INTERACT or (
+                    result.action == ActionName.PAUSE_WORLD
+                    and self.validation_movement_enabled
+                    and self._validation_step == 6
+                ):
                     self._validation_step = 7
+                elif (
+                    result.action == ActionName.RESUME_WORLD
+                    and self.validation_movement_enabled
+                    and self._validation_step == 7
+                ):
+                    self._validation_step = 8
                 elif result.action in {ActionName.CANCEL, ActionName.PAUSE_WORLD}:
                     self.validation_complete = True
                 elif result.action == ActionName.RESUME_WORLD:

@@ -175,6 +175,7 @@ class PendingAction:
     candidate: DSTScreen = DSTScreen.UNKNOWN
     count: int = 0
     changed: bool = False
+    movement_evidence: float | None = None
 
 
 class ActionLifecycle:
@@ -260,6 +261,8 @@ class ActionLifecycle:
             and observation.gameplay_change >= pending.contract.min_gameplay_change
         ):
             pending.changed = True
+            if pending.movement_evidence is None:
+                pending.movement_evidence = observation.gameplay_change
         if observation.screen in pending.contract.targets:
             if observation.screen == pending.candidate:
                 pending.count += 1
@@ -267,10 +270,15 @@ class ActionLifecycle:
                 pending.candidate, pending.count = observation.screen, 1
             if (pending.count >= pending.contract.stable_observations
                     and pending.changed):
+                evidence = (
+                    f"; gameplay ROI change={pending.movement_evidence:.6f}"
+                    if pending.movement_evidence is not None
+                    else ""
+                )
                 return self._status(
                     ActionStatus.SUCCEEDED,
                     f"perception verified transition to {observation.screen.value} "
-                    f"({observation.screen_confidence:.4f})", clear=True,
+                    f"({observation.screen_confidence:.4f}){evidence}", clear=True,
                 )
         else:
             pending.candidate, pending.count = DSTScreen.UNKNOWN, 0
