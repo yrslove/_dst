@@ -64,6 +64,7 @@ class ActivityController:
         self._validation_step = 0
         self._validation_host_retry_count = 0
         self._validation_host_retry_pending = False
+        self._validation_host_retry_no_effect_proven = False
         self._validation_host_source_sequence: int | None = None
         self._validation_survivor_retry_count = 0
         self._validation_survivor_retry_pending = False
@@ -163,9 +164,14 @@ class ActivityController:
                 or observation.screen_confidence < 0.94
                 or observation.source_sequence
                 <= (self._validation_host_source_sequence or 0)
-                or observation.screen_change is None
-                or observation.screen_change >= 0.02
                 or host_anchor is None
+                or (
+                    not self._validation_host_retry_no_effect_proven
+                    and (
+                        observation.screen_change is None
+                        or observation.screen_change >= 0.02
+                    )
+                )
             ):
                 self.intervention_required = True
                 self._record(
@@ -181,6 +187,7 @@ class ActivityController:
                     "confirmed the verified anchor"
                 ),
             )
+            self._validation_host_retry_no_effect_proven = False
             self._record(observation, proposal.action.value, proposal.reason or "")
             return proposal
         if self._validation_survivor_retry_pending:
@@ -575,6 +582,13 @@ class ActivityController:
             if result.action == ActionName.CLICK_REWARD_OPEN:
                 self.counters["reward_opened"] += 1
         else:
+            if (
+                result.action == ActionName.CLICK_HOST_GAME
+                and result.status == ActionStatus.TIMED_OUT
+                and result.reason
+                == "fresh unchanged MAIN_MENU proves Host Game click had no effect"
+            ):
+                self._validation_host_retry_no_effect_proven = True
             self.on_action_failure(result)
 
     def on_action_failure(self, result: ActionResult) -> None:

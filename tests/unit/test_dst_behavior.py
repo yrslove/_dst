@@ -739,6 +739,37 @@ def test_host_game_unchanged_menu_allows_exactly_one_guarded_retry():
     ) is None
 
 
+def test_lifecycle_proven_no_effect_reaches_retry_without_rechecking_change_metric():
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "host-proof-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=True)
+    assert policy.propose(menu) is None
+    menu = replace(menu, source_frame_id="host-proof-2", source_sequence=2)
+    first = policy.propose(menu)
+    assert first is not None and first.action == ActionName.CLICK_HOST_GAME
+
+    no_effect = ActionResult(
+        "host-no-effect", ActionName.CLICK_HOST_GAME, ActionStatus.TIMED_OUT,
+        1.0, 1, 1, 1,
+        "fresh unchanged MAIN_MENU proves Host Game click had no effect",
+    )
+    proof_frame = replace(
+        menu, source_frame_id="host-proof-3", source_sequence=3,
+        screen_change=.001,
+    )
+    policy.on_verified(proof_frame, no_effect)
+
+    next_frame = replace(
+        proof_frame, source_frame_id="host-proof-4", source_sequence=4,
+        screen_change=.08,
+    )
+    retry = policy.propose(next_frame)
+    assert retry is not None and retry.action == ActionName.CLICK_HOST_GAME
+    assert "once" in (retry.reason or "")
+
+
 def test_host_game_retry_is_withheld_for_ambiguous_non_menu_state():
     menu = analyze_image(
         Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
