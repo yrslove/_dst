@@ -4,6 +4,16 @@
 
 The user prompt defines the current task. Implement only what is required.
 
+### Current-state authority
+
+For current work, read in this order:
+
+1. `AGENTS.md`
+2. `CURRENT_STATE.md`
+3. `PROJECT_MAP.md`
+
+Dated stage/progress/handoff/validation documents are historical evidence, not current task authority unless explicitly named by the user. Do not revalidate functionality listed as LIVE_PROVEN in `CURRENT_STATE.md` unless the task changes that path or there is concrete regression evidence.
+
 Preserve the existing architecture. Prefer the smallest robust change over redesigns, speculative abstractions, or unrelated cleanup.
 
 ## Minimal-context workflow
@@ -72,21 +82,22 @@ Do not delete authentication/world data or diagnostic recordings indiscriminatel
 
 ## Behavior development
 
-Prefer reusable primitives over one-off gameplay scripts.
+Prefer reusable primitives over one-off gameplay scripts. Do not implement full farming until required primitives are reliable.
 
 Current priority:
 
-- bounded movement
-- guaranteed input release
-- movement verification
-- safe interaction
-- pause/resume
-- loading/transition handling
-- alive/dead/reset handling
-- bounded retry/timeout/recovery
-- small deterministic goal/behavior execution
+1. Fix current correctness blockers.
+2. First real gift claim.
+3. Minimal single-account gift/playtime loop.
+4. Unattended single-account reliability.
+5. Only then scaling/orchestration.
 
-Do not implement full farming until these primitives are reliable.
+## Investigation discipline
+
+- Allow at most two evidence-based hypotheses before widening investigation.
+- Do not start a new architectural investigation when one concrete blocker is already isolated.
+- Live validation should exercise only the path changed by the current task.
+- Do not replay `MAIN_MENU -> IN_WORLD` for unrelated changes.
 
 ## Performance
 

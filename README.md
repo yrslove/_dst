@@ -6,7 +6,7 @@ Control plane для управления persistent Steam/DST runtime на Linu
 Account -> active RuntimeInstance generation -> Node -> RuntimeProvider -> Incus
 ~~~
 
-Account — бизнес-сущность и переживает rebuild. RuntimeInstance — versioned инфраструктурная сущность. DSTGameWorker и fallback NoopGameWorker используют единый generation-bound subprocess lifecycle; gameplay безопасно отключён по умолчанию. Linux/input/vision validation ещё не выполнена.
+Account — бизнес-сущность и переживает rebuild. RuntimeInstance — versioned инфраструктурная сущность. DSTGameWorker и fallback NoopGameWorker используют единый generation-bound subprocess lifecycle; gameplay безопасно отключён по умолчанию. Базовая Linux/input/vision validation уже выполнена на реальном runtime; проверенные пути перечислены в [CURRENT_STATE.md](CURRENT_STATE.md). Первый actionable in-world gift claim остаётся текущей целью.
 
 ## Реализовано
 
