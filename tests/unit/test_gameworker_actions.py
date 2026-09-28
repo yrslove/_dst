@@ -549,7 +549,7 @@ def test_parent_emergency_release_attempts_every_binding_independently(monkeypat
         def key_up(self, key):
             calls.append(("key", key))
             if key == "a":
-                raise RuntimeError("one release failed")
+                raise InputError("one release failed")
 
         def mouse_up(self, button):
             calls.append(("mouse", button))
@@ -571,3 +571,94 @@ def test_parent_emergency_release_attempts_every_binding_independently(monkeypat
         "Escape",
     }
     assert [value for kind, value in calls if kind == "mouse"] == [1, 2, 3, 4, 5]
+
+
+def test_emergency_release_unavailable_bridge_does_not_fail_shutdown(monkeypatch):
+    attempts = []
+
+    def unavailable(_environment):
+        attempts.append("start")
+        raise InputError("xpra input server connection lost: BlockingIOError")
+
+    monkeypatch.setattr("runtime_agent.gameworker.input.XpraInputDriver", unavailable)
+    emergency_release_all(DisplayEnvironment(":99"), InputBindings())
+    assert attempts == ["start"]
+
+
+def test_emergency_release_stops_writing_once_channel_closes(monkeypatch):
+    drivers = []
+
+    class Driver:
+        closed = False
+
+        def __init__(self, _environment):
+            self.calls = []
+            drivers.append(self)
+
+        def key_up(self, key):
+            self.calls.append(key)
+            self.closed = True
+            raise InputError("xpra input operation failed: BlockingIOError")
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr("runtime_agent.gameworker.input.XpraInputDriver", Driver)
+    emergency_release_all(DisplayEnvironment(":99"), InputBindings())
+    assert drivers[0].calls == ["Escape"]
+    assert drivers[0].closed
+
+
+def test_controller_close_discards_uncertain_input_after_broken_transport():
+    class BrokenDriver(FakeInputDriver):
+        closed = False
+
+        def key_up(self, _key):
+            self.closed = True
+            raise InputError("xpra input operation failed: BlockingIOError")
+
+        def close(self):
+            self.closed = True
+
+    driver = BrokenDriver()
+    controller = InputController(
+        lease=InputLease(), max_actions_per_second=10,
+        max_key_presses_per_second=10, driver=driver,
+    )
+    controller.key_down("w")
+    assert not controller.close()
+    assert controller.revoked
+    assert not controller.has_held_inputs
+    assert not controller.uncertain_inputs
+    assert driver.closed
+    assert controller.close()
+    with pytest.raises(InputError, match="revoked"):
+        controller.key_down("a")
+
+
+def test_next_controller_uses_fresh_driver_after_cleanup(monkeypatch):
+    drivers = []
+
+    class Driver(FakeInputDriver):
+        def __init__(self, _environment, *, timeout):
+            super().__init__()
+            self.closed = False
+            drivers.append(self)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr("runtime_agent.gameworker.input.XpraInputDriver", Driver)
+    options = {
+        "environment": DisplayEnvironment(":99"), "lease": InputLease(),
+        "max_actions_per_second": 10, "max_key_presses_per_second": 10,
+    }
+    first = InputController(**options)
+    first.close()
+    second = InputController(**options)
+    second.key_down("w")
+    second.close()
+
+    assert len(drivers) == 2
+    assert drivers[0] is not drivers[1]
+    assert drivers[0].closed and drivers[1].closed

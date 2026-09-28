@@ -29,6 +29,10 @@ class XpraInputDriver:
     settle_seconds = 0.5
     press_seconds = 0.5
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def __init__(self, environment: DisplayEnvironment, *, timeout: float = 2.0):
         if timeout <= 0:
             raise ValueError("input timeout must be positive")
@@ -82,7 +86,7 @@ class XpraInputDriver:
         if not reply.get("ok"):
             reason = reply.get("error")
             if reason in {
-                "BrokenPipeError", "ConnectionAbortedError",
+                "BlockingIOError", "BrokenPipeError", "ConnectionAbortedError",
                 "ConnectionResetError", "EOFError", "TimeoutError",
             }:
                 raise InputTransportError(

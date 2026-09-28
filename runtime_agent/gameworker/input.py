@@ -327,9 +327,15 @@ class InputController:
 
     def close(self) -> bool:
         self.revoke()
-        released = self.release_all(reason="controller_close")
-        self.driver.close()
-        return released
+        try:
+            return self.release_all(reason="controller_close")
+        finally:
+            with self._state_lock:
+                self._keys.clear()
+                self._buttons.clear()
+                self._uncertain_keys.clear()
+                self._uncertain_buttons.clear()
+            self.driver.close()
 
     def release_all(self, *, reason: str = "release_all", _io_locked=False) -> bool:
         """Best-effort independent release; logical state is always made safe."""
@@ -343,6 +349,9 @@ class InputController:
                 self._buttons.clear()
             failed = False
             for key in keys:
+                if getattr(self.driver, "closed", False):
+                    failed = True
+                    break
                 try:
                     self.driver.key_up(key)
                 except Exception:
@@ -354,6 +363,9 @@ class InputController:
                     with self._state_lock:
                         self._uncertain_keys.discard(key)
             for button in buttons:
+                if getattr(self.driver, "closed", False):
+                    failed = True
+                    break
                 try:
                     self.driver.mouse_up(button)
                 except Exception:
@@ -427,7 +439,11 @@ class DeadmanSafety:
 
 def emergency_release_all(environment: DisplayEnvironment, bindings) -> None:
     """Best-effort parent-side reset after isolated worker process death."""
-    driver = XpraInputDriver(environment)
+    try:
+        driver = XpraInputDriver(environment)
+    except (InputError, OSError) as exc:
+        logger.warning("parent emergency input channel unavailable: %s", exc)
+        return
     try:
         keys = sorted(
             {
@@ -443,12 +459,19 @@ def emergency_release_all(environment: DisplayEnvironment, bindings) -> None:
         for key in keys:
             try:
                 driver.key_up(key)
-            except Exception:  # noqa: BLE001 - parent safety boundary must continue
-                logger.warning("parent emergency key release failed key=%s", key)
+            except (InputError, OSError) as exc:
+                logger.warning("parent emergency key release failed key=%s: %s", key, exc)
+                if getattr(driver, "closed", False):
+                    return
         for button in range(1, 6):
             try:
                 driver.mouse_up(button)
-            except Exception:  # noqa: BLE001 - parent safety boundary must continue
-                logger.warning("parent emergency mouse release failed button=%s", button)
+            except (InputError, OSError) as exc:
+                logger.warning("parent emergency mouse release failed button=%s: %s", button, exc)
+                if getattr(driver, "closed", False):
+                    return
     finally:
-        driver.close()
+        try:
+            driver.close()
+        except (InputError, OSError) as exc:
+            logger.warning("parent emergency input close failed: %s", exc)

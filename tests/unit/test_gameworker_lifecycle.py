@@ -29,6 +29,7 @@ from runtime_agent.gameworker.process import (
     _worker_main,
 )
 from runtime_agent.gameworker.state import WorkerState
+from runtime_agent.gameworker.xpra_input import InputError
 from runtime_agent.heartbeat import send_heartbeat
 from runtime_agent.worker_bridge import WorkerBridge
 
@@ -296,6 +297,25 @@ def test_input_free_worker_shutdown_never_opens_emergency_channel(monkeypatch, m
     host.start()
     host._process.alive = False
     host.shutdown()
+
+
+def test_active_worker_shutdown_survives_broken_emergency_input(monkeypatch):
+    host = WorkerProcessHost(
+        WorkerConfig(plugin="dst", mode=WorkerMode.ACTIVE), context()
+    )
+    host._ctx = FakeMPContext()
+    host.start()
+    host._process.alive = False
+
+    def unavailable(_environment):
+        raise InputError("xpra input server connection lost: BlockingIOError")
+
+    monkeypatch.setattr("runtime_agent.gameworker.input.XpraInputDriver", unavailable)
+    report = host.shutdown()
+
+    assert host._process is None
+    assert report.state == "STOPPED"
+    assert host.shutdown().state == "STOPPED"
 
 
 def test_autostart_off_pause_keeps_disabled_worker_disabled():
