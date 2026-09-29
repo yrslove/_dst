@@ -36,6 +36,7 @@ class RuntimeAgentSettings:
     protocol_version: int = 1
     auto_launch_steam: bool = False
     auto_launch_dst: bool = False
+    safe_idle_world_profile: bool = False
     display_backend: str = "xvfb"
     display: str = ":99"
     xdg_runtime_dir: str | None = None
@@ -185,6 +186,7 @@ class RuntimeAgentSettings:
             protocol_version=int(os.getenv("AGENT_PROTOCOL_VERSION", "1")),
             auto_launch_steam=_strict_bool("AUTO_LAUNCH_STEAM"),
             auto_launch_dst=_strict_bool("AUTO_LAUNCH_DST"),
+            safe_idle_world_profile=_strict_bool("SAFE_IDLE_WORLD_PROFILE"),
             display_backend=os.getenv("DISPLAY_BACKEND", "xvfb").lower(),
             display=display,
             xdg_runtime_dir=os.getenv("XDG_RUNTIME_DIR") or None,

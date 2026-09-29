@@ -3,24 +3,47 @@ from datetime import timedelta
 import pytest
 
 from app.models import utcnow
-from app.runtime.world_profile import SAFE_PROFILE, application_script, render_profile
-from app.services.session import session_failure
+from app.runtime.world_profile import (
+    SAFE_PROFILE,
+    desired_profile_hash,
+    reconcile_world_profile,
+    render_profile,
+)
+from app.services.session import safe_world_profile_failure, session_failure
 
 
-def test_safe_profile_is_idempotent_preserving_prepared_metadata():
-    source = (
-        'return {id="SURVIVAL_TOGETHER", name="Survival", overrides={\n'
-        + ",\n".join(f'{k}="default"' for k in SAFE_PROFILE)
-        + "}}"
-    )
-    rendered = render_profile(source, SAFE_PROFILE)
-    assert 'id="SURVIVAL_TOGETHER"' in rendered
-    assert 'day="onlyday"' in rendered
-    assert 'hunger="nonlethal"' in rendered
-    assert render_profile(rendered, SAFE_PROFILE) == rendered
-    assert "dontstarve" in application_script()
-    with pytest.raises(ValueError):
-        render_profile("return {}", SAFE_PROFILE)
+def test_safe_profile_is_deterministic_partial_override():
+    rendered = render_profile(SAFE_PROFILE)
+    assert rendered == render_profile(dict(reversed(list(SAFE_PROFILE.items()))))
+    assert "override_enabled = true" in rendered
+    assert 'day = "onlyday"' in rendered
+    assert 'hunger = "nonlethal"' in rendered
+    assert "leveldataoverride" not in rendered
+    assert desired_profile_hash() == desired_profile_hash()
+
+
+def test_reconciliation_creates_repairs_and_noops(tmp_path):
+    cluster = tmp_path / "123" / "Cluster_1"
+    cluster.mkdir(parents=True)
+    config = cluster / "worldgenoverride.lua"
+    created = reconcile_world_profile(user_root=tmp_path)
+    assert created["changed"] is True
+    assert config.read_text() == render_profile()
+    before = config.stat().st_mtime_ns
+    unchanged = reconcile_world_profile(user_root=tmp_path)
+    assert unchanged["changed"] is False
+    assert config.stat().st_mtime_ns == before
+    config.write_text("return { override_enabled = false }\n")
+    repaired = reconcile_world_profile(user_root=tmp_path)
+    assert repaired["changed"] is True
+    assert config.read_text() == render_profile()
+
+
+def test_profile_reconciliation_rejects_ambiguous_worlds(tmp_path):
+    (tmp_path / "123" / "Cluster_1").mkdir(parents=True)
+    (tmp_path / "456" / "Cluster_1").mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="exactly one"):
+        reconcile_world_profile(user_root=tmp_path)
 
 
 def test_death_process_stale_and_input_fail_closed():
@@ -62,8 +85,54 @@ def test_managed_bootstrap_preserves_safe_profile_and_observation_cadence():
         safe_idle_world=True,
     )
     assert b'WORKER_OBSERVATION_INTERVAL="12"' in config.environment_file()
+    assert b'SAFE_IDLE_WORLD_PROFILE="1"' in config.environment_file()
     assert config.environment_file() == replace(config).environment_file()
     assert (
         b"WORKER_OBSERVATION_INTERVAL"
         not in replace(config, safe_idle_world=False).environment_file()
+    )
+    assert b'SAFE_IDLE_WORLD_PROFILE="0"' in replace(
+        config, safe_idle_world=False
+    ).environment_file()
+
+
+def test_long_session_requires_fresh_current_process_profile_evidence():
+    from types import SimpleNamespace
+
+    now = utcnow()
+    runtime = SimpleNamespace(id=4, account_id=7, runtime_generation=3)
+    evidence = {
+        "status": "VERIFIED",
+        "verification_scope": "CONFIG_FILE_AND_PROCESS",
+        "profile_layer": "worldgenoverride.lua",
+        "configuration_verified": True,
+        "account_id": 7,
+        "runtime_id": 4,
+        "runtime_generation": 3,
+        "world_path": "/home/dst/.klei/DoNotStarveTogether/123/Cluster_1/worldgenoverride.lua",
+        "desired_profile_hash": desired_profile_hash(),
+        "applied_profile_hash": desired_profile_hash(),
+        "process_id": 314,
+        "process_start_ticks": 880,
+        "process_generation": "r4-g3-p314-t880",
+        "process_started_at": (now - timedelta(seconds=10)).isoformat(),
+        "verified_at": now.isoformat(),
+    }
+    snapshot = {"dst_running": True, "world_profile": evidence}
+    assert safe_world_profile_failure(snapshot, runtime, now) is None
+    assert safe_world_profile_failure({"dst_running": True}, runtime, now)
+    assert safe_world_profile_failure(
+        {**snapshot, "world_profile": {**evidence, "runtime_generation": 2}},
+        runtime,
+        now,
+    )
+    assert safe_world_profile_failure(
+        {**snapshot, "world_profile": {**evidence, "process_id": 99}},
+        runtime,
+        now,
+    )
+    assert safe_world_profile_failure(
+        {**snapshot, "world_profile": {**evidence, "verified_at": (now - timedelta(seconds=21)).isoformat()}},
+        runtime,
+        now,
     )

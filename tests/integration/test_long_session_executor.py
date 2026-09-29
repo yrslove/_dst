@@ -52,7 +52,9 @@ def test_storage_guard_preserves_runtime_and_records_reason(client, app, monkeyp
         assert task.result_json["terminal_reason"] == "STORAGE_GUARD_TRIGGERED"
 
 
-@pytest.mark.parametrize("failure", [None, "DEAD", "UNKNOWN", "STALE", "RESUME"])
+@pytest.mark.parametrize(
+    "failure", [None, "DEAD", "UNKNOWN", "STALE", "RESUME", "PROFILE"]
+)
 def test_bounded_monitor_completion_failure_resume_and_cleanup(
     client, app, monkeypatch, failure
 ):
@@ -62,6 +64,7 @@ def test_bounded_monitor_completion_failure_resume_and_cleanup(
 
     import app.services.session as policy
     from app.models import RuntimeState, WorkerRun, utcnow
+    from app.runtime.world_profile import desired_profile_hash
 
     account = make_ready(client, app, "monitor-" + str(failure))
     ex = app.state.executor
@@ -123,15 +126,37 @@ def test_bounded_monitor_completion_failure_resume_and_cleanup(
             if failure == "STALE" and mode[0] == "ACTIVE"
             else now[0]
         )
+        profile_evidence = {
+            "enabled": True,
+            "status": "VERIFIED",
+            "verification_scope": "CONFIG_FILE_AND_PROCESS",
+            "profile_layer": "worldgenoverride.lua",
+            "configuration_verified": True,
+            "account_id": account["id"],
+            "runtime_id": account["runtime_id"],
+            "runtime_generation": 1,
+            "world_path": "/home/dst/.klei/DoNotStarveTogether/123/Cluster_1/worldgenoverride.lua",
+            "desired_profile_hash": desired_profile_hash(),
+            "applied_profile_hash": desired_profile_hash(),
+            "process_id": 314,
+            "process_start_ticks": 880,
+            "process_generation": f"r{account['runtime_id']}-g1-p314-t880",
+            "process_started_at": (initial - timedelta(seconds=1)).isoformat(),
+            "verified_at": now[0].isoformat(),
+        }
+        if failure == "PROFILE":
+            profile_evidence["status"] = "UNVERIFIED"
         return {
             "mode": mode[0],
             "state": "WAITING",
             "healthy": True,
+            "dst_running": True,
             "held_inputs": False,
             "updated_at": now[0],
             "last_observation_at": stamp,
             "observation": {**obs, "screen": screen, "source_frame_id": str(elapsed)},
             "telemetry": {"daily_gift_state": "NO_REWARD_AVAILABLE"},
+            "world_profile": profile_evidence,
         }
 
     monkeypatch.setattr(policy, "utcnow", lambda: now[0])
@@ -168,12 +193,17 @@ def test_bounded_monitor_completion_failure_resume_and_cleanup(
             "DEAD": "GAMEPLAY_DEAD",
             "UNKNOWN": "PERCEPTION_UNKNOWN",
             "STALE": "PERCEPTION_STALE",
+            "PROFILE": "SAFE_WORLD_PROFILE_UNVERIFIED",
         }[failure]
         assert task.result_json["terminal_reason"] == expected, task.result_json
         assert task.status == (
             "COMPLETED" if failure in [None, "RESUME"] else "NEEDS_ATTENTION"
         )
         assert task.confirmation_key is None
-    assert events[-2:] == ["disable", "stop"]
+    if failure == "PROFILE":
+        assert events == ["start", "stop"]
+        assert mode[0] == "DISABLED"
+    else:
+        assert events[-2:] == ["disable", "stop"]
     if failure == "RESUME":
         assert "start" not in events

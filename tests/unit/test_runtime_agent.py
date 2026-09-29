@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from app.workers.contracts import WorkerContext
 from app.workers.noop import NoopGameWorker
 from runtime_agent.process_supervisor import ProcessSupervisor
+from runtime_agent.processes.dst import DSTProcess
 from runtime_agent.steam import is_ready
 
 
@@ -54,6 +55,97 @@ def test_process_restart_is_bounded():
     assert len(processes) == 3
     assert supervisor.status.restart_count == 2
     assert supervisor.status.exhausted is True
+
+
+def test_dst_restart_reconciles_profile_and_invalidates_previous_process_evidence(
+    tmp_path,
+):
+    processes = []
+
+    def factory(*_args, **_kwargs):
+        process = FakeProcess()
+        processes.append(process)
+        return process
+
+    world_root = tmp_path / "klei"
+    cluster = world_root / "123" / "Cluster_1"
+    cluster.mkdir(parents=True)
+    evidence = tmp_path / "run" / "world-profile.json"
+    evidence.parent.mkdir()
+    evidence.write_text('{"process_id": 1}')
+    supervisor = ProcessSupervisor(
+        "dst", ("dst",), backoff_seconds=0, popen=factory
+    )
+    DSTProcess(
+        supervisor,
+        tmp_path / "dst.ready",
+        account_id=1,
+        runtime_id=1,
+        runtime_generation=2,
+        safe_idle_world_profile=True,
+        user_root=world_root,
+        evidence_path=evidence,
+    )
+    supervisor.request_start()
+    config = cluster / "worldgenoverride.lua"
+    assert config.is_file()
+    assert not evidence.exists()
+    config.unlink()
+    processes[-1].exit_code = 1
+    supervisor.tick()
+    assert len(processes) == 2
+    assert config.is_file()
+    assert not evidence.exists()
+
+
+def test_dst_adoption_accepts_only_evidence_for_matching_process_generation(tmp_path):
+    from types import SimpleNamespace
+
+    from app.runtime.world_profile import (
+        reconcile_world_profile,
+        record_process_evidence,
+    )
+
+    world_root = tmp_path / "klei"
+    cluster = world_root / "123" / "Cluster_1"
+    cluster.mkdir(parents=True)
+    reconciliation = reconcile_world_profile(user_root=world_root)
+    evidence_path = tmp_path / "run" / "world-profile.json"
+    record_process_evidence(
+        reconciliation=reconciliation,
+        account_id=2,
+        runtime_id=1,
+        runtime_generation=3,
+        process_id=314,
+        process_start_ticks=880,
+        process_started_at="2026-09-29T21:00:00+00:00",
+        evidence_path=evidence_path,
+    )
+    ready = tmp_path / "dst.ready"
+    ready.touch()
+    supervisor = SimpleNamespace(
+        before_start=None,
+        alive=True,
+        status=SimpleNamespace(
+            pid=314,
+            started_at="2026-09-29T21:00:00+00:00",
+            exhausted=False,
+        ),
+        process_identity=lambda _pid: (880, 314, 314),
+    )
+    process = DSTProcess(
+        supervisor,
+        ready,
+        account_id=2,
+        runtime_id=1,
+        runtime_generation=3,
+        safe_idle_world_profile=True,
+        user_root=world_root,
+        evidence_path=evidence_path,
+    )
+    assert process.world_profile_evidence()["status"] == "VERIFIED"
+    supervisor.status.pid = 315
+    assert process.world_profile_evidence()["status"] == "UNVERIFIED"
 
 
 def test_process_existence_is_not_readiness(tmp_path):

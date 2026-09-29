@@ -310,7 +310,7 @@ class JobExecutor(LongSessionMixin):
             ),
             dst_readiness_timeout=self.settings.runtime_dst_readiness_timeout_seconds,
         )
-        RuntimeBootstrapService(self.db, self.provider, version=4).bootstrap(
+        RuntimeBootstrapService(self.db, self.provider, version=5).bootstrap(
             descriptor, config, correlation_id=job.request_id
         )
 
@@ -762,6 +762,7 @@ class JobExecutor(LongSessionMixin):
                 "last_observation_at": worker.last_observation_at,
                 "observation": observation,
                 "telemetry": telemetry,
+                "world_profile": diagnostics.get("world_profile"),
                 "held_inputs": input_safety.get("held_inputs")
                 if isinstance(input_safety, dict)
                 else None,

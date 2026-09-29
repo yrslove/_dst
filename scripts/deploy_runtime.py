@@ -86,6 +86,7 @@ def runtime_files(repo: Path) -> list[Path]:
             repo / "app/subprocess_env.py",
             repo / "app/runtime/__init__.py",
             repo / "app/runtime/display.py",
+            repo / "app/runtime/world_profile.py",
         )
     )
     missing = [path for path in selected if not path.is_file()]

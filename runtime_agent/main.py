@@ -146,6 +146,10 @@ def main() -> int:
         dst,
         settings.dst_ready_file,
         readiness_timeout_seconds=settings.dst_readiness_timeout_seconds,
+        account_id=settings.account_id,
+        runtime_id=settings.runtime_id,
+        runtime_generation=settings.runtime_generation,
+        safe_idle_world_profile=settings.safe_idle_world_profile,
     )
     phase = "BOOTING"
     worker_initialized = False
@@ -225,6 +229,7 @@ def main() -> int:
                     "display": display.diagnostics(),
                     "steam": steam.status.as_dict(),
                     "dst": dst.status.as_dict(),
+                    "world_profile": dst_process.world_profile_evidence(),
                     "readiness": {
                         "steam": steam_process.status(),
                         "dst": dst_process.status(),

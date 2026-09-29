@@ -64,6 +64,7 @@ class RuntimeAgentConfig:
             "STEAM_READY_FILE": "/run/dst-runtime/steam.ready",
             "STEAM_NEEDS_LOGIN_FILE": "/run/dst-runtime/steam.needs-login",
             "DST_READY_FILE": "/run/dst-runtime/dst.ready",
+            "SAFE_IDLE_WORLD_PROFILE": int(self.safe_idle_world),
             "DISPLAY_READINESS_TIMEOUT_SECONDS": self.display_readiness_timeout,
             "STEAM_READINESS_TIMEOUT_SECONDS": self.steam_readiness_timeout,
             "DST_READINESS_TIMEOUT_SECONDS": self.dst_readiness_timeout,
