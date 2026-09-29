@@ -30,6 +30,7 @@ class ActionName(StrEnum):
     PAUSE_WORLD = "PAUSE_WORLD"
     INTERACT = "INTERACT"
     HOVER_GIFT_ICON = "HOVER_GIFT_ICON"
+    CLICK_GIFT_ICON = "CLICK_GIFT_ICON"
     CANCEL = "CANCEL"
     RESUME_WORLD = "RESUME_WORLD"
     OPEN_INVENTORY = "OPEN_INVENTORY"
@@ -177,6 +178,8 @@ _PRESS_KEYS = {
 }
 CLICK_REGIONS = {
     ActionName.HOVER_GIFT_ICON: (0.115, 0.0, 0.2, 0.14),
+    # Guard only. The actual point is resolved from the current gift detection.
+    ActionName.CLICK_GIFT_ICON: (0.115, 0.0, 0.2, 0.14),
     ActionName.CLICK_REWARD_OPEN: (0.35, 0.75, 0.65, 0.97),
     ActionName.CLICK_REWARD_CLOSE: (0.35, 0.75, 0.65, 0.97),
     ActionName.CLICK_OPTIONS: (0.02, 0.66, 0.18, 0.75),
@@ -427,10 +430,18 @@ class ActionExecutor:
                 point = NormalizedPoint(float(values["x"]), float(values["y"]))
                 viewport = Viewport(int(values["width"]), int(values["height"]))
                 left, top, right, bottom = CLICK_REGIONS[action.name]
-                if len(values) != 4 or not (
+                expected_keys = {"x", "y", "width", "height"}
+                if action.name == ActionName.CLICK_GIFT_ICON:
+                    expected_keys.add("evidence_sequence")
+                if set(values) != expected_keys or not (
                     left < point.x < right and top < point.y < bottom
                 ):
                     raise ValueError("anchor outside guarded UI region")
+                if action.name == ActionName.CLICK_GIFT_ICON and (
+                    not isinstance(values["evidence_sequence"], int)
+                    or values["evidence_sequence"] < 1
+                ):
+                    raise ValueError("gift detection sequence is invalid")
                 if (
                     not 640 <= viewport.width <= 4096
                     or not 480 <= viewport.height <= 2160
@@ -834,7 +845,12 @@ class GameActions:
         )
 
     def _new_action(
-        self, name: ActionName, *, duration: float | None = None, parameters: tuple = ()
+        self,
+        name: ActionName,
+        *,
+        duration: float | None = None,
+        parameters: tuple = (),
+        valid_until: float | None = None,
     ) -> Action:
         with self._sequence_lock:
             self._sequence += 1
@@ -849,7 +865,10 @@ class GameActions:
             worker_generation=self.worker_generation,
             runtime_id=self.runtime_id,
             duration=duration,
-            deadline=time.monotonic() + self.action_timeout,
+            deadline=min(
+                time.monotonic() + self.action_timeout,
+                valid_until if valid_until is not None else float("inf"),
+            ),
             sequence=sequence,
             parameters=parameters,
         )
@@ -921,6 +940,8 @@ class GameActions:
         duration: float | None = None,
         target: NormalizedPoint | None = None,
         viewport: Viewport | None = None,
+        valid_until: float | None = None,
+        evidence_sequence: int | None = None,
     ) -> ActionResult:
         parameters = ()
         if action in CLICK_REGIONS:
@@ -932,8 +953,17 @@ class GameActions:
                 ("width", viewport.width),
                 ("height", viewport.height),
             )
+            if action == ActionName.CLICK_GIFT_ICON:
+                if valid_until is None or evidence_sequence is None:
+                    raise ValueError("gift click requires fresh detection evidence")
+                parameters += (("evidence_sequence", evidence_sequence),)
         return self.execute_action(
-            self._new_action(action, duration=duration, parameters=parameters)
+            self._new_action(
+                action,
+                duration=duration,
+                parameters=parameters,
+                valid_until=valid_until,
+            )
         )
 
 
@@ -957,6 +987,8 @@ class ObserveActions:
         duration: float | None = None,
         target: NormalizedPoint | None = None,
         viewport: Viewport | None = None,
+        valid_until: float | None = None,
+        evidence_sequence: int | None = None,
     ) -> ActionResult:
         self._sequence += 1
         return ActionResult(

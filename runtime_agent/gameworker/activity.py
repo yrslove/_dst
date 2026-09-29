@@ -175,6 +175,7 @@ class ActivityController:
         self.daily_gift_confirmation: DailyGiftConfirmation | None = None
         self.gift_availability_evidence: dict | None = None
         self._gift_hover_attempted = False
+        self._gift_icon_click_attempts = 0
         self._reward_open_source_sequence: int | None = None
         self._last_gift_observation_sequence = 0
         self._last_confirmed_gift_sequence = 0
@@ -294,6 +295,22 @@ class ActivityController:
         if self.intervention_required:
             self._record(observation, "NONE", "intervention required")
             return None
+        if (
+            self.production_actions_enabled
+            and observation.screen == DSTScreen.IN_WORLD_IDLE
+            and icon is not None
+            and icon.detected
+            and icon.verified
+            and icon.bounds is not None
+            and icon.confidence >= 0.94
+            and dict(icon.metadata).get("availability") == "GIFT_AVAILABLE"
+            and self._gift_icon_click_attempts < 2
+        ):
+            self._gift_icon_click_attempts += 1
+            return ActionProposal(
+                ActionName.CLICK_GIFT_ICON,
+                reason="open the reward UI from the fresh active gift icon",
+            )
         if (
             self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_IDLE
@@ -807,6 +824,7 @@ class ActivityController:
             )
             return result
         if result.action in {
+            ActionName.CLICK_GIFT_ICON,
             ActionName.CLICK_REWARD_OPEN,
             ActionName.CLICK_OPTIONS,
             ActionName.CLICK_REWARD_CLOSE,
@@ -861,6 +879,29 @@ class ActivityController:
         if result.action == ActionName.HOVER_GIFT_ICON:
             if result.status != ActionStatus.SUCCEEDED:
                 self.on_unknown(observation)
+            return
+        if result.action == ActionName.CLICK_GIFT_ICON:
+            self._awaiting_reward_transition = False
+            if result.status == ActionStatus.SUCCEEDED:
+                self.daily_gift_state = DailyGiftState.GIFT_UI_OPEN
+                self._gift_icon_click_attempts = 2
+                self.counters["verified_actions"] += 1
+            elif (
+                result.status == ActionStatus.TIMED_OUT
+                and observation.screen == DSTScreen.IN_WORLD_IDLE
+                and self._gift_icon_click_attempts < 2
+            ):
+                # Retry only through the normal planner on a later fresh frame;
+                # it must still detect the active icon before proposing a click.
+                self.daily_gift_state = DailyGiftState.GIFT_AVAILABLE
+            else:
+                self.intervention_required = True
+            self._record(
+                observation,
+                result.action.value,
+                "gift icon action outcome",
+                result.status.value,
+            )
             return
         self._awaiting_reward_transition = False
         if result.status == ActionStatus.SUCCEEDED:

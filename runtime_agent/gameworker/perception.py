@@ -42,6 +42,8 @@ class ActionSink(Protocol):
         duration: float | None = None,
         target=None,
         viewport=None,
+        valid_until: float | None = None,
+        evidence_sequence: int | None = None,
     ) -> ActionResult: ...
 
 
@@ -485,6 +487,14 @@ class ObservePipeline:
                 duration=proposal.duration,
                 target=target,
                 viewport=viewport,
+                **(
+                    {
+                        "valid_until": observation.fresh_until,
+                        "evidence_sequence": observation.source_sequence,
+                    }
+                    if proposal.action == ActionName.CLICK_GIFT_ICON
+                    else {}
+                ),
             )
         else:
             result = self.actions.execute(proposal.action, duration=proposal.duration)

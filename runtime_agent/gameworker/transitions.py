@@ -25,6 +25,7 @@ class ActionContract:
     min_screen_change: float = 0.0
     min_gameplay_change: float = 0.0
     required_detections: tuple[str, ...] = ()
+    postcondition_detections: tuple[str, ...] = ()
     interaction_prompt_hidden: bool = False
     anchor_point: tuple[float, float] = (0.5, 0.5)
 
@@ -37,6 +38,17 @@ CONTRACTS = {
         timeout=8.0,
         confidence=0.85,
         stable_observations=1,
+    ),
+    ActionName.CLICK_GIFT_ICON: ActionContract(
+        ("gift_icon",),
+        frozenset({DSTScreen.IN_WORLD_IDLE}),
+        frozenset({DSTScreen.LOGIN_REWARD_AVAILABLE}),
+        timeout=12.0,
+        confidence=0.94,
+        stable_observations=1,
+        postcondition_detections=(
+            "login_reward_title", "login_reward_open_button",
+        ),
     ),
     ActionName.MOVE_FORWARD: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
@@ -171,6 +183,22 @@ def action_precondition_error(
     contract = CONTRACTS.get(action)
     if contract is None:
         return "no action contract"
+    if action == ActionName.CLICK_GIFT_ICON:
+        icon = next(
+            (item for item in observation.detections if item.kind == "gift_icon"),
+            None,
+        )
+        if not observation.is_fresh(time.monotonic()):
+            return "gift detection is stale"
+        if (
+            icon is None
+            or not icon.detected
+            or not icon.verified
+            or icon.bounds is None
+            or icon.confidence < contract.confidence
+            or dict(icon.metadata).get("availability") != "GIFT_AVAILABLE"
+        ):
+            return "fresh active gift detection is unavailable"
     if (
         observation.screen not in contract.source
         or not observation.production_ready
@@ -313,6 +341,15 @@ class ActionLifecycle:
             if pending.movement_evidence is None:
                 pending.movement_evidence = observation.gameplay_change
         if observation.screen in pending.contract.targets:
+            if pending.result.action == ActionName.CLICK_GIFT_ICON:
+                if observation.source_captured_monotonic < pending.sent_at:
+                    return None
+                if any(
+                    not self._has_fresh_verified_anchor(observation, kind)
+                    for kind in pending.contract.postcondition_detections
+                ):
+                    pending.candidate, pending.count = DSTScreen.UNKNOWN, 0
+                    return None
             if observation.screen == pending.candidate:
                 pending.count += 1
             else:
@@ -396,6 +433,29 @@ def click_request(action: ActionName, observation: GameObservation):
             fixed_target, observation.frame_width, observation.frame_height
         )
         return point, Viewport(observation.frame_width, observation.frame_height)
+    if action == ActionName.CLICK_GIFT_ICON:
+        if not observation.is_fresh(time.monotonic()):
+            raise ValueError("gift detection is stale; reacquire before clicking")
+        detection = next(
+            (
+                item for item in observation.detections
+                if item.kind == "gift_icon"
+                and item.detected
+                and item.verified
+                and item.bounds is not None
+                and item.confidence >= contract.confidence
+                and dict(item.metadata).get("availability") == "GIFT_AVAILABLE"
+            ),
+            None,
+        )
+        if detection is None:
+            raise ValueError("fresh active gift detection is unavailable")
+        bounds = detection.bounds
+        assert bounds is not None
+        return NormalizedPoint(
+            (bounds.left + bounds.right) / 2,
+            (bounds.top + bounds.bottom) / 2,
+        ), Viewport(observation.frame_width, observation.frame_height)
     detection = next((
         item for item in observation.detections
         if item.kind in contract.anchors and item.detected and item.verified

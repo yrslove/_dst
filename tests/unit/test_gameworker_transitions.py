@@ -50,6 +50,108 @@ def sent(action):
                         .5, 1, 1, 1)
 
 
+def active_gift_frame(sequence):
+    observation = frame("gift_icon_gray_in_world_live.png", sequence)
+    icon = next(d for d in observation.detections if d.kind == "world_present_banner")
+    detections = tuple(item for item in observation.detections if item.kind != "gift_icon")
+    detections += (
+        Detection(
+            "gift_icon", True, .99, bounds=icon.bounds,
+            detector_id="gift-icon-test", verified=True,
+            metadata=(("availability", "GIFT_AVAILABLE"),),
+        ),
+    )
+    return replace(observation, detections=detections)
+
+
+def gift_reward_panel(before, *, sequence, markers=True):
+    icon = next(d for d in before.detections if d.kind == "gift_icon")
+    detections = tuple(
+        item for item in before.detections if item.kind != "gift_icon"
+    )
+    if markers:
+        detections += (
+            Detection("login_reward_title", True, .99, bounds=icon.bounds,
+                      verified=True),
+            Detection("login_reward_open_button", True, .99,
+                      bounds=icon.bounds, verified=True),
+        )
+    return replace(
+        before,
+        timestamp=f"gift-panel-{sequence}",
+        observation_generation=sequence,
+        source_frame_id=f"gift-panel-{sequence}",
+        source_sequence=sequence,
+        source_captured_monotonic=before.source_captured_monotonic + .2,
+        observed_monotonic=before.observed_monotonic + .2,
+        fresh_until=before.fresh_until + .2,
+        screen=DSTScreen.LOGIN_REWARD_AVAILABLE,
+        screen_confidence=.99,
+        detections=detections,
+    )
+
+
+def test_active_gift_click_uses_current_detected_bounds_center():
+    observation = active_gift_frame(1)
+    icon = next(d for d in observation.detections if d.kind == "gift_icon")
+    point, viewport = click_request(ActionName.CLICK_GIFT_ICON, observation)
+    assert icon.bounds is not None
+    assert point.x == (icon.bounds.left + icon.bounds.right) / 2
+    assert point.y == (icon.bounds.top + icon.bounds.bottom) / 2
+    assert viewport.width == observation.frame_width
+
+
+def test_gift_click_requires_fresh_active_detection_and_reacquisition():
+    stale = replace(active_gift_frame(1), fresh_until=0)
+    with pytest.raises(ValueError, match="stale"):
+        click_request(ActionName.CLICK_GIFT_ICON, stale)
+    fresh = active_gift_frame(2)
+    point, _ = click_request(ActionName.CLICK_GIFT_ICON, fresh)
+    assert 0 < point.x < .25 and 0 < point.y < .2
+
+
+def test_gift_icon_transport_success_waits_for_specific_reward_ui_transition():
+    before = active_gift_frame(1)
+    clock = [before.observed_monotonic + .001]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    assert lifecycle.begin(sent(ActionName.CLICK_GIFT_ICON), before).status == ActionStatus.VERIFYING
+
+    no_transition = replace(
+        before,
+        source_frame_id="gift-still-visible",
+        source_sequence=2,
+        source_captured_monotonic=clock[0] + .1,
+        observed_monotonic=clock[0] + .1,
+        fresh_until=clock[0] + 3,
+    )
+    assert lifecycle.observe(no_transition) is None
+    clock[0] += 12.1
+    result = lifecycle.poll()
+    assert result is not None and result.status == ActionStatus.TIMED_OUT
+
+
+def test_gift_open_succeeds_only_with_reward_panel_and_open_anchor():
+    before = active_gift_frame(1)
+    clock = [before.observed_monotonic + .001]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    assert lifecycle.begin(sent(ActionName.CLICK_GIFT_ICON), before).status == ActionStatus.VERIFYING
+    panel = gift_reward_panel(before, sequence=2)
+    result = lifecycle.observe(panel)
+    assert result is not None and result.status == ActionStatus.SUCCEEDED
+    assert "LOGIN_REWARD_AVAILABLE" in result.reason
+
+
+def test_gift_open_without_specific_ui_anchors_times_out_without_success():
+    before = active_gift_frame(1)
+    clock = [before.observed_monotonic + .001]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    assert lifecycle.begin(sent(ActionName.CLICK_GIFT_ICON), before).status == ActionStatus.VERIFYING
+    panel = gift_reward_panel(before, sequence=2, markers=False)
+    assert lifecycle.observe(panel) is None
+    clock[0] += 12.1
+    assert lifecycle.poll().status == ActionStatus.TIMED_OUT
+
+
 def test_survivor_hover_is_known_but_requires_loadout_to_complete():
     selection = frame("character_selection_live.png", 1)
     hover = hovered_survivor(2)

@@ -2,13 +2,22 @@ import time
 from dataclasses import replace
 
 import numpy as np
+import pytest
 from PIL import Image
 
-from runtime_agent.gameworker.actions import Action, ActionName, ActionStatus
+from runtime_agent.gameworker.actions import (
+    Action,
+    ActionName,
+    ActionResult,
+    ActionStatus,
+)
 from runtime_agent.gameworker.activity import ActivityController, DailyGiftState
 from runtime_agent.gameworker.geometry import CalibrationProfile
 from runtime_agent.gameworker.gift_icon import UNKNOWN, classify_icon, hover_response
-from runtime_agent.gameworker.transitions import click_request
+from runtime_agent.gameworker.transitions import (
+    action_precondition_error,
+    click_request,
+)
 from runtime_agent.gameworker.vision import (
     AssetRegistry,
     Detection,
@@ -43,6 +52,29 @@ def gray_observation():
     return image, analyze_image(image, "gift-gray-live", 1)
 
 
+def active_observation(sequence=1, *, fresh_until=None):
+    _, observation = gray_observation()
+    detections = tuple(
+        replace(
+            item,
+            metadata=tuple(
+                (key, "GIFT_AVAILABLE" if key == "availability" else value)
+                for key, value in item.metadata
+            ),
+        )
+        if item.kind == "gift_icon"
+        else item
+        for item in observation.detections
+    )
+    return replace(
+        observation,
+        detections=detections,
+        source_sequence=sequence,
+        source_frame_id=f"active-gift-{sequence}",
+        fresh_until=(observation.fresh_until if fresh_until is None else fresh_until),
+    )
+
+
 def test_gray_live_icon_is_unavailable():
     _, observation = gray_observation()
     icon = next(d for d in observation.detections if d.kind == "gift_icon")
@@ -52,6 +84,21 @@ def test_gray_live_icon_is_unavailable():
     policy.propose(observation)
     assert policy.daily_gift_state == DailyGiftState.NO_REWARD_AVAILABLE
     assert policy.daily_gift_confirmation is None
+
+
+def test_gray_gift_never_proposes_gift_or_reward_click():
+    _, observation = gray_observation()
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(observation) is None
+    next_frame = replace(
+        observation, source_frame_id="gray-live-next", source_sequence=2
+    )
+    assert policy.propose(next_frame) is None
+    assert policy.daily_gift_state == DailyGiftState.NO_REWARD_AVAILABLE
+    assert policy.daily_gift_confirmation is None
+    assert policy.counters["gift_claimed"] == 0
+    assert action_precondition_error(ActionName.CLICK_GIFT_ICON, next_frame)
 
 
 def test_missing_icon_is_unknown():
@@ -114,6 +161,89 @@ def test_hover_uses_canonical_detected_center_and_never_clicks():
         assert not controller.has_held_inputs
     finally:
         value.shutdown()
+
+
+def test_active_gift_click_uses_detected_center_through_canonical_input():
+    observation = active_observation()
+    icon = next(d for d in observation.detections if d.kind == "gift_icon")
+    target, viewport = click_request(ActionName.CLICK_GIFT_ICON, observation)
+    assert icon.bounds is not None
+    assert target.x == (icon.bounds.left + icon.bounds.right) / 2
+    assert target.y == (icon.bounds.top + icon.bounds.bottom) / 2
+    value, controller, driver, _ = executor()
+    try:
+        result = value.execute(
+            Action(
+                "gift-click",
+                ActionName.CLICK_GIFT_ICON,
+                7,
+                3,
+                runtime_id=2,
+                deadline=time.monotonic() + 0.8,
+                parameters=(
+                    ("x", target.x),
+                    ("y", target.y),
+                    ("width", viewport.width),
+                    ("height", viewport.height),
+                    ("evidence_sequence", observation.source_sequence),
+                ),
+            )
+        )
+        assert result.status == ActionStatus.SENT
+        assert [event.operation for event in driver.events].count("mouse_down") == 1
+        assert [event.operation for event in driver.events].count("mouse_up") == 1
+        assert all(event.operation not in {"key_down", "key_press"} for event in driver.events)
+        assert not controller.has_held_inputs
+    finally:
+        value.shutdown()
+
+
+def test_stale_active_gift_evidence_is_rejected_before_click():
+    stale = active_observation(fresh_until=0)
+    with pytest.raises(ValueError, match="stale"):
+        click_request(ActionName.CLICK_GIFT_ICON, stale)
+    assert ActivityController().propose(stale) is None
+
+
+def test_active_gift_retry_is_bounded_and_reacquires_fresh_evidence():
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(active_observation(1)) is None
+    proposal = policy.propose(active_observation(2))
+    assert proposal is not None and proposal.action == ActionName.CLICK_GIFT_ICON
+    sent = Action(
+        "gift-open", ActionName.CLICK_GIFT_ICON, 1, 1, runtime_id=1
+    )
+    verifying = ActionResult(
+        sent.action_id, sent.name, ActionStatus.VERIFYING, 0.1, 1, 1, 1
+    )
+    policy.on_action_result(active_observation(2), verifying)
+    policy.on_verified(
+        active_observation(3), replace(verifying, status=ActionStatus.TIMED_OUT)
+    )
+    retry = policy.propose(active_observation(4))
+    assert retry is not None and retry.action == ActionName.CLICK_GIFT_ICON
+    policy.on_action_result(active_observation(4), verifying)
+    policy.on_verified(
+        active_observation(5), replace(verifying, status=ActionStatus.TIMED_OUT)
+    )
+    assert policy.intervention_required
+    assert policy.propose(active_observation(6)) is None
+
+
+def test_opening_gift_ui_does_not_confirm_daily_gift():
+    policy = ActivityController()
+    opening = ActionResult(
+        "gift-icon-open", ActionName.CLICK_GIFT_ICON,
+        ActionStatus.SUCCEEDED, 0.1, 1, 1, 1,
+    )
+    policy.on_verified(active_observation(2), opening)
+    assert policy.daily_gift_state == DailyGiftState.GIFT_UI_OPEN
+    assert policy.daily_gift_confirmation is None
+    assert policy.counters["gift_claimed"] == 0
+    policy.set_production_actions_enabled(True)
+    policy.propose(active_observation(3))
+    assert policy.propose(active_observation(4)) is None
 
 
 def test_uncertain_identity_hovers_once_without_claim_semantics():

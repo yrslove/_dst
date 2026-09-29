@@ -986,6 +986,7 @@ class DSTGameWorker:
                 ActionName.RESUME_WORLD,
                 ActionName.INTERACT,
                 ActionName.HOVER_GIFT_ICON,
+                ActionName.CLICK_GIFT_ICON,
             }
         )
 
