@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.models import GameplayTask, GameplayTaskStatus, RuntimeState, WorkerRun, utcnow
-from app.runtime.world_profile import desired_profile_hash
+from app.runtime.world_profile import SAFE_PROFILE_VERSION, desired_profile_hash
 from app.services.records import add_event
 from app.services.workers import WorkerControlService
 
@@ -41,15 +41,27 @@ def session_failure(snapshot, now, *, max_age=20):
     return None
 
 
-def safe_world_profile_failure(snapshot, runtime, now, *, max_age=20):
+def safe_world_profile_failure(
+    snapshot, runtime, now, *, max_age=20, require_loaded=False
+):
     """Require fresh profile evidence bound to this runtime and DST process."""
     evidence = snapshot.get("world_profile") if snapshot else None
-    if not isinstance(evidence, dict) or evidence.get("status") != "VERIFIED":
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("status") != "WORLD_PROFILE_VERIFIED"
+    ):
         return "SAFE_WORLD_PROFILE_UNVERIFIED"
     expected_hash = desired_profile_hash()
     if (
         evidence.get("enabled") is False
-        or evidence.get("verification_scope") != "CONFIG_FILE_AND_PROCESS"
+        or evidence.get("verification_scope")
+        != "PERSISTED_WORLD_SETTINGS_AND_CURRENT_PROCESS"
+        or evidence.get("world_profile_verified") is not True
+        or evidence.get("profile_version") != SAFE_PROFILE_VERSION
+        or not evidence.get("world_session_id")
+        or not evidence.get("fixture_manifest_sha256")
+        or evidence.get("settings_fingerprint") != expected_hash
+        or (require_loaded and evidence.get("loaded_world_verified") is not True)
         or evidence.get("profile_layer") != "worldgenoverride.lua"
         or evidence.get("configuration_verified") is not True
         or evidence.get("account_id") != runtime.account_id
@@ -63,7 +75,8 @@ def safe_world_profile_failure(snapshot, runtime, now, *, max_age=20):
     if (
         not isinstance(world_path, str)
         or Path(world_path).name != "worldgenoverride.lua"
-        or Path(world_path).parent.name != "Cluster_1"
+        or Path(world_path).parent.name != "Master"
+        or Path(world_path).parent.parent.name != "Cluster_1"
     ):
         return "SAFE_WORLD_PROFILE_UNVERIFIED"
     process_id = evidence.get("process_id")
@@ -195,9 +208,7 @@ class LongSessionMixin:
                     "applied_profile_hash": snap["world_profile"][
                         "applied_profile_hash"
                     ],
-                    "process_generation": snap["world_profile"][
-                        "process_generation"
-                    ],
+                    "process_generation": snap["world_profile"]["process_generation"],
                     "verified_at": snap["world_profile"]["verified_at"],
                 }
                 worker_started = True
@@ -252,9 +263,7 @@ class LongSessionMixin:
                     "applied_profile_hash": snap["world_profile"][
                         "applied_profile_hash"
                     ],
-                    "process_generation": snap["world_profile"][
-                        "process_generation"
-                    ],
+                    "process_generation": snap["world_profile"]["process_generation"],
                     "verified_at": snap["world_profile"]["verified_at"],
                 }
                 command = self._request_worker_mode(control, job, "OBSERVE")
@@ -295,7 +304,13 @@ class LongSessionMixin:
                 reason = session_failure(snap, now)
                 if reason:
                     break
-                reason = safe_world_profile_failure(snap, runtime, now)
+                reason = safe_world_profile_failure(
+                    snap,
+                    runtime,
+                    now,
+                    require_loaded=(snap.get("observation") or {}).get("screen")
+                    == "IN_WORLD_IDLE",
+                )
                 if reason:
                     break
                 obs = snap.get("observation") or {}
@@ -325,6 +340,22 @@ class LongSessionMixin:
                             last_frame_id=frame,
                             checkpoints=progress["checkpoints"] + 1,
                         )
+                        progress["safe_world_profile"] = {
+                            k: snap["world_profile"].get(k)
+                            for k in (
+                                "status",
+                                "profile_version",
+                                "world_session_id",
+                                "fixture_manifest_sha256",
+                                "settings_fingerprint",
+                                "clock_segments",
+                                "loaded_world_verified",
+                                "desired_profile_hash",
+                                "applied_profile_hash",
+                                "process_generation",
+                                "verified_at",
+                            )
+                        }
                         progress["gift_icon_evidence"] = snap["telemetry"].get(
                             "gift_availability_evidence"
                         )

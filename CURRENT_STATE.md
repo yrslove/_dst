@@ -431,6 +431,30 @@ existing save or that those settings guarantee survival/reward eligibility.
 Focused tests passed (26); Ruff and `git diff --check` passed. The work is committed
 and pushed to `main` in `43edc8b` and deployment fix `db938d5`.
 
+## Safe-profile factual application correction (2026-09-29)
+
+The requested 5400-second soak stopped after 16m04s/80 checkpoints: dusk occurred
+and DST logged `Not applying world gen overrides`, despite file/process evidence.
+No death/reset or unexpected input was observed. This invalidated admission based
+only on configuration-file verification.
+
+Installed-build audit and live provisioning confirmed the supported correction:
+USER overrides belong in `Cluster_1/Master/worldgenoverride.lua` for this hosted
+shard; DST also applies these world settings when loading an existing save.
+The same prepared session `EA6E12E4296C650B` was loaded with all ten actual override
+markers and saved normally as `0000000004`. Persisted settings match the canonical
+profile; persisted clock is day=16/dusk=0/night=0, matching the visible all-day HUD.
+No regeneration/mod/console or new input path was needed.
+
+The prepared Master now has a versioned safe manifest and a protected rollback/
+restore archive. Runtime evidence distinguishes CONFIG_PRESENT from
+WORLD_PROFILE_VERIFIED and current loaded-world application. LongSession requires
+persisted safe settings/fixture identity and current-process load evidence at
+in-world checkpoints. Old unsafe snapshots cannot satisfy that contract.
+See [the installed-build finding and provisioning contract](docs/SAFE_WORLD_PROFILE.md).
+Deployed-code short validation is recorded separately in the stage's live artifacts;
+the 75–90 minute soak remains pending and must not start automatically.
+
 ## Do not do now
 
 - No multi-worker/orchestration work.

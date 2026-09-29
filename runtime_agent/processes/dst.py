@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import hashlib
+import re
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
 from app.runtime.world_profile import (
     DEFAULT_EVIDENCE_PATH,
     DEFAULT_USER_ROOT,
+    config_profile_hash,
     desired_profile_hash,
+    loaded_profile,
     read_process_evidence,
     reconcile_world_profile,
     record_process_evidence,
     refresh_process_evidence,
+    verified_fixture,
 )
 from runtime_agent.process_supervisor import ProcessSupervisor
 
@@ -151,11 +155,13 @@ class DSTProcess:
             return None
         start_ticks = identity[0]
         try:
-            cluster_paths = sorted(self.user_root.glob("*/Cluster_1/worldgenoverride.lua"))
+            cluster_paths = sorted(
+                self.user_root.glob("*/Cluster_1/Master/worldgenoverride.lua")
+            )
             if len(cluster_paths) != 1:
                 return None
-            config_hash = hashlib.sha256(cluster_paths[0].read_bytes()).hexdigest()
-        except OSError:
+            config_hash = config_profile_hash(cluster_paths[0])
+        except (OSError, ValueError, KeyError):
             return None
         expected_hash = desired_profile_hash()
         current = read_process_evidence(evidence_path=self.evidence_path)
@@ -195,7 +201,48 @@ class DSTProcess:
             current = refresh_process_evidence(
                 current, evidence_path=self.evidence_path
             )
-        return current
+        try:
+            fixture = verified_fixture(cluster_paths[0].parent)
+        except (OSError, ValueError, KeyError, TypeError):
+            return {
+                **current,
+                "status": "CONFIG_PRESENT",
+                "world_profile_verified": False,
+                "loaded_world_verified": False,
+            }
+        loaded = False
+        log_path = self.user_root / "client_log.txt"
+        try:
+            if log_path.stat().st_size <= 16 * 1024 * 1024:
+                log = log_path.read_text(errors="replace")
+                match = re.search(r"Current time: ([^\r\n]+)", log)
+                started = datetime.fromisoformat(current["process_started_at"])
+                log_started = (
+                    datetime.strptime(match[1].strip(), "%a %b %d %H:%M:%S %Y").replace(
+                        tzinfo=UTC
+                    )
+                    if match
+                    else None
+                )
+                loaded = bool(
+                    log_started
+                    and log_started >= started.replace(microsecond=0)
+                    and loaded_profile(log, fixture["world_session_id"])
+                )
+        except (OSError, ValueError):
+            pass
+        verified = {
+            **current,
+            **fixture,
+            "status": "WORLD_PROFILE_VERIFIED",
+            "verification_scope": "PERSISTED_WORLD_SETTINGS_AND_CURRENT_PROCESS",
+            "world_profile_verified": True,
+            "loaded_world_verified": loaded,
+            "application_state": "CONFIG_CONSUMED_DURING_WORLD_LOAD"
+            if loaded
+            else "PREPARED_WORLD_VERIFIED",
+        }
+        return refresh_process_evidence(verified, evidence_path=self.evidence_path)
 
     def _ready_marker(self):
         if not self.supervisor.status.started_at:

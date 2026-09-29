@@ -87,7 +87,7 @@ def test_dst_restart_reconciles_profile_and_invalidates_previous_process_evidenc
         evidence_path=evidence,
     )
     supervisor.request_start()
-    config = cluster / "worldgenoverride.lua"
+    config = cluster / "Master" / "worldgenoverride.lua"
     assert config.is_file()
     assert not evidence.exists()
     config.unlink()
@@ -143,7 +143,7 @@ def test_dst_adoption_accepts_only_evidence_for_matching_process_generation(tmp_
         user_root=world_root,
         evidence_path=evidence_path,
     )
-    assert process.world_profile_evidence()["status"] == "VERIFIED"
+    assert process.world_profile_evidence()["status"] == "CONFIG_PRESENT"
     supervisor.status.pid = 315
     assert process.world_profile_evidence()["status"] == "UNVERIFIED"
 

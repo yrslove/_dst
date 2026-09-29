@@ -17,6 +17,7 @@ Navigation only. Current status and priorities are in [CURRENT_STATE.md](CURRENT
 | Recording / replay | Bound diagnostic action/observation recordings and replay them | `runtime_agent/gameworker/recording.py`, `replay.py` | `tests/unit/test_gameworker_recording.py` |
 | Diagnostics | Collect worker/runtime diagnostic state and reports | `runtime_agent/diagnostics.py`, `runtime_agent/gameworker/diagnostics.py` | `tests/unit/test_runtime_hardening.py`, `test_gameworker_lifecycle.py` |
 | Config | Environment-backed Control Plane and Runtime Agent settings | `app/config.py`, `runtime_agent/config.py` | `tests/unit/test_config_and_secrets.py` |
+| Safe prepared world | Canonical USER overrides, persisted fixture identity/settings and current loaded-world evidence | `app/runtime/world_profile.py`; `runtime_agent/processes/dst.py`; `scripts/diagnostics/safe_world_fixture.py`; [contract](docs/SAFE_WORLD_PROFILE.md) | `tests/unit/test_safe_world_fixture.py`, `test_long_session.py`; `tests/integration/test_long_session_executor.py` |
 | Tests | API, integration, provider, concurrency, and worker coverage | `tests/` | Grouped under `tests/api/`, `integration/`, `providers/`, `concurrency/`, `unit/`, `postgres/` |
 
 ## Runtime deployment
