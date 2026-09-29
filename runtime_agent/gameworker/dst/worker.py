@@ -667,17 +667,46 @@ class DSTGameWorker:
             if self.mode == WorkerMode.ACTIVE and unknown_timed_out:
                 return self._handle_unknown_timeout()
             if self.mode == WorkerMode.ACTIVE and self.activity.intervention_required:
-                # Failed action contracts remain fail-closed and require explicit
-                # resume, but preserve the operator's configured ACTIVE intent.
                 if self.actions:
                     self.actions.release_all()
-                self.machine.transition(
-                    WorkerState.NEEDS_ATTENTION,
-                    "action contract requires operator recovery",
+                if not self.activity.recoverable_intervention_pending:
+                    self.machine.transition(
+                        WorkerState.NEEDS_ATTENTION,
+                        "non-recoverable action intervention requires operator recovery",
+                    )
+                    self._error_code = "WORKER_INTERVENTION_REQUIRED"
+                    self._sync_action_mode()
+                    return self.status()
+                executor = getattr(self.actions, "executor", None)
+                no_action_in_flight = not (
+                    (self.pipeline and self.pipeline.verification_pending)
+                    or getattr(executor, "current_action_id", None)
                 )
-                self._error_code = "WORKER_INTERVENTION_REQUIRED"
+                input_released = not (
+                    self.input is not None and self.input.has_held_inputs
+                )
+                recovered = self.activity.resolve_recoverable_intervention(
+                    observation,
+                    no_action_in_flight=no_action_in_flight,
+                    input_released=input_released,
+                ) if observation is not None else False
+                self._error_code = (
+                    None if recovered else "WORKER_INTERVENTION_REQUIRED"
+                )
                 self._sync_action_mode()
-                return self.status()
+                if not recovered:
+                    # Keep observing locally in effective OBSERVE mode. A fresh,
+                    # stable known continuation state may clear this latch without
+                    # a Control Plane VERIFY or SET_MODE command.
+                    if self.machine.state not in {
+                        WorkerState.OBSERVING,
+                        WorkerState.WAITING,
+                    }:
+                        self.machine.transition(
+                            WorkerState.OBSERVING,
+                            "recoverable action intervention; observe for safe state",
+                        )
+                    return self.status()
             if self.machine.state not in {
                 WorkerState.PAUSED,
                 WorkerState.NEEDS_ATTENTION,
@@ -913,6 +942,7 @@ class DSTGameWorker:
             or not self._game_ready
             or self.capture is None
             or self._unknown_since is not None
+            or self.activity.intervention_required
             or self.machine.state
             in {
                 WorkerState.DISABLED,

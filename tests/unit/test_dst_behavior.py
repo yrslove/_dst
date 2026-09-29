@@ -32,11 +32,13 @@ from runtime_agent.gameworker.input import (
     InputController,
     InputLease,
 )
+from runtime_agent.gameworker.perception import PipelineOutcome
 from runtime_agent.gameworker.recording import (
     RecordingEventType,
     RecordingLimits,
     SessionRecorder,
 )
+from runtime_agent.gameworker.state import WorkerState
 from runtime_agent.gameworker.transitions import ActionLifecycle, click_request
 from runtime_agent.gameworker.vision import (
     AssetRegistry,
@@ -913,6 +915,265 @@ def test_host_game_retry_is_available_without_validation_flow_and_without_anchor
     )
     retry = policy.propose(retry_frame)
     assert retry is not None and retry.action == ActionName.CLICK_HOST_GAME
+
+
+def test_late_host_game_transition_recovers_to_world_list_without_repeating_click():
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "late-host-menu-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(menu) is None
+    menu = replace(menu, source_frame_id="late-host-menu-2", source_sequence=2)
+    assert policy.propose(menu).action == ActionName.CLICK_HOST_GAME
+    timeout = ActionResult(
+        "host-first-timeout", ActionName.CLICK_HOST_GAME, ActionStatus.TIMED_OUT,
+        30.0, 1, 1, 1, "verified transition deadline elapsed",
+    )
+    policy.on_action_failure(timeout)
+    retry_frame = replace(
+        menu, source_frame_id="late-host-menu-3", source_sequence=3,
+        screen_change=0.001,
+    )
+    assert policy.propose(retry_frame).action == ActionName.CLICK_HOST_GAME
+    policy.on_action_failure(replace(timeout, action_id="host-retry-timeout"))
+    assert policy.intervention_required
+
+    world_list = analyze_image(
+        Image.open(ASSETS / "samples/host_game_world_list_live.png").convert("RGB"),
+        "late-host-world-list-4", 4,
+    )
+    assert world_list.screen == DSTScreen.HOST_GAME_WORLD_LIST
+    assert policy.propose(world_list) is None
+    assert not policy.resolve_recoverable_intervention(
+        world_list, no_action_in_flight=True, input_released=True,
+    )
+    world_list = replace(
+        world_list, source_frame_id="late-host-world-list-5", source_sequence=5,
+    )
+    assert policy.propose(world_list) is None
+    assert policy.resolve_recoverable_intervention(
+        world_list, no_action_in_flight=True, input_released=True,
+    )
+    assert policy.production_actions_enabled
+    farm = policy.propose(replace(
+        world_list, source_frame_id="late-host-world-list-6", source_sequence=6,
+    ))
+    assert farm is not None and farm.action == ActionName.SELECT_EXISTING_WORLD
+    assert not policy.intervention_required
+
+
+def test_recoverable_intervention_requires_safe_fresh_state_and_released_input():
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "recoverable-menu-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    policy.state = DSTScreen.MAIN_MENU
+    policy._candidate = DSTScreen.MAIN_MENU
+    policy._candidate_frames = 2
+    policy.intervention_required = True
+    policy._recoverable_intervention_action = ActionName.CLICK_HOST_GAME
+    assert not policy.resolve_recoverable_intervention(
+        menu, no_action_in_flight=False, input_released=True,
+    )
+    assert not policy.resolve_recoverable_intervention(
+        menu, no_action_in_flight=True, input_released=False,
+    )
+    unknown = replace(
+        menu, validity=ObservationValidity.UNKNOWN, screen=DSTScreen.UNKNOWN,
+    )
+    assert not policy.resolve_recoverable_intervention(
+        unknown, no_action_in_flight=True, input_released=True,
+    )
+    loading = analyze_image(
+        Image.open(ASSETS / "samples/dst_world_loading_live.png").convert("RGB"),
+        "recoverable-loading-2", 2,
+    )
+    assert policy.propose(loading) is None
+    assert policy.propose(replace(
+        loading, source_frame_id="recoverable-loading-3", source_sequence=3,
+    )) is None
+    assert not policy.resolve_recoverable_intervention(
+        loading, no_action_in_flight=True, input_released=True,
+    )
+    assert policy.intervention_required
+
+
+def test_recovery_accepts_later_contract_continuation_and_rejects_rewind():
+    selection = analyze_image(
+        Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB"),
+        "recoverable-selection-1", 1,
+    )
+    assert selection.screen == DSTScreen.CHARACTER_SELECTION
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    policy.state = selection.screen
+    policy._candidate = selection.screen
+    policy._candidate_frames = 2
+    policy.intervention_required = True
+    policy._recoverable_intervention_action = ActionName.SELECT_EXISTING_WORLD
+    assert policy.resolve_recoverable_intervention(
+        selection, no_action_in_flight=True, input_released=True,
+    )
+
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "recoverable-rewind-1", 1,
+    )
+    policy.state = menu.screen
+    policy._candidate = menu.screen
+    policy._candidate_frames = 2
+    policy.intervention_required = True
+    policy._recoverable_intervention_action = ActionName.START_EXISTING_WORLD
+    assert not policy.resolve_recoverable_intervention(
+        menu, no_action_in_flight=True, input_released=True,
+    )
+    assert policy.intervention_required
+
+
+def test_timed_out_source_action_is_not_replayed_and_disabled_worker_stays_disabled():
+    from runtime_agent.gameworker.dst.worker import DSTGameWorker
+
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "same-source-menu-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    policy.state = DSTScreen.MAIN_MENU
+    policy._candidate = DSTScreen.MAIN_MENU
+    policy._candidate_frames = 2
+    policy.intervention_required = True
+    policy._recoverable_intervention_action = ActionName.CLICK_HOST_GAME
+    assert not policy.resolve_recoverable_intervention(
+        menu, no_action_in_flight=True, input_released=True,
+    )
+    assert policy.intervention_required
+    assert policy.propose(menu) is None
+
+    worker = DSTGameWorker(WorkerConfig(plugin="dst", mode=WorkerMode.DISABLED))
+    worker.context = WorkerContext(1, 1, DisplayEnvironment(":99"), runtime_verified=True)
+    worker.activity.intervention_required = True
+    report = worker.tick(worker.context)
+    assert worker.mode == WorkerMode.DISABLED
+    assert report.mode == WorkerMode.DISABLED
+
+
+def test_worker_recovers_late_known_state_without_mode_command():
+    worker = DSTGameWorker(WorkerConfig(
+        plugin="dst", mode=WorkerMode.ACTIVE, validation_flow_enabled=False,
+    ))
+    worker.context = WorkerContext(1, 1, DisplayEnvironment(":99"), runtime_verified=True)
+    worker._game_ready = True
+    worker.capture = object()
+    worker.machine.transition(WorkerState.WAITING_FOR_GAME, "test runtime ready")
+    worker.machine.transition(WorkerState.OBSERVING, "test worker active")
+    worker._unknown_since = None
+
+    class Actions:
+        safety = None
+
+        def set_safety(self, **values):
+            self.safety = values
+
+    worker.actions = Actions()
+    policy = worker.activity
+    policy.set_production_actions_enabled(True)
+    policy.state = DSTScreen.HOST_GAME_WORLD_LIST
+    policy._candidate = DSTScreen.HOST_GAME_WORLD_LIST
+    policy._candidate_frames = 2
+    policy.intervention_required = True
+    policy._recoverable_intervention_action = ActionName.CLICK_HOST_GAME
+    assert worker.mode == WorkerMode.ACTIVE
+    assert worker._effective_mode() == WorkerMode.OBSERVE
+
+    world_list = analyze_image(
+        Image.open(ASSETS / "samples/host_game_world_list_live.png").convert("RGB"),
+        "worker-late-world-list-1", 1,
+    )
+    assert policy.resolve_recoverable_intervention(
+        world_list, no_action_in_flight=True, input_released=True,
+    )
+    worker._sync_action_mode()
+    assert worker.mode == WorkerMode.ACTIVE
+    assert worker._effective_mode() == WorkerMode.ACTIVE
+    assert worker.actions.safety["configured_mode"] == WorkerMode.ACTIVE
+    assert worker.actions.safety["effective_mode"] == WorkerMode.ACTIVE
+
+    next_observation = replace(
+        world_list, source_frame_id="worker-late-world-list-2", source_sequence=2,
+    )
+    proposal = policy.propose(next_observation)
+    assert proposal is not None and proposal.action == ActionName.SELECT_EXISTING_WORLD
+
+
+def test_worker_tick_recovers_stable_state_locally_and_releases_input():
+    worker = DSTGameWorker(WorkerConfig(
+        plugin="dst", mode=WorkerMode.ACTIVE, validation_flow_enabled=False,
+    ))
+    worker.context = WorkerContext(1, 1, DisplayEnvironment(":99"), runtime_verified=True)
+    worker._game_ready = True
+    worker.capture = object()
+    worker.machine.transition(WorkerState.WAITING_FOR_GAME, "test runtime ready")
+    worker.machine.transition(WorkerState.OBSERVING, "test worker active")
+    worker._last_capture_at = time.monotonic() - 10
+    observation = analyze_image(
+        Image.open(ASSETS / "samples/host_game_world_list_live.png").convert("RGB"),
+        "worker-tick-late-world-list-1", 1,
+    )
+
+    class Input:
+        has_held_inputs = True
+
+    input_controller = Input()
+    worker.input = input_controller
+
+    class Actions:
+        safety = None
+        executor = type("Executor", (), {"current_action_id": None})()
+
+        def release_all(self):
+            input_controller.has_held_inputs = False
+
+        def set_safety(self, **values):
+            self.safety = values
+
+    worker.actions = Actions()
+
+    class Pipeline:
+        verification_pending = False
+
+        def tick(self):
+            return PipelineOutcome("NO_ACTION", "frame-1", observation)
+
+        def health(self):
+            return {}
+
+    worker.pipeline = Pipeline()
+    policy = worker.activity
+    policy.set_production_actions_enabled(True)
+    policy.state = DSTScreen.HOST_GAME_WORLD_LIST
+    policy._candidate = DSTScreen.HOST_GAME_WORLD_LIST
+    policy._candidate_frames = 2
+    policy.intervention_required = True
+    policy._recoverable_intervention_action = ActionName.CLICK_HOST_GAME
+
+    report = worker.tick(worker.context)
+
+    assert not input_controller.has_held_inputs
+    assert not policy.intervention_required
+    assert worker.mode == WorkerMode.ACTIVE
+    assert report.mode == WorkerMode.ACTIVE
+    assert report.healthy
+    assert report.state == WorkerState.WAITING
+    assert report.details["requested_mode"] == WorkerMode.ACTIVE
+    proposal = policy.propose(replace(
+        observation, source_frame_id="worker-tick-late-world-list-2", source_sequence=2,
+    ))
+    assert proposal is not None and proposal.action == ActionName.SELECT_EXISTING_WORLD
 
 
 def test_lifecycle_proven_no_effect_reaches_retry_without_rechecking_change_metric():

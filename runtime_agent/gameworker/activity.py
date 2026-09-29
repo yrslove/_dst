@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from collections import Counter, deque
 from dataclasses import dataclass
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from runtime_agent.gameworker.actions import ActionName, ActionResult, ActionStatus
 from runtime_agent.gameworker.vision import DSTScreen, GameObservation
@@ -52,6 +53,60 @@ class FakePlanner:
 class ActivityController:
     """Conservative policy; validation flags enable only its one-shot test route."""
 
+    RECOVERABLE_WORLD_ENTRY_STATES = frozenset(
+        {
+            DSTScreen.MAIN_MENU,
+            DSTScreen.HOST_GAME_WORLD_LIST,
+            DSTScreen.HOST_GAME_WORLD_SELECTED,
+            DSTScreen.CHARACTER_SELECTION,
+            DSTScreen.CHARACTER_SELECTION_HOVERED,
+            DSTScreen.CHARACTER_LOADOUT,
+            DSTScreen.IN_WORLD_IDLE,
+        }
+    )
+    RECOVERABLE_WORLD_ENTRY_ACTIONS = frozenset(
+        {
+            ActionName.CLICK_HOST_GAME,
+            ActionName.SELECT_EXISTING_WORLD,
+            ActionName.START_EXISTING_WORLD,
+            ActionName.SELECT_SURVIVOR,
+            ActionName.START_SURVIVOR,
+        }
+    )
+    WORLD_ENTRY_CONTINUATIONS: ClassVar[dict[ActionName, frozenset[DSTScreen]]] = {
+        ActionName.CLICK_HOST_GAME: frozenset(
+            {
+                DSTScreen.HOST_GAME_WORLD_LIST,
+                DSTScreen.HOST_GAME_WORLD_SELECTED,
+                DSTScreen.CHARACTER_SELECTION,
+                DSTScreen.CHARACTER_SELECTION_HOVERED,
+                DSTScreen.CHARACTER_LOADOUT,
+                DSTScreen.IN_WORLD_IDLE,
+            }
+        ),
+        ActionName.SELECT_EXISTING_WORLD: frozenset(
+            {
+                DSTScreen.HOST_GAME_WORLD_SELECTED,
+                DSTScreen.CHARACTER_SELECTION,
+                DSTScreen.CHARACTER_SELECTION_HOVERED,
+                DSTScreen.CHARACTER_LOADOUT,
+                DSTScreen.IN_WORLD_IDLE,
+            }
+        ),
+        ActionName.START_EXISTING_WORLD: frozenset(
+            {
+                DSTScreen.CHARACTER_SELECTION,
+                DSTScreen.CHARACTER_SELECTION_HOVERED,
+                DSTScreen.CHARACTER_LOADOUT,
+                DSTScreen.IN_WORLD_IDLE,
+            }
+        ),
+        ActionName.SELECT_SURVIVOR: frozenset(
+            {DSTScreen.CHARACTER_LOADOUT, DSTScreen.IN_WORLD_IDLE}
+        ),
+        ActionName.START_SURVIVOR: frozenset({DSTScreen.IN_WORLD_IDLE}),
+    }
+
     def __init__(
         self,
         *,
@@ -85,6 +140,7 @@ class ActivityController:
         self._reward_click_attempts = 0
         self._dry_run_seen = False
         self.intervention_required = False
+        self._recoverable_intervention_action: ActionName | None = None
         self.counters: Counter[str] = Counter(
             {
                 "unknown_frames": 0,
@@ -102,6 +158,10 @@ class ActivityController:
 
     def set_production_actions_enabled(self, enabled: bool) -> None:
         self.production_actions_enabled = bool(enabled)
+
+    @property
+    def recoverable_intervention_pending(self) -> bool:
+        return self._recoverable_intervention_action is not None
 
     def _record(
         self,
@@ -130,9 +190,6 @@ class ActivityController:
             self.counters["unknown_frames"] += 1
             self._record(observation, "NONE", "unverified observation")
             return None
-        if self.intervention_required:
-            self._record(observation, "NONE", "intervention required")
-            return None
         if observation.screen != self._candidate:
             self._candidate = observation.screen
             self._candidate_frames = 1
@@ -156,6 +213,9 @@ class ActivityController:
             return None
         if self.state != observation.screen or self._candidate_frames < 2:
             self._record(observation, "NONE", "hysteresis")
+            return None
+        if self.intervention_required:
+            self._record(observation, "NONE", "intervention required")
             return None
         if self.validation_flow_enabled and self._validation_host_retry_pending:
             self._validation_host_retry_pending = False
@@ -276,6 +336,7 @@ class ActivityController:
                 ):
                     self._production_host_retry_pending = False
                     self.intervention_required = True
+                    self._recoverable_intervention_action = ActionName.CLICK_HOST_GAME
                     self._record(
                         observation,
                         "NONE",
@@ -513,6 +574,41 @@ class ActivityController:
         self._record(observation, "NONE", "screen has no verified action")
         return None
 
+    def resolve_recoverable_intervention(
+        self,
+        observation: GameObservation,
+        *,
+        no_action_in_flight: bool,
+        input_released: bool,
+    ) -> bool:
+        """Adopt a fresh known continuation state after a world-entry timeout."""
+        failed_action = self._recoverable_intervention_action
+        if (
+            not self.intervention_required
+            or failed_action is None
+            or self.validation_flow_enabled
+            or not observation.production_ready
+            or observation.fresh_until < time.monotonic()
+            or observation.screen_confidence < 0.94
+            or observation.screen not in self.RECOVERABLE_WORLD_ENTRY_STATES
+            or observation.screen
+            not in self.WORLD_ENTRY_CONTINUATIONS.get(failed_action, frozenset())
+            or self.state != observation.screen
+            or self._candidate_frames < 2
+            or not no_action_in_flight
+            or not input_released
+        ):
+            return False
+        self.intervention_required = False
+        self._recoverable_intervention_action = None
+        self._record(
+            observation,
+            "NONE",
+            f"recoverable {failed_action.value} timeout resolved by fresh "
+            f"{observation.screen.value}",
+        )
+        return True
+
     @staticmethod
     def _propose_production_world_entry(
         observation: GameObservation,
@@ -576,6 +672,16 @@ class ActivityController:
                 self._dry_run_seen = True
             elif result.status not in {ActionStatus.PREEMPTED} and result.terminal:
                 self.intervention_required = True
+                self._recoverable_intervention_action = (
+                    result.action
+                    if (
+                        not self.validation_flow_enabled
+                        and self.production_actions_enabled
+                        and result.status == ActionStatus.TIMED_OUT
+                        and result.action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS
+                    )
+                    else None
+                )
                 self.counters["recovery_failures"] += 1
         self._record(
             observation, result.action.value, "action result", result.status.value
@@ -716,6 +822,16 @@ class ActivityController:
             self._validation_survivor_retry_pending = True
             return
         self.intervention_required = True
+        self._recoverable_intervention_action = (
+            result.action
+            if (
+                not self.validation_flow_enabled
+                and self.production_actions_enabled
+                and result.status == ActionStatus.TIMED_OUT
+                and result.action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS
+            )
+            else None
+        )
         self.counters["recovery_failures"] += 1
 
     def next_action(self, observation: GameObservation) -> ActionName:
