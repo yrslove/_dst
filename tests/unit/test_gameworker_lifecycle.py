@@ -686,13 +686,47 @@ def test_reusable_action_permissions_do_not_depend_on_validation_flow():
     permitted = worker._permitted_active_actions()
 
     assert {
-        # Explicit canonical calls remain available; ActivityController does not
-        # propose these as autonomous behavior unless the validation route is on.
+        # Canonical capabilities remain available to the production policy.
         ActionName.MOVE_FORWARD,
         ActionName.PAUSE_WORLD,
         ActionName.RESUME_WORLD,
         ActionName.INTERACT,
     } <= permitted
+
+
+def test_worker_only_enables_production_world_entry_when_configured_and_effective_active():
+    worker = DSTGameWorker(WorkerConfig(
+        plugin="dst",
+        mode=WorkerMode.ACTIVE,
+        validation_flow_enabled=False,
+    ))
+    worker.context = context()
+    worker._game_ready = True
+    worker.capture = object()
+    worker.machine.transition(WorkerState.WAITING_FOR_GAME, "test runtime ready")
+    worker.machine.transition(WorkerState.OBSERVING, "test worker ready")
+    worker._unknown_since = None
+
+    class Actions:
+        safety = None
+
+        def set_safety(self, **values):
+            self.safety = values
+
+    worker.actions = Actions()
+    worker._sync_action_mode()
+
+    assert worker.activity.production_actions_enabled
+    assert worker.actions.safety["configured_mode"] == WorkerMode.ACTIVE
+    assert worker.actions.safety["effective_mode"] == WorkerMode.ACTIVE
+
+    worker.mode = WorkerMode.OBSERVE
+    worker._sync_action_mode()
+    assert not worker.activity.production_actions_enabled
+
+    worker.mode = WorkerMode.DISABLED
+    worker._sync_action_mode()
+    assert not worker.activity.production_actions_enabled
 
 
 def test_recoverable_unknown_suppresses_effective_mode_without_disabling_intent():

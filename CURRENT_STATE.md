@@ -60,6 +60,8 @@ infrastructure that can persist in the world.
 - The canonical Host Game action remained in `VERIFYING` while a fresh screen still
   showed `MAIN_MENU`; no blind retry was made. Live evidence is preserved outside the
   repository at `/home/dst/Farm01-gift-path-blocker*`.
+- The pushed fixed-coordinate profile and production world-entry policy still need
+  deployment to the active runtime and a live acceptance run.
 - Farm 01 has not been verified with a persistent Science Machine near the player.
 - The first actionable gift frame has not yet been captured.
 - In-world gift actions/contracts are not implemented.
@@ -67,6 +69,8 @@ infrastructure that can persist in the world.
 
 ## Completed worker semantics
 
+- An ACTIVE GameWorker performs deterministic world entry with
+  `validation_flow=false`; the legacy validation route remains test-only.
 - Reusable gameplay primitives are independent of validation-flow orchestration; the
   validation flag enables only the legacy one-shot test route.
 - Recoverable worker intervention no longer rewrites configured ACTIVE intent to

@@ -60,12 +60,18 @@ class ActivityController:
     ) -> None:
         self.validation_flow_enabled = validation_flow_enabled
         self.validation_movement_enabled = validation_movement_enabled
+        self.production_actions_enabled = False
         self.validation_complete = False
         self._validation_step = 0
         self._validation_host_retry_count = 0
         self._validation_host_retry_pending = False
         self._validation_host_retry_no_effect_proven = False
         self._validation_host_source_sequence: int | None = None
+        self._production_host_retry_pending = False
+        self._production_host_retry_used = False
+        self._production_host_source_sequence: int | None = None
+        self._production_host_retry_after_sequence: int | None = None
+        self._production_host_no_effect_proven = False
         self._validation_survivor_retry_count = 0
         self._validation_survivor_retry_pending = False
         self._validation_survivor_source_sequence: int | None = None
@@ -93,6 +99,9 @@ class ActivityController:
             }
         )
         self.decisions: deque[dict] = deque(maxlen=128)
+
+    def set_production_actions_enabled(self, enabled: bool) -> None:
+        self.production_actions_enabled = bool(enabled)
 
     def _record(
         self,
@@ -148,7 +157,7 @@ class ActivityController:
         if self.state != observation.screen or self._candidate_frames < 2:
             self._record(observation, "NONE", "hysteresis")
             return None
-        if self._validation_host_retry_pending:
+        if self.validation_flow_enabled and self._validation_host_retry_pending:
             self._validation_host_retry_pending = False
             if (
                 observation.screen != DSTScreen.MAIN_MENU
@@ -180,7 +189,7 @@ class ActivityController:
             self._validation_host_retry_no_effect_proven = False
             self._record(observation, proposal.action.value, proposal.reason or "")
             return proposal
-        if self._validation_survivor_retry_pending:
+        if self.validation_flow_enabled and self._validation_survivor_retry_pending:
             self._validation_survivor_retry_pending = False
             if (
                 observation.screen == DSTScreen.CHARACTER_LOADOUT
@@ -249,6 +258,46 @@ class ActivityController:
             )
             self._record(observation, proposal.action.value, proposal.reason or "")
             return proposal
+        if not self.validation_flow_enabled and self.production_actions_enabled:
+            if self._production_host_retry_pending:
+                source_sequence = self._production_host_retry_after_sequence
+                if (
+                    observation.screen != DSTScreen.MAIN_MENU
+                    or observation.screen_confidence < 0.94
+                    or source_sequence is None
+                    or observation.source_sequence <= source_sequence
+                    or (
+                        not self._production_host_no_effect_proven
+                        and (
+                            observation.screen_change is None
+                            or observation.screen_change >= 0.02
+                        )
+                    )
+                ):
+                    self._production_host_retry_pending = False
+                    self.intervention_required = True
+                    self._record(
+                        observation,
+                        "NONE",
+                        "production Host Game retry withheld without fresh unchanged MAIN_MENU",
+                    )
+                    return None
+                self._production_host_retry_pending = False
+                self._production_host_retry_used = True
+                self._production_host_no_effect_proven = False
+                self._production_host_source_sequence = observation.source_sequence
+                proposal = ActionProposal(
+                    ActionName.CLICK_HOST_GAME,
+                    reason="retry Host Game once at its fixed profile point after verified no effect",
+                )
+                self._record(observation, proposal.action.value, proposal.reason or "")
+                return proposal
+            proposal = self._propose_production_world_entry(observation)
+            if proposal is not None:
+                self._record(observation, proposal.action.value, proposal.reason or "")
+                if proposal.action == ActionName.CLICK_HOST_GAME:
+                    self._production_host_source_sequence = observation.source_sequence
+                return proposal
         if self.validation_flow_enabled:
             if self.state in {DSTScreen.DEAD, DSTScreen.WORLD_RESET_PENDING}:
                 self._validation_step = 3
@@ -464,6 +513,41 @@ class ActivityController:
         self._record(observation, "NONE", "screen has no verified action")
         return None
 
+    @staticmethod
+    def _propose_production_world_entry(
+        observation: GameObservation,
+    ) -> ActionProposal | None:
+        if observation.screen_confidence < 0.94:
+            return None
+        actions = {
+            DSTScreen.MAIN_MENU: (
+                ActionName.CLICK_HOST_GAME,
+                "open the verified Host Game menu using the fixed UI profile",
+            ),
+            DSTScreen.HOST_GAME_WORLD_LIST: (
+                ActionName.SELECT_EXISTING_WORLD,
+                "select Farm 01 using the fixed UI profile",
+            ),
+            DSTScreen.HOST_GAME_WORLD_SELECTED: (
+                ActionName.START_EXISTING_WORLD,
+                "resume Farm 01 using the fixed UI profile",
+            ),
+            DSTScreen.CHARACTER_SELECTION: (
+                ActionName.SELECT_SURVIVOR,
+                "select Wilson using the fixed UI profile",
+            ),
+            DSTScreen.CHARACTER_SELECTION_HOVERED: (
+                ActionName.SELECT_SURVIVOR,
+                "select Wilson using the fixed UI profile",
+            ),
+            DSTScreen.CHARACTER_LOADOUT: (
+                ActionName.START_SURVIVOR,
+                "start the verified Wilson loadout using the fixed UI profile",
+            ),
+        }
+        action = actions.get(observation.screen)
+        return ActionProposal(action[0], reason=action[1]) if action else None
+
     def on_unknown(self, observation: GameObservation) -> None:
         self.counters["unknown_frames"] += 1
         self._record(observation, "NONE", "unverified or unknown screen")
@@ -552,7 +636,37 @@ class ActivityController:
                 self.counters["reward_opened"] += 1
         else:
             if (
-                result.action == ActionName.CLICK_HOST_GAME
+                not self.validation_flow_enabled
+                and self.production_actions_enabled
+                and result.action == ActionName.CLICK_HOST_GAME
+                and result.status == ActionStatus.TIMED_OUT
+                and not self._production_host_retry_used
+                and result.reason in {
+                    "verified transition deadline elapsed",
+                    "fresh unchanged MAIN_MENU proves Host Game click had no effect",
+                }
+            ):
+                self._production_host_retry_pending = True
+                self._production_host_retry_after_sequence = (
+                    observation.source_sequence
+                    if result.reason
+                    == "fresh unchanged MAIN_MENU proves Host Game click had no effect"
+                    else self._production_host_source_sequence
+                )
+                self._production_host_no_effect_proven = (
+                    result.reason
+                    == "fresh unchanged MAIN_MENU proves Host Game click had no effect"
+                )
+                self._record(
+                    observation,
+                    result.action.value,
+                    "production Host Game click had no effect; one guarded retry is available",
+                    result.status.value,
+                )
+                return
+            if (
+                self.validation_flow_enabled
+                and result.action == ActionName.CLICK_HOST_GAME
                 and result.status == ActionStatus.TIMED_OUT
                 and result.reason
                 == "fresh unchanged MAIN_MENU proves Host Game click had no effect"
@@ -563,7 +677,22 @@ class ActivityController:
     def on_action_failure(self, result: ActionResult) -> None:
         self._awaiting_reward_transition = False
         if (
-            result.action == ActionName.CLICK_HOST_GAME
+            not self.validation_flow_enabled
+            and self.production_actions_enabled
+            and result.action == ActionName.CLICK_HOST_GAME
+            and result.status == ActionStatus.TIMED_OUT
+            and result.reason == "verified transition deadline elapsed"
+            and not self._production_host_retry_used
+        ):
+            self._production_host_retry_pending = True
+            self._production_host_retry_after_sequence = (
+                self._production_host_source_sequence
+            )
+            self._production_host_no_effect_proven = False
+            return
+        if (
+            self.validation_flow_enabled
+            and result.action == ActionName.CLICK_HOST_GAME
             and result.status == ActionStatus.TIMED_OUT
             and result.reason in {
                 "verified transition deadline elapsed",

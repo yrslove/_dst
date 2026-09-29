@@ -929,8 +929,8 @@ class DSTGameWorker:
         return WorkerMode.ACTIVE
 
     def _permitted_active_actions(self) -> frozenset[ActionName]:
-        # These are reusable canonical capabilities. The optional validation
-        # route decides when (or whether) to propose them.
+        # Reusable canonical capabilities shared by production and validation
+        # ActivityController policies.
         return frozenset(
             {
                 ActionName.CLICK_REWARD_OPEN,
@@ -955,11 +955,16 @@ class DSTGameWorker:
         )
 
     def _sync_action_mode(self) -> None:
+        effective_mode = self._effective_mode()
+        self.activity.set_production_actions_enabled(
+            self.mode == WorkerMode.ACTIVE
+            and effective_mode == WorkerMode.ACTIVE
+        )
         if self.actions:
             state = self.machine.state
             self.actions.set_safety(
                 configured_mode=self.mode,
-                effective_mode=self._effective_mode(),
+                effective_mode=effective_mode,
                 runtime_verified=bool(
                     self.context is not None and self.context.runtime_verified
                 ),

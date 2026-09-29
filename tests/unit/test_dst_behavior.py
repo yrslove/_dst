@@ -20,6 +20,7 @@ from runtime_agent.gameworker.base import WorkerContext
 from runtime_agent.gameworker.capture import Frame
 from runtime_agent.gameworker.config import InputBindings, WorkerConfig, WorkerMode
 from runtime_agent.gameworker.dst.worker import DSTGameWorker
+from runtime_agent.gameworker.fixed_ui import DST_FIXED_1280X720
 from runtime_agent.gameworker.geometry import (
     CalibrationProfile,
     NormalizedPoint,
@@ -116,6 +117,154 @@ def test_validation_disabled_does_not_propose_validation_actions_in_world():
 
     assert proposal is None
     assert policy._validation_step == 0
+
+
+def test_active_production_world_entry_uses_fixed_profile_targets_without_validation_step():
+    cases = (
+        ("main_menu_after_reward.png", ActionName.CLICK_HOST_GAME, "HOST_GAME"),
+        ("host_game_world_list_live.png", ActionName.SELECT_EXISTING_WORLD, "FARM_01"),
+        ("host_game_world_selected_live.png", ActionName.START_EXISTING_WORLD, "RESUME_WORLD"),
+        ("character_selection_live.png", ActionName.SELECT_SURVIVOR, "WILSON"),
+        ("character_loadout_live.png", ActionName.START_SURVIVOR, "START_SURVIVOR"),
+    )
+    for index, (filename, action, profile_target) in enumerate(cases, start=1):
+        observation = analyze_image(
+            Image.open(ASSETS / "samples" / filename).convert("RGB"),
+            f"production-entry-{index}-1",
+            index * 10,
+        )
+        policy = ActivityController(validation_flow_enabled=False)
+        policy.set_production_actions_enabled(True)
+        policy._validation_step = 77
+
+        assert policy.propose(observation) is None
+        stable = replace(
+            observation,
+            source_frame_id=f"production-entry-{index}-2",
+            source_sequence=observation.source_sequence + 1,
+        )
+        proposal = policy.propose(stable)
+
+        assert proposal is not None and proposal.action == action
+        point, viewport = click_request(proposal.action, stable)
+        assert point == DST_FIXED_1280X720.point(profile_target, 1280, 720)
+        assert viewport.width == 1280 and viewport.height == 720
+        assert policy._validation_step == 77
+
+
+def test_production_world_entry_ignores_non_entry_states_and_requires_active_gate():
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "production-gate-menu", 1,
+    )
+    disabled = ActivityController(validation_flow_enabled=False)
+    assert disabled.propose(menu) is None
+    assert disabled.propose(replace(menu, source_sequence=2, source_frame_id="menu-2")) is None
+
+    cases = (
+        ("dst_world_loading_live.png", DSTScreen.LOADING),
+        ("in_world_wilson_live.png", DSTScreen.IN_WORLD_IDLE),
+        ("in_world_auto_paused_live.png", DSTScreen.PAUSED),
+        ("death_world_reset_live.png", DSTScreen.WORLD_RESET_PENDING),
+    )
+    for index, (filename, screen) in enumerate(cases, start=10):
+        observation = analyze_image(
+            Image.open(ASSETS / "samples" / filename).convert("RGB"),
+            f"production-non-entry-{index}-1",
+            index * 10,
+        )
+        assert observation.screen == screen
+        policy = ActivityController(validation_flow_enabled=False)
+        policy.set_production_actions_enabled(True)
+        assert policy.propose(observation) is None
+        assert policy.propose(replace(
+            observation,
+            source_sequence=observation.source_sequence + 1,
+            source_frame_id=f"production-non-entry-{index}-2",
+        )) is None
+
+    dead = replace(menu, screen=DSTScreen.DEAD, screen_confidence=0.99)
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(dead) is None
+    assert policy.propose(replace(
+        dead, source_sequence=2, source_frame_id="production-dead-2",
+    )) is None
+
+    unknown = replace(menu, screen=DSTScreen.UNKNOWN, screen_confidence=0.0)
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(unknown) is None
+    assert policy.propose(replace(
+        unknown, source_sequence=2, source_frame_id="production-unknown-2",
+    )) is None
+
+
+def test_production_policy_holds_while_action_verification_is_in_flight():
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "production-flight-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(menu) is None
+    stable = replace(menu, source_sequence=2, source_frame_id="production-flight-2")
+    proposal = policy.propose(stable)
+    assert proposal is not None and proposal.action == ActionName.CLICK_HOST_GAME
+    policy.on_action_result(stable, ActionResult(
+        "production-host", ActionName.CLICK_HOST_GAME,
+        ActionStatus.VERIFYING, 0.01, 1, 1, 1,
+    ))
+    assert policy.propose(replace(
+        stable, source_sequence=3, source_frame_id="production-flight-3",
+    )) is None
+
+
+def test_validation_route_owns_proposal_when_production_gate_is_also_enabled():
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "validation-exclusive-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=True)
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(menu) is None
+    proposal = policy.propose(replace(
+        menu, source_sequence=2, source_frame_id="validation-exclusive-2",
+    ))
+    assert proposal is not None and proposal.action == ActionName.CLICK_HOST_GAME
+    assert len(policy.decisions) == 2
+
+
+def test_production_host_game_retry_is_one_shot_and_keeps_the_profile_point():
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "production-host-retry-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(menu) is None
+    menu = replace(menu, source_sequence=2, source_frame_id="production-host-retry-2")
+    first = policy.propose(menu)
+    assert first is not None and first.action == ActionName.CLICK_HOST_GAME
+    first_point, _ = click_request(first.action, menu)
+
+    no_effect = replace(menu, source_sequence=3, source_frame_id="production-host-no-effect")
+    policy.on_verified(no_effect, ActionResult(
+        "production-host-first", ActionName.CLICK_HOST_GAME,
+        ActionStatus.TIMED_OUT, 0.5, 1, 1, 1,
+        "fresh unchanged MAIN_MENU proves Host Game click had no effect",
+    ))
+    retry_frame = replace(no_effect, source_sequence=4, source_frame_id="production-host-retry-3")
+    retry = policy.propose(retry_frame)
+    assert retry is not None and retry.action == ActionName.CLICK_HOST_GAME
+    assert click_request(retry.action, retry_frame)[0] == first_point
+
+    policy.on_verified(retry_frame, ActionResult(
+        "production-host-second", ActionName.CLICK_HOST_GAME,
+        ActionStatus.TIMED_OUT, 0.5, 1, 1, 1,
+        "fresh unchanged MAIN_MENU proves Host Game click had no effect",
+    ))
+    assert policy.intervention_required
 
 
 def test_opt_in_in_world_validation_moves_boundedly_then_returns_to_pause():
@@ -748,7 +897,8 @@ def test_host_game_retry_is_available_without_validation_flow_and_without_anchor
         "host-profile-1", 1,
     )
     policy = ActivityController(validation_flow_enabled=False)
-    policy.on_action_failure(ActionResult(
+    policy.set_production_actions_enabled(True)
+    policy.on_verified(menu, ActionResult(
         "host-proven-no-effect", ActionName.CLICK_HOST_GAME,
         ActionStatus.TIMED_OUT, 0.5, 1, 1, 1,
         "fresh unchanged MAIN_MENU proves Host Game click had no effect",
