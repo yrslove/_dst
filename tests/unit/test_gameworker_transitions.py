@@ -1,10 +1,15 @@
 """Real saved frames exercise the generic action outcome contract."""
 from dataclasses import replace
 
+import pytest
 from PIL import Image
 from test_dst_behavior import ASSETS, analyze_image
 
 from runtime_agent.gameworker.actions import ActionName, ActionResult, ActionStatus
+from runtime_agent.gameworker.fixed_ui import (
+    DST_FIXED_1280X720,
+    FIXED_UI_ACTION_TARGETS,
+)
 from runtime_agent.gameworker.transitions import (
     CONTRACTS,
     ActionLifecycle,
@@ -86,17 +91,12 @@ def test_saved_menu_roundtrip_requires_two_fresh_frames_per_transition():
     assert lifecycle.pending is None
 
 
-def test_host_game_click_uses_the_center_of_the_rendered_anchor_text():
+def test_host_game_click_uses_fixed_profile_point_independent_of_anchor_bounds():
     menu = frame("main_menu_after_reward.png", 1)
-    anchor = next(
-        item for item in menu.detections if item.kind == "main_menu_host_game"
-    )
     point, viewport = click_request(ActionName.CLICK_HOST_GAME, menu)
-    assert anchor.bounds is not None
-    assert point.x == anchor.bounds.left + 0.4 * (
-        anchor.bounds.right - anchor.bounds.left
-    )
-    assert point.y == (anchor.bounds.top + anchor.bounds.bottom) / 2
+    assert point == DST_FIXED_1280X720.point("HOST_GAME", 1280, 720)
+    without_anchors = replace(menu, detections=())
+    assert click_request(ActionName.CLICK_HOST_GAME, without_anchors)[0] == point
     assert viewport.width == 1280 and viewport.height == 720
 
 
@@ -305,13 +305,7 @@ def test_selected_survivor_click_is_verified_by_loadout_screen():
         "character_select_wilson_hover",
     )
     target, viewport = click_request(ActionName.SELECT_SURVIVOR, selected)
-    anchor = next(
-        item for item in selected.detections
-        if item.kind == "character_select_wilson_icon"
-    )
-    assert anchor.bounds is not None
-    assert anchor.bounds.left < target.x < anchor.bounds.right
-    assert anchor.bounds.top < target.y < anchor.bounds.bottom
+    assert target == DST_FIXED_1280X720.point("WILSON", 1280, 720)
     assert viewport.width == 1280 and viewport.height == 720
 
     clock = [selected.observed_monotonic + 0.001]
@@ -445,4 +439,47 @@ def test_reentry_world_list_uses_stable_farm_name_anchor():
     listed = frame("host_game_world_list_reentry_live.png", 1)
     assert listed.screen == DSTScreen.HOST_GAME_WORLD_LIST
     target, _ = click_request(ActionName.SELECT_EXISTING_WORLD, listed)
-    assert 0.25 < target.x < 0.45 and 0.24 < target.y < 0.34
+    assert target == DST_FIXED_1280X720.point("FARM_01", 1280, 720)
+
+
+def test_supported_fixed_ui_profile_resolves_all_world_entry_targets():
+    frames = {
+        ActionName.CLICK_HOST_GAME: frame("main_menu_after_reward.png", 1),
+        ActionName.SELECT_EXISTING_WORLD: frame("host_game_world_list_live.png", 2),
+        ActionName.START_EXISTING_WORLD: frame("host_game_world_selected_live.png", 3),
+        ActionName.SELECT_SURVIVOR: frame("character_selection_live.png", 4),
+        ActionName.START_SURVIVOR: frame("character_loadout_live.png", 5),
+    }
+    assert set(FIXED_UI_ACTION_TARGETS) == {action.value for action in frames}
+    for action, observation in frames.items():
+        expected = DST_FIXED_1280X720.point(
+            FIXED_UI_ACTION_TARGETS[action.value], 1280, 720
+        )
+        point, viewport = click_request(action, replace(observation, detections=()))
+        assert point == expected
+        assert viewport.width == 1280 and viewport.height == 720
+        assert 0 <= point.x <= 1 and 0 <= point.y <= 1
+
+
+def test_fixed_ui_targets_work_without_validation_flow_and_fail_closed_on_geometry():
+    from runtime_agent.gameworker.activity import ActivityController
+
+    menu = frame("main_menu_after_reward.png", 1)
+    policy = ActivityController(validation_flow_enabled=False)
+    assert policy.propose(menu) is None
+    assert click_request(ActionName.CLICK_HOST_GAME, menu)[0] == (
+        DST_FIXED_1280X720.point("HOST_GAME", 1280, 720)
+    )
+    with pytest.raises(ValueError, match="requires 1280x720"):
+        click_request(ActionName.CLICK_HOST_GAME, replace(menu, frame_width=1920))
+
+
+def test_start_survivor_uses_fixed_point_and_still_requires_fresh_verification():
+    loadout = frame("character_loadout_live.png", 1)
+    point, viewport = click_request(ActionName.START_SURVIVOR, loadout)
+    assert point == DST_FIXED_1280X720.point("START_SURVIVOR", 1280, 720)
+    assert viewport.width == 1280 and viewport.height == 720
+
+    lifecycle = ActionLifecycle(clock=lambda: loadout.observed_monotonic + 0.001)
+    assert lifecycle.begin(sent(ActionName.START_SURVIVOR), loadout).status == ActionStatus.VERIFYING
+    assert lifecycle.observe(loadout) is None

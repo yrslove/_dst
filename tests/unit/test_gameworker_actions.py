@@ -510,6 +510,31 @@ def test_each_allowed_host_game_attempt_refreshes_pointer_and_focus():
     ]
 
 
+def test_fixed_ui_click_rejects_mismatched_display_geometry_before_input():
+    value, _controller, driver, _deadman = executor(
+        allowed_actions=frozenset({ActionName.CLICK_HOST_GAME})
+    )
+    result = value.execute(Action(
+        "host-wrong-geometry",
+        ActionName.CLICK_HOST_GAME,
+        7,
+        3,
+        runtime_id=2,
+        deadline=time.monotonic() + 0.9,
+        parameters=(
+            ("x", 0.0953125),
+            ("y", 0.5465277777777777),
+            ("width", 1920),
+            ("height", 1080),
+        ),
+    ))
+    value.shutdown()
+
+    assert result.status == ActionStatus.REJECTED
+    assert result.reason == "invalid action anchor"
+    assert driver.events == []
+
+
 def test_start_existing_world_guard_accepts_saved_live_resume_anchor():
     value, _controller, driver, _deadman = executor(
         allowed_actions=frozenset({ActionName.START_EXISTING_WORLD})

@@ -6,6 +6,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from runtime_agent.gameworker.actions import ActionName, ActionResult, ActionStatus
+from runtime_agent.gameworker.fixed_ui import (
+    DST_FIXED_1280X720,
+    FIXED_UI_ACTION_TARGETS,
+)
 from runtime_agent.gameworker.geometry import NormalizedPoint, Viewport
 from runtime_agent.gameworker.vision import DSTScreen, GameObservation
 
@@ -143,7 +147,6 @@ CONTRACTS = {
         timeout=120.0,
     ),
 }
-
 
 def action_precondition_error(
     action: ActionName, observation: GameObservation
@@ -288,9 +291,9 @@ class ActionLifecycle:
         elif (
             pending.result.action == ActionName.CLICK_HOST_GAME
             and observation.screen == DSTScreen.MAIN_MENU
+            and observation.screen_confidence >= pending.contract.confidence
             and observation.screen_change is not None
             and observation.screen_change < 0.02
-            and self._has_fresh_verified_anchor(observation, "main_menu_host_game")
         ):
             if observation.screen == pending.candidate:
                 pending.count += 1
@@ -341,10 +344,16 @@ class ActionLifecycle:
 
 
 def click_request(action: ActionName, observation: GameObservation):
-    """Resolve only a verified detector anchor; behavior never chooses pixels."""
+    """Resolve fixed UI targets from the supported profile, others from vision."""
     contract = CONTRACTS.get(action)
     if contract is None:
         raise ValueError("action has no visual anchor contract")
+    fixed_target = FIXED_UI_ACTION_TARGETS.get(action.value)
+    if fixed_target is not None:
+        point = DST_FIXED_1280X720.point(
+            fixed_target, observation.frame_width, observation.frame_height
+        )
+        return point, Viewport(observation.frame_width, observation.frame_height)
     detection = next((
         item for item in observation.detections
         if item.kind in contract.anchors and item.detected and item.verified

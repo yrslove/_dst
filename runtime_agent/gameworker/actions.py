@@ -11,6 +11,10 @@ from enum import StrEnum
 from threading import Event, Lock, Thread
 
 from runtime_agent.gameworker.config import InputBindings, WorkerMode
+from runtime_agent.gameworker.fixed_ui import (
+    DST_FIXED_1280X720,
+    FIXED_UI_ACTION_TARGETS,
+)
 from runtime_agent.gameworker.geometry import NormalizedPoint, Viewport
 from runtime_agent.gameworker.input import DeadmanSafety, InputController, InputError
 
@@ -428,6 +432,11 @@ class ActionExecutor:
                     or not 480 <= viewport.height <= 2160
                 ):
                     raise ValueError("invalid viewport")
+                fixed_target = FIXED_UI_ACTION_TARGETS.get(action.name.value)
+                if fixed_target is not None:
+                    DST_FIXED_1280X720.point(
+                        fixed_target, viewport.width, viewport.height
+                    )
             except (KeyError, TypeError, ValueError, OverflowError):
                 return self._result(
                     action, ActionStatus.REJECTED, reason="invalid action anchor"

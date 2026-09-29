@@ -148,23 +148,13 @@ class ActivityController:
         if self.state != observation.screen or self._candidate_frames < 2:
             self._record(observation, "NONE", "hysteresis")
             return None
-        if self.validation_flow_enabled and self._validation_host_retry_pending:
+        if self._validation_host_retry_pending:
             self._validation_host_retry_pending = False
-            host_anchor = next(
-                (
-                    item for item in observation.detections
-                    if item.kind == "main_menu_host_game"
-                    and item.detected and item.verified
-                    and item.bounds is not None and item.confidence >= 0.94
-                ),
-                None,
-            )
             if (
                 observation.screen != DSTScreen.MAIN_MENU
                 or observation.screen_confidence < 0.94
                 or observation.source_sequence
                 <= (self._validation_host_source_sequence or 0)
-                or host_anchor is None
                 or (
                     not self._validation_host_retry_no_effect_proven
                     and (
@@ -425,14 +415,8 @@ class ActivityController:
                     )
                     return None
             if self._validation_step == 4 and self.state == DSTScreen.CHARACTER_LOADOUT:
-                button = next((
-                    item for item in observation.detections
-                    if item.kind == "character_loadout_go_button"
-                    and item.detected and item.verified
-                    and item.bounds is not None and item.confidence >= 0.94
-                ), None)
-                if button is None or observation.screen_confidence < 0.94:
-                    self._record(observation, "NONE", "loadout Go anchor insufficient")
+                if observation.screen_confidence < 0.94:
+                    self._record(observation, "NONE", "loadout screen confidence insufficient")
                     return None
                 proposal = ActionProposal(
                     ActionName.START_SURVIVOR,
@@ -442,23 +426,8 @@ class ActivityController:
                 return proposal
             for source, step, action, reason in route:
                 if self._validation_step == step and self.state == source:
-                    contract_anchors = {
-                        ActionName.CLICK_HOST_GAME: "main_menu_host_game",
-                        ActionName.SELECT_EXISTING_WORLD:
-                            "host_game_existing_world_row",
-                        ActionName.START_EXISTING_WORLD:
-                            "host_game_world_selected_start",
-                        ActionName.SELECT_SURVIVAL:
-                            "host_game_playstyle_survival",
-                    }
-                    anchor = next((
-                        item for item in observation.detections
-                        if item.kind == contract_anchors[action]
-                        and item.detected and item.verified
-                        and item.bounds is not None and item.confidence >= 0.94
-                    ), None)
-                    if anchor is None or observation.screen_confidence < 0.94:
-                        self._record(observation, "NONE", "validation anchor insufficient")
+                    if observation.screen_confidence < 0.94:
+                        self._record(observation, "NONE", "validation screen confidence insufficient")
                         return None
                     if action == ActionName.CLICK_HOST_GAME:
                         self._validation_host_source_sequence = (
@@ -594,8 +563,7 @@ class ActivityController:
     def on_action_failure(self, result: ActionResult) -> None:
         self._awaiting_reward_transition = False
         if (
-            self.validation_flow_enabled
-            and result.action == ActionName.CLICK_HOST_GAME
+            result.action == ActionName.CLICK_HOST_GAME
             and result.status == ActionStatus.TIMED_OUT
             and result.reason in {
                 "verified transition deadline elapsed",

@@ -715,6 +715,7 @@ def test_host_game_unchanged_menu_allows_exactly_one_guarded_retry():
     menu = replace(menu, source_frame_id="host-retry-2", source_sequence=2)
     first = policy.propose(menu)
     assert first is not None and first.action == ActionName.CLICK_HOST_GAME
+    first_point, _ = click_request(first.action, menu)
 
     timed_out = ActionResult(
         "host-first", ActionName.CLICK_HOST_GAME, ActionStatus.TIMED_OUT,
@@ -731,12 +732,37 @@ def test_host_game_unchanged_menu_allows_exactly_one_guarded_retry():
     retry = policy.propose(fresh_menu)
     assert retry is not None and retry.action == ActionName.CLICK_HOST_GAME
     assert "once" in (retry.reason or "")
+    retry_point, _ = click_request(retry.action, fresh_menu)
+    assert retry_point == first_point
 
     policy.on_action_failure(replace(timed_out, action_id="host-second"))
     assert policy.intervention_required
     assert policy.propose(
         replace(fresh_menu, source_frame_id="host-retry-4", source_sequence=4)
     ) is None
+
+
+def test_host_game_retry_is_available_without_validation_flow_and_without_anchor_localization():
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "host-profile-1", 1,
+    )
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.on_action_failure(ActionResult(
+        "host-proven-no-effect", ActionName.CLICK_HOST_GAME,
+        ActionStatus.TIMED_OUT, 0.5, 1, 1, 1,
+        "fresh unchanged MAIN_MENU proves Host Game click had no effect",
+    ))
+    retry_frame = replace(
+        menu, source_frame_id="host-profile-2", source_sequence=2,
+        screen_change=0.001, detections=(),
+    )
+    assert policy.propose(retry_frame) is None
+    retry_frame = replace(
+        retry_frame, source_frame_id="host-profile-3", source_sequence=3,
+    )
+    retry = policy.propose(retry_frame)
+    assert retry is not None and retry.action == ActionName.CLICK_HOST_GAME
 
 
 def test_lifecycle_proven_no_effect_reaches_retry_without_rechecking_change_metric():
