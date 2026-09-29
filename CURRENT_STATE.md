@@ -57,14 +57,17 @@ infrastructure that can persist in the world.
 
 ## Current blockers
 
-- The canonical Host Game action remained in `VERIFYING` while a fresh screen still
-  showed `MAIN_MENU`; no blind retry was made. Live evidence is preserved outside the
-  repository at `/home/dst/Farm01-gift-path-blocker*`.
 - The production fixed-coordinate path
   `MAIN_MENU -> IN_WORLD_IDLE` is LIVE_PROVEN on deployed revision
-  `cfcdcd3a81a525d7dfd0468813eb200a132bc118`; measured entry time was 8m30.5s from
-  the first Host Game click to the second fresh `IN_WORLD_IDLE` observation. Host Game
-  required its single same-coordinate retry and the target appeared after 68.2s.
+  `67e957f3cd939eb48cb2c7bc60243cb106a7d6ad`. A fresh stable `MAIN_MENU` at
+  2026-09-29 09:34:33 UTC reached worker-verified `IN_WORLD_IDLE` at 09:37:03.9 UTC
+  (2m30.9s); two independent fresh `IN_WORLD_IDLE` observations followed at
+  09:37:45.5 and 09:37:46.6 UTC. No Control Plane VERIFY or worker reactivation was
+  required during entry. No action timeout occurred, so local late-transition recovery
+  was not naturally exercised. Per-state stable-state-to-action timings were not
+  retained in the Control Plane status history. The largest adjacent action-status
+  interval was 47.3s, including an unclassified game transition; its non-Loading idle
+  portion cannot be isolated.
 - Fixed menu click locations must continue to come from
   `dst-1280x720-linux-v1`; do not return to dynamic anchor localization for these
   controls unless the supported display profile changes.
@@ -84,8 +87,8 @@ infrastructure that can persist in the world.
   verified.
 - The canonical host-to-guest application deployment path is implemented and
   LIVE_PROVEN; the guest reports revision
-  `cfcdcd3a81a525d7dfd0468813eb200a132bc118`. No gameplay acceptance was run during
-  deployment, and GameWorker remains DISABLED.
+  `67e957f3cd939eb48cb2c7bc60243cb106a7d6ad`. The post-recovery-change production
+  world-entry acceptance completed; GameWorker was returned to DISABLED afterward.
 
 The gift milestone is not complete from the gray-present observation alone. The next
 concrete evidence is an enabled-present frame from Farm 01, followed by the real claim
