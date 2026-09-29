@@ -60,9 +60,14 @@ infrastructure that can persist in the world.
 - The canonical Host Game action remained in `VERIFYING` while a fresh screen still
   showed `MAIN_MENU`; no blind retry was made. Live evidence is preserved outside the
   repository at `/home/dst/Farm01-gift-path-blocker*`.
-- The fixed-coordinate profile and production world-entry policy were deployed to the
-  active runtime at revision `cfcdcd3a81a525d7dfd0468813eb200a132bc118`; gameplay
-  acceptance remains pending.
+- The production fixed-coordinate path
+  `MAIN_MENU -> IN_WORLD_IDLE` is LIVE_PROVEN on deployed revision
+  `cfcdcd3a81a525d7dfd0468813eb200a132bc118`; measured entry time was 8m30.5s from
+  the first Host Game click to the second fresh `IN_WORLD_IDLE` observation. Host Game
+  required its single same-coordinate retry and the target appeared after 68.2s.
+- Fixed menu click locations must continue to come from
+  `dst-1280x720-linux-v1`; do not return to dynamic anchor localization for these
+  controls unless the supported display profile changes.
 - Farm 01 has not been verified with a persistent Science Machine near the player.
 - The first actionable gift frame has not yet been captured.
 - In-world gift actions/contracts are not implemented.
