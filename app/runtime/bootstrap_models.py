@@ -42,6 +42,9 @@ class RuntimeAgentConfig:
     worker_mode: str = "DISABLED"
     worker_autostart: bool = False
     worker_config_schema_version: int = 1
+    worker_calibration_profile: str = "dst-1280x720-linux-v1"
+    worker_calibration_verified: bool = False
+    safe_idle_world: bool = False
 
     def environment_file(self) -> bytes:
         # Explicit allow-list: this file is the only bootstrap secret carrier.
@@ -68,7 +71,11 @@ class RuntimeAgentConfig:
             "WORKER_MODE": self.worker_mode,
             "WORKER_AUTOSTART": int(self.worker_autostart),
             "WORKER_CONFIG_SCHEMA_VERSION": self.worker_config_schema_version,
+            "WORKER_CALIBRATION_PROFILE": self.worker_calibration_profile,
+            "WORKER_CALIBRATION_VERIFIED": int(self.worker_calibration_verified),
         }
+        if self.safe_idle_world:
+            values["WORKER_OBSERVATION_INTERVAL"] = 12
         if self.xdg_runtime_dir:
             values["XDG_RUNTIME_DIR"] = self.xdg_runtime_dir
         if self.dbus_session_bus_address:

@@ -476,6 +476,10 @@ class ObservePipeline:
                         result,
                         reason=str(exc),
                     )
+            if proposal.action == ActionName.HOVER_GIFT_ICON:
+                arm = getattr(self.engine, "arm_gift_hover", None)
+                if arm is not None:
+                    arm(frame, observation)
             result = self.actions.execute(
                 proposal.action,
                 duration=proposal.duration,

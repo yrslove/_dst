@@ -125,6 +125,19 @@ class RuntimeBootstrapService:
                 ("/usr/bin/install", "-d", "-m", "0750", "/etc/dst-runtime"),
                 correlation_id=correlation_id,
             )
+            if config.safe_idle_world:
+                from app.runtime.world_profile import application_script
+
+                self.provider.execute(
+                    runtime,
+                    ("/bin/systemctl", "stop", "dst-runtime-agent.service"),
+                    correlation_id=correlation_id,
+                )
+                self.provider.execute(
+                    runtime,
+                    ("/usr/bin/python3", "-c", application_script()),
+                    correlation_id=correlation_id,
+                )
         elif phase == BootstrapPhase.AGENT_FILES_INSTALLED:
             # Runtime image owns package installation; validate the exact paths used
             # by ExecStart instead of an unrelated compatibility launcher.

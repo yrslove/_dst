@@ -30,6 +30,14 @@ class ActionContract:
 
 
 CONTRACTS = {
+    ActionName.HOVER_GIFT_ICON: ActionContract(
+        ("gift_icon",),
+        frozenset({DSTScreen.IN_WORLD_IDLE}),
+        frozenset({DSTScreen.IN_WORLD_IDLE}),
+        timeout=8.0,
+        confidence=0.85,
+        stable_observations=1,
+    ),
     ActionName.MOVE_FORWARD: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
         frozenset({DSTScreen.IN_WORLD_IDLE}), timeout=15.0,
@@ -170,6 +178,19 @@ def action_precondition_error(
     ):
         return "source state is not visually verified"
     detections = {item.kind: item for item in observation.detections}
+    if (
+        action.value not in FIXED_UI_ACTION_TARGETS
+        and contract.anchors
+        and not any(
+            (item := detections.get(name)) is not None
+            and item.detected
+            and item.verified
+            and item.bounds is not None
+            and item.confidence >= contract.confidence
+            for name in contract.anchors
+        )
+    ):
+        return "verified action anchor is not visible"
     if any(
         (item := detections.get(name)) is None
         or not item.detected
@@ -246,6 +267,19 @@ class ActionLifecycle:
             pending.candidate, pending.count = DSTScreen.UNKNOWN, 0
             return None
         pending.last_sequence = observation.source_sequence
+        if pending.result.action == ActionName.HOVER_GIFT_ICON:
+            if observation.source_captured_monotonic < pending.sent_at:
+                return None
+            if any(
+                d.kind == "gift_hover_response" and d.detected and d.verified
+                for d in observation.detections
+            ):
+                return self._status(
+                    ActionStatus.SUCCEEDED,
+                    "fresh localized gift hover response",
+                    clear=True,
+                )
+            return None
         if (
             observation.screen not in pending.contract.targets
             and observation.screen not in pending.contract.source

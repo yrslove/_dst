@@ -8,6 +8,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -80,6 +81,8 @@ class JobKind(StrEnum):
     VERIFY_RUNTIME = "VERIFY_RUNTIME"
     MOVE_RUNTIME = "MOVE_RUNTIME"
     BOOTSTRAP_RUNTIME = "BOOTSTRAP_RUNTIME"
+    DAILY_GIFT_CLAIM = "DAILY_GIFT_CLAIM"
+    LONG_SESSION = "LONG_SESSION"
 
 
 class JobStatus(StrEnum):
@@ -105,6 +108,17 @@ class WorkerMode(StrEnum):
     DISABLED = "DISABLED"
     OBSERVE = "OBSERVE"
     ACTIVE = "ACTIVE"
+
+
+class GameplayTaskStatus(StrEnum):
+    COMPLETED = "COMPLETED"
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    NEEDS_ATTENTION = "NEEDS_ATTENTION"
+    NO_REWARD_AVAILABLE = "NO_REWARD_AVAILABLE"
 
 
 class ErrorCode(StrEnum):
@@ -491,6 +505,69 @@ class WorkerRun(Base):
     actions_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     recoveries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     result: Mapped[str | None] = mapped_column(String(40))
+
+
+class GameplayTask(Base):
+    """Durable task progress and verified reward result for one account."""
+
+    __tablename__ = "gameplay_tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','CANCELLED',"
+            "'NEEDS_ATTENTION','NO_REWARD_AVAILABLE','COMPLETED')",
+            name="ck_gameplay_task_status",
+        ),
+        CheckConstraint(
+            "status != 'SUCCEEDED' OR "
+            "(confirmation_key IS NOT NULL AND claim_confirmed_at IS NOT NULL "
+            "AND claim_persisted_at IS NOT NULL AND result_json IS NOT NULL)",
+            name="ck_gameplay_task_success_has_claim",
+        ),
+        CheckConstraint(
+            "status != 'COMPLETED' OR (kind = 'LONG_SESSION' AND result_json IS NOT NULL AND completed_at IS NOT NULL)",
+            name="ck_gameplay_session_completion",
+        ),
+        UniqueConstraint(
+            "account_id",
+            "kind",
+            "confirmation_key",
+            name="uq_gameplay_task_claim_identity",
+        ),
+        Index(
+            "uq_gameplay_task_active_account_kind",
+            "account_id",
+            "kind",
+            unique=True,
+            sqlite_where=text("status IN ('PENDING','RUNNING')"),
+            postgresql_where=text("status IN ('PENDING','RUNNING')"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", ondelete="RESTRICT"), index=True
+    )
+    runtime_id: Mapped[int] = mapped_column(
+        ForeignKey("runtime_instances.id", ondelete="RESTRICT"), index=True
+    )
+    worker_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("worker_runs.id", ondelete="SET NULL"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmation_key: Mapped[str | None] = mapped_column(String(64))
+    claim_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_persisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(Text)
 
 
 class RuntimeImage(Base, TimestampMixin):

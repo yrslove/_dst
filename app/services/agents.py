@@ -36,6 +36,7 @@ from app.models import (
     utcnow,
 )
 from app.schemas import NodeHeartbeatRequest, RuntimeHeartbeatRequest
+from app.services.gameplay import persist_worker_gift_progress
 from app.services.leases import LeaseService
 from app.services.records import add_event
 from app.services.security import ensure_utc, token_matches
@@ -69,7 +70,7 @@ def _bounded_float(value, maximum: float = 10**9) -> float:
 
 def _safe_details(value, *, depth: int = 0):
     """Keep bounded diagnostics useful without persisting credentials or blobs."""
-    if depth > 3:
+    if depth > 7:
         return "[TRUNCATED]"
     if isinstance(value, dict):
         return {
@@ -389,6 +390,16 @@ class AgentService:
             if state in {"DISABLED", "STOPPED", "ERROR", "NEEDS_ATTENTION"}:
                 current.ended_at = now
                 current.result = state
+        persist_worker_gift_progress(
+            session,
+            account_id=runtime.account_id,
+            runtime_id=runtime.id,
+            worker_run=current,
+            report=report,
+            worker_state=state,
+            now=now,
+            sqlite=self.db.is_sqlite,
+        )
 
     def node_heartbeat(self, payload: NodeHeartbeatRequest, token: str | None) -> None:
         if payload.protocol_version != self.settings.agent_protocol_version:

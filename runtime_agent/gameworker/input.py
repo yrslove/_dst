@@ -277,6 +277,15 @@ class InputController:
             with self._state_lock:
                 self._uncertain_buttons.discard(button)
 
+    def hover(self, point: NormalizedPoint, viewport: Viewport) -> None:
+        if not self.action_limiter.allow():
+            raise InputError("action rate limit exceeded")
+        with self._io_lock:
+            self._require_active()
+            x, y = viewport.point(point)
+            self.driver.mouse_move(x, y)
+            self._require_active()
+
     def click(
         self,
         point: NormalizedPoint | None = None,
@@ -460,14 +469,18 @@ def emergency_release_all(environment: DisplayEnvironment, bindings) -> None:
             try:
                 driver.key_up(key)
             except (InputError, OSError) as exc:
-                logger.warning("parent emergency key release failed key=%s: %s", key, exc)
+                logger.warning(
+                    "parent emergency key release failed key=%s: %s", key, exc
+                )
                 if getattr(driver, "closed", False):
                     return
         for button in range(1, 6):
             try:
                 driver.mouse_up(button)
             except (InputError, OSError) as exc:
-                logger.warning("parent emergency mouse release failed button=%s: %s", button, exc)
+                logger.warning(
+                    "parent emergency mouse release failed button=%s: %s", button, exc
+                )
                 if getattr(driver, "closed", False):
                     return
     finally:

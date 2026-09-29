@@ -15,7 +15,7 @@ from runtime_agent.gameworker.actions import (
     ActionStatus,
     ObserveActions,
 )
-from runtime_agent.gameworker.activity import ActivityController
+from runtime_agent.gameworker.activity import ActivityController, DailyGiftState
 from runtime_agent.gameworker.base import WorkerContext
 from runtime_agent.gameworker.capture import Frame
 from runtime_agent.gameworker.config import InputBindings, WorkerConfig, WorkerMode
@@ -97,6 +97,46 @@ def test_real_world_reset_frame_and_canonical_recovery_route():
         0.1, 1, 1, 1,
     ))
     assert policy._validation_step == 3
+
+
+def test_character_selection_recognizes_wilson_target_without_nameplate(monkeypatch):
+    original_detect = VisionDetector.detect
+
+    def hide_wilson_name(self, image, template_id, *, deadline=None):
+        if template_id == "character_select_wilson_name":
+            return Detection(template_id, False, 0.0, verified=True)
+        return original_detect(self, image, template_id, deadline=deadline)
+
+    monkeypatch.setattr(VisionDetector, "detect", hide_wilson_name)
+    screen = analyze_image(
+        Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB"),
+        "character-select-wilson-target",
+        1,
+    )
+    assert screen.screen == DSTScreen.CHARACTER_SELECTION
+    assert screen.validity == ObservationValidity.VALID
+    assert screen.screen_confidence >= 0.94
+    assert "character_select_wilson_name" not in {
+        item.kind for item in screen.detections if item.detected
+    }
+
+
+def test_partial_character_selection_anchors_remain_unknown(monkeypatch):
+    original_detect = VisionDetector.detect
+
+    def hide_title(self, image, template_id, *, deadline=None):
+        if template_id == "character_select_title":
+            return Detection(template_id, False, 0.0, verified=True)
+        return original_detect(self, image, template_id, deadline=deadline)
+
+    monkeypatch.setattr(VisionDetector, "detect", hide_title)
+    screen = analyze_image(
+        Image.open(ASSETS / "samples/character_selection_live.png").convert("RGB"),
+        "partial-character-select",
+        1,
+    )
+    assert screen.screen == DSTScreen.UNKNOWN
+    assert screen.production_ready is False
 
 
 def test_validation_disabled_does_not_propose_validation_actions_in_world():
@@ -1396,6 +1436,135 @@ def test_world_present_banner_does_not_imply_gift_available():
         item.kind == "world_present_banner" and item.detected and item.verified
         for item in observation.detections
     )
+    policy = ActivityController()
+    for sequence in (1, 2):
+        policy.propose(replace(
+            observation,
+            source_frame_id=f"world-present-banner-{sequence}",
+            source_sequence=sequence,
+        ))
+    assert policy.daily_gift_confirmation is None
+    assert policy.counters["gift_claimed"] == 0
+
+
+def test_daily_gift_available_and_open_action_are_not_confirmation():
+    available = observe()
+    policy = ActivityController()
+    assert policy.propose(available) is None
+    proposal = policy.propose(replace(
+        available, source_frame_id="daily-gift-available-2", source_sequence=2,
+    ))
+    assert proposal is not None and proposal.action == ActionName.CLICK_REWARD_OPEN
+    assert policy.daily_gift_state == DailyGiftState.GIFT_AVAILABLE
+
+    verifying = ActionResult(
+        "daily-gift-open", ActionName.CLICK_REWARD_OPEN,
+        ActionStatus.VERIFYING, 0.1, 1, 1, 1,
+    )
+    policy.on_action_result(available, verifying)
+    assert policy.daily_gift_state == DailyGiftState.GIFT_INTERACTION_STARTED
+    assert policy.daily_gift_confirmation is None
+    assert policy.counters["gift_claimed"] == 0
+
+    # A verified return to the menu proves dismissal/transition only.
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "dismissed-gift-menu", 3,
+    )
+    policy.on_verified(menu, replace(verifying, status=ActionStatus.SUCCEEDED))
+    assert policy.daily_gift_state == DailyGiftState.GIFT_UI_CLOSED
+    assert policy.daily_gift_confirmation is None
+    assert policy.counters["gift_claimed"] == 0
+
+
+def test_daily_gift_requires_received_evidence_and_confirmation_is_idempotent():
+    available = observe()
+    policy = ActivityController()
+    opening = ActionResult(
+        "daily-gift-success-action", ActionName.CLICK_REWARD_OPEN,
+        ActionStatus.VERIFYING, 0.1, 1, 1, 1,
+    )
+    policy.on_action_result(available, opening)
+    received = analyze_image(
+        Image.open(ASSETS / "samples/login_reward_result_live.png").convert("RGB"),
+        "daily-gift-received", 2,
+    )
+    assert received.screen == DSTScreen.REWARD_RESULT
+    assert any(
+        item.kind == "login_reward_result_title" and item.detected and item.verified
+        for item in received.detections
+    )
+    success = replace(opening, status=ActionStatus.SUCCEEDED)
+    policy.on_verified(received, success)
+    assert policy.daily_gift_state == DailyGiftState.DAILY_GIFT_CONFIRMED
+    assert policy.daily_gift_confirmation is not None
+    assert policy.daily_gift_confirmation.semantic == "DAILY_GIFT_CONFIRMED"
+    assert policy.daily_gift_confirmation.evidence_frame_id == received.source_frame_id
+    assert policy.counters["gift_claimed"] == 1
+    policy.propose(received)
+    policy.propose(received)
+    assert policy.counters["gift_claimed"] == 1
+
+    worker = DSTGameWorker(WorkerConfig(plugin="dst", mode=WorkerMode.DISABLED))
+    worker.activity = policy
+    report = worker.status()
+    assert report.telemetry["daily_gift_state"] == "DAILY_GIFT_CONFIRMED"
+    assert report.telemetry["daily_gift_confirmation"]["evidence_frame_id"] == (
+        received.source_frame_id
+    )
+
+    # A duplicate callback and duplicate successful result frame cannot count again.
+    policy.on_verified(received, success)
+    assert policy.daily_gift_state == DailyGiftState.DAILY_GIFT_CONFIRMED
+    assert policy.counters["gift_claimed"] == 1
+
+
+def test_open_result_modal_without_received_anchor_is_not_confirmation():
+    available = observe()
+    policy = ActivityController()
+    opening = ActionResult(
+        "daily-gift-incomplete-result", ActionName.CLICK_REWARD_OPEN,
+        ActionStatus.VERIFYING, 0.1, 1, 1, 1,
+    )
+    policy.on_action_result(available, opening)
+    result = analyze_image(
+        Image.open(ASSETS / "samples/login_reward_result_live.png").convert("RGB"),
+        "daily-gift-result-anchor-missing", 2,
+    )
+    detections = tuple(
+        replace(item, detected=False, verified=False)
+        if item.kind == "login_reward_result_title"
+        else item
+        for item in result.detections
+    )
+    policy.on_verified(
+        replace(result, detections=detections),
+        replace(opening, status=ActionStatus.SUCCEEDED),
+    )
+    assert policy.daily_gift_state == DailyGiftState.GIFT_UI_OPEN
+    assert policy.daily_gift_confirmation is None
+    assert policy.counters["gift_claimed"] == 0
+
+
+def test_dismissing_received_modal_does_not_emit_a_second_gift_claim():
+    received = analyze_image(
+        Image.open(ASSETS / "samples/login_reward_result_live.png").convert("RGB"),
+        "dismissed-gift-result", 1,
+    )
+    policy = ActivityController()
+    closing = ActionResult(
+        "dismiss-only", ActionName.CLICK_REWARD_CLOSE,
+        ActionStatus.VERIFYING, 0.1, 1, 1, 1,
+    )
+    policy.on_action_result(received, closing)
+    menu = analyze_image(
+        Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+        "dismissed-gift-menu", 2,
+    )
+    policy.on_verified(menu, replace(closing, status=ActionStatus.SUCCEEDED))
+    assert policy.daily_gift_state == DailyGiftState.GIFT_UI_CLOSED
+    assert policy.daily_gift_confirmation is None
+    assert policy.counters["gift_claimed"] == 0
 
 
 def test_reward_click_is_one_shot_and_observe_has_no_input():

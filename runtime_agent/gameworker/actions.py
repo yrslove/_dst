@@ -29,6 +29,7 @@ class ActionName(StrEnum):
     TURN_RIGHT = "TURN_RIGHT"
     PAUSE_WORLD = "PAUSE_WORLD"
     INTERACT = "INTERACT"
+    HOVER_GIFT_ICON = "HOVER_GIFT_ICON"
     CANCEL = "CANCEL"
     RESUME_WORLD = "RESUME_WORLD"
     OPEN_INVENTORY = "OPEN_INVENTORY"
@@ -175,6 +176,7 @@ _PRESS_KEYS = {
     ActionName.PAUSE_WORLD: "cancel",
 }
 CLICK_REGIONS = {
+    ActionName.HOVER_GIFT_ICON: (0.115, 0.0, 0.2, 0.14),
     ActionName.CLICK_REWARD_OPEN: (0.35, 0.75, 0.65, 0.97),
     ActionName.CLICK_REWARD_CLOSE: (0.35, 0.75, 0.65, 0.97),
     ActionName.CLICK_OPTIONS: (0.02, 0.66, 0.18, 0.75),
@@ -666,7 +668,12 @@ class ActionExecutor:
                         self.controller.key_up(key)
                 elif action.name in CLICK_REGIONS:
                     values = dict(action.parameters)
-                    self.controller.click(
+                    mouse_action = (
+                        self.controller.hover
+                        if action.name == ActionName.HOVER_GIFT_ICON
+                        else self.controller.click
+                    )
+                    mouse_action(
                         NormalizedPoint(float(values["x"]), float(values["y"])),
                         Viewport(int(values["width"]), int(values["height"])),
                     )

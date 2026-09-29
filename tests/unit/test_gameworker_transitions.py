@@ -313,7 +313,13 @@ def test_selected_survivor_click_is_verified_by_loadout_screen():
         "character_select_wilson_hover",
     )
     target, viewport = click_request(ActionName.SELECT_SURVIVOR, selected)
-    assert target == DST_FIXED_1280X720.point("WILSON", 1280, 720)
+    icon = next(
+        item for item in selected.detections
+        if item.kind == "character_select_wilson_icon" and item.detected
+    )
+    assert icon.bounds is not None
+    assert target.x == pytest.approx((icon.bounds.left + icon.bounds.right) / 2)
+    assert target.y == pytest.approx((icon.bounds.top + icon.bounds.bottom) / 2)
     assert viewport.width == 1280 and viewport.height == 720
 
     clock = [selected.observed_monotonic + 0.001]
@@ -450,14 +456,12 @@ def test_reentry_world_list_uses_stable_farm_name_anchor():
     assert target == DST_FIXED_1280X720.point("FARM_01", 1280, 720)
 
 
-def test_supported_fixed_ui_profile_resolves_all_world_entry_targets():
+def test_supported_fixed_ui_profile_and_anchored_survivor_targets():
     frames = {
         ActionName.CLICK_HOST_GAME: frame("main_menu_after_reward.png", 1),
         ActionName.SELECT_EXISTING_WORLD: frame("host_game_world_list_live.png", 2),
         ActionName.START_EXISTING_WORLD: frame("host_game_world_selected_live.png", 3),
         ActionName.CONFIRM_MODS_DISABLED: mods_disabled_frame(4),
-        ActionName.SELECT_SURVIVOR: frame("character_selection_live.png", 5),
-        ActionName.START_SURVIVOR: frame("character_loadout_live.png", 6),
     }
     assert set(FIXED_UI_ACTION_TARGETS) == {action.value for action in frames}
     for action, observation in frames.items():
@@ -468,6 +472,17 @@ def test_supported_fixed_ui_profile_resolves_all_world_entry_targets():
         assert point == expected
         assert viewport.width == 1280 and viewport.height == 720
         assert 0 <= point.x <= 1 and 0 <= point.y <= 1
+
+    for action, observation, anchor_name in (
+        (ActionName.SELECT_SURVIVOR, frame("character_selection_live.png", 5), "character_select_wilson_icon"),
+        (ActionName.START_SURVIVOR, frame("character_loadout_live.png", 6), "character_loadout_go_button"),
+    ):
+        anchor = next(item for item in observation.detections if item.kind == anchor_name)
+        assert anchor.detected and anchor.verified and anchor.bounds is not None
+        point, viewport = click_request(action, observation)
+        assert point.x == pytest.approx((anchor.bounds.left + anchor.bounds.right) / 2)
+        assert point.y == pytest.approx((anchor.bounds.top + anchor.bounds.bottom) / 2)
+        assert viewport.width == 1280 and viewport.height == 720
 
 
 def test_fixed_ui_targets_work_without_validation_flow_and_fail_closed_on_geometry():
@@ -483,15 +498,61 @@ def test_fixed_ui_targets_work_without_validation_flow_and_fail_closed_on_geomet
         click_request(ActionName.CLICK_HOST_GAME, replace(menu, frame_width=1920))
 
 
-def test_start_survivor_uses_fixed_point_and_still_requires_fresh_verification():
+def test_start_survivor_uses_verified_anchor_and_fresh_verification():
     loadout = frame("character_loadout_live.png", 1)
     point, viewport = click_request(ActionName.START_SURVIVOR, loadout)
-    assert point == DST_FIXED_1280X720.point("START_SURVIVOR", 1280, 720)
+    go = next(item for item in loadout.detections if item.kind == "character_loadout_go_button")
+    assert go.detected and go.verified and go.bounds is not None
+    assert point.x == pytest.approx((go.bounds.left + go.bounds.right) / 2)
+    assert point.y == pytest.approx((go.bounds.top + go.bounds.bottom) / 2)
     assert viewport.width == 1280 and viewport.height == 720
 
     lifecycle = ActionLifecycle(clock=lambda: loadout.observed_monotonic + 0.001)
     assert lifecycle.begin(sent(ActionName.START_SURVIVOR), loadout).status == ActionStatus.VERIFYING
     assert lifecycle.observe(loadout) is None
+
+    loading = frame("dst_world_loading_live.png", 2)
+    assert lifecycle.observe(loading) is None
+    in_world = frame("in_world_wilson_live.png", 3)
+    assert lifecycle.observe(in_world) is None
+    in_world_again = replace(in_world, source_sequence=4, source_frame_id="in-world-4")
+    assert lifecycle.observe(in_world_again).status == ActionStatus.SUCCEEDED
+
+
+def test_survivor_selection_requires_fresh_observation_and_anchor():
+    selection = frame("character_selection_live.png", 1)
+    lifecycle = ActionLifecycle(clock=lambda: selection.observed_monotonic + 0.001)
+    assert lifecycle.begin(sent(ActionName.SELECT_SURVIVOR), selection).status == ActionStatus.VERIFYING
+    assert lifecycle.observe(selection) is None  # pre-action frame cannot verify
+    stale = replace(selection, source_sequence=2, source_frame_id="stale-selection", fresh_until=0)
+    assert lifecycle.observe(stale) is None
+
+    no_anchor = replace(
+        selection,
+        detections=tuple(item for item in selection.detections if item.kind != "character_select_wilson_icon"),
+    )
+    with pytest.raises(ValueError, match="verified action anchor"):
+        click_request(ActionName.SELECT_SURVIVOR, no_anchor)
+
+
+def test_dead_and_reset_pending_are_never_verified_as_alive():
+    death = frame("death_world_reset_live.png", 1)
+    assert death.screen == DSTScreen.WORLD_RESET_PENDING
+    assert death.screen != DSTScreen.IN_WORLD_IDLE
+    from runtime_agent.gameworker.activity import ActivityController
+
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(death) is None
+    dead = replace(
+        death,
+        screen=DSTScreen.DEAD,
+        source_sequence=2,
+        source_frame_id="explicit-dead-state",
+    )
+    assert dead.screen == DSTScreen.DEAD
+    assert dead.screen != DSTScreen.IN_WORLD_IDLE
+    assert policy.propose(dead) is None
 
 
 def test_start_world_accepts_mod_warning_then_verifies_its_single_confirmation():

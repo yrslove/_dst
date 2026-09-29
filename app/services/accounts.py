@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 
 from sqlalchemy import func, select
@@ -16,6 +17,8 @@ from app.models import (
     AuditEvent,
     DesiredState,
     Event,
+    GameplayTask,
+    GameplayTaskStatus,
     Job,
     JobKind,
     Node,
@@ -200,6 +203,14 @@ class AccountService:
         idempotency_key: str | None = None,
         payload: dict | None = None,
     ) -> Job:
+        if kind == JobKind.LONG_SESSION:
+            duration = (payload or {}).get("requested_duration")
+            if (
+                isinstance(duration, bool)
+                or not isinstance(duration, int)
+                or not 600 <= duration <= 5400
+            ):
+                raise ValueError("session duration must be 600..5400 seconds")
         with self.db.transaction(immediate=True) as session:
             account_stmt = select(Account).where(Account.id == account_id)
             if not self.db.is_sqlite:
@@ -287,6 +298,38 @@ class AccountService:
                     runtime.command_version += 1
                 if account.status not in {AccountState.RUNNING, AccountState.QUEUED}:
                     transition_account(account, AccountState.QUEUED)
+            elif kind in {JobKind.DAILY_GIFT_CLAIM, JobKind.LONG_SESSION}:
+                if not account.enabled or runtime.verified_at is None:
+                    raise AccountBusyError(
+                        "daily gift task requires a verified enabled account"
+                    )
+                if (
+                    node.maintenance
+                    or node.draining
+                    or not node.enabled
+                    or node.status != NodeStatus.ONLINE
+                ):
+                    raise NodeOffline(
+                        f"node {node.name} does not accept gameplay tasks"
+                    )
+                active_task = session.scalar(
+                    select(GameplayTask).where(
+                        GameplayTask.account_id == account.id,
+                        GameplayTask.kind == str(kind),
+                        GameplayTask.status.in_(["PENDING", "RUNNING"]),
+                    )
+                )
+                if active_task is not None:
+                    raise AccountBusyError(
+                        f"daily gift task {active_task.id} is still {active_task.status}"
+                    )
+                if runtime.desired_state != DesiredState.RUNNING:
+                    runtime.command_version += 1
+                runtime.desired_state = DesiredState.RUNNING
+                if runtime.state in {RuntimeState.STOPPED, RuntimeState.STALE}:
+                    runtime.command_version += 1
+                if account.status not in {AccountState.RUNNING, AccountState.QUEUED}:
+                    transition_account(account, AccountState.QUEUED)
             elif kind == JobKind.STOP_RUNTIME:
                 if runtime.desired_state != DesiredState.STOPPED:
                     runtime.command_version += 1
@@ -320,12 +363,46 @@ class AccountService:
             key = (
                 f"client:{account_id}:{kind}:{idempotency_key}"
                 if idempotency_key
-                else f"command:{runtime.id}:{kind}:v{runtime.command_version}"
+                else (
+                    f"daily-gift:{runtime.id}:{uuid.uuid4().hex}"
+                    if kind in {JobKind.DAILY_GIFT_CLAIM, JobKind.LONG_SESSION}
+                    else f"command:{runtime.id}:{kind}:v{runtime.command_version}"
+                )
             )
             existing = session.scalar(select(Job).where(Job.idempotency_key == key))
             if existing is not None:
                 session.expunge(existing)
                 return existing
+            task = None
+            job_payload = {
+                **(payload or {}),
+                "command_version": runtime.command_version,
+            }
+            if kind in {JobKind.DAILY_GIFT_CLAIM, JobKind.LONG_SESSION}:
+                now = utcnow()
+                task = GameplayTask(
+                    account_id=account.id,
+                    runtime_id=runtime.id,
+                    kind=str(kind),
+                    status=GameplayTaskStatus.PENDING,
+                    result_json=(
+                        {
+                            "requested_duration": job_payload["requested_duration"],
+                            "state": "PENDING",
+                            "checkpoints": 0,
+                            "recoveries": 0,
+                            "gift_transitions": [],
+                            "confirmations": [],
+                        }
+                        if kind == JobKind.LONG_SESSION
+                        else None
+                    ),
+                    started_at=now,
+                    updated_at=now,
+                )
+                session.add(task)
+                session.flush()
+                job_payload["gameplay_task_id"] = task.id
             job = self.jobs.enqueue_in_session(
                 session,
                 kind=kind,
@@ -334,7 +411,7 @@ class AccountService:
                 node_id=runtime.node_id,
                 request_id=request_id,
                 idempotency_key=key,
-                payload={**(payload or {}), "command_version": runtime.command_version},
+                payload=job_payload,
             )
             add_event(
                 session,

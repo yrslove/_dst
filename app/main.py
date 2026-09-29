@@ -26,7 +26,14 @@ from app.db import Database, migrate, schema_revision
 from app.domain.errors import ControlPlaneError
 from app.domain.state import InvalidStateTransition
 from app.logging_config import configure_logging, request_id_var
-from app.models import Job, JobKind, JobStatus, RuntimeInstance, RuntimeState
+from app.models import (
+    GameplayTask,
+    Job,
+    JobKind,
+    JobStatus,
+    RuntimeInstance,
+    RuntimeState,
+)
 from app.providers.base import ProviderError
 from app.providers.incus_cli import IncusCLIProvider
 from app.providers.mock import MockProvider
@@ -68,7 +75,7 @@ from app.services.views import ViewService, ViewSessionNotFound, ViewSessionNotR
 from app.services.watchdog import Watchdog
 from app.services.workers import WorkerControlError, WorkerControlService
 
-EXPECTED_SCHEMA_REVISION = "0006_worker_remote_view"
+EXPECTED_SCHEMA_REVISION = "0010_long_session"
 logger = logging.getLogger("control_plane")
 
 
@@ -483,13 +490,67 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
                 status_code=409,
                 detail={"code": "ACCOUNT_NOT_READY", "message": str(exc)},
             )
-        return JSONResponse(status_code=202, content={"job": serialize_job(job)})
+        content = {"job": serialize_job(job)}
+        if kind in {JobKind.DAILY_GIFT_CLAIM, JobKind.LONG_SESSION}:
+            content["gameplay_task_id"] = job.payload.get("gameplay_task_id")
+        return JSONResponse(status_code=202, content=content)
 
     @app.post("/api/v1/accounts/{account_id}/start")
     def start_account(account_id: int, request: Request):
         return queue_action(
             account_id, JobKind.START_RUNTIME, request, {"reason": "manual"}
         )
+
+    @app.post("/api/v1/accounts/{account_id}/gameplay/daily-gift", status_code=202)
+    def request_daily_gift_claim(account_id: int, request: Request):
+        return queue_action(account_id, JobKind.DAILY_GIFT_CLAIM, request)
+
+    @app.post("/api/v1/accounts/{account_id}/gameplay/session", status_code=202)
+    def request_long_session(account_id: int, request: Request, payload: dict):
+        duration = payload.get("requested_duration")
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, int)
+            or not 600 <= duration <= 5400
+        ):
+            raise HTTPException(
+                status_code=422, detail="requested_duration must be 600..5400 seconds"
+            )
+        return queue_action(
+            account_id, JobKind.LONG_SESSION, request, {"requested_duration": duration}
+        )
+
+    @app.get("/api/v1/accounts/{account_id}/gameplay/tasks")
+    def gameplay_tasks(account_id: int, request: Request, limit: int = 50):
+        require_admin(request)
+        with db.session() as session:
+            rows = list(
+                session.scalars(
+                    select(GameplayTask)
+                    .where(GameplayTask.account_id == account_id)
+                    .order_by(GameplayTask.id.desc())
+                    .limit(min(max(limit, 1), 100))
+                )
+            )
+            return [
+                {
+                    "id": task.id,
+                    "account_id": task.account_id,
+                    "runtime_id": task.runtime_id,
+                    "worker_run_id": task.worker_run_id,
+                    "kind": task.kind,
+                    "status": task.status,
+                    "started_at": task.started_at.isoformat(),
+                    "updated_at": task.updated_at.isoformat(),
+                    "completed_at": task.completed_at.isoformat()
+                    if task.completed_at
+                    else None,
+                    "result": task.result_json,
+                    "error_code": task.error_code,
+                    "error_message": task.error_message,
+                }
+                for task in rows
+            ]
 
     @app.post("/api/v1/accounts/{account_id}/setup")
     def setup_account(account_id: int, request: Request):

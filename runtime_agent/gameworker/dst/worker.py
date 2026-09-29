@@ -817,7 +817,10 @@ class DSTGameWorker:
     def _observation_interval(self) -> float:
         if self.pipeline is not None and self.pipeline.verification_pending:
             return self.VERIFY_OBSERVATION_INTERVAL_SECONDS
-        configured = min(5.0, max(2.0, self.config.observation_interval))
+        if self._last_observation and self._last_observation.get("screen") == "IN_WORLD_IDLE":
+            configured = min(15.0, max(2.0, self.config.observation_interval))
+        else:
+            configured = min(5.0, max(2.0, self.config.observation_interval))
         return max(self.IDLE_OBSERVATION_INTERVAL_SECONDS, configured)
 
     @property
@@ -982,6 +985,7 @@ class DSTGameWorker:
                 ActionName.PAUSE_WORLD,
                 ActionName.RESUME_WORLD,
                 ActionName.INTERACT,
+                ActionName.HOVER_GIFT_ICON,
             }
         )
 
@@ -1059,6 +1063,13 @@ class DSTGameWorker:
                 "pause_seconds": round(pause_seconds, 3),
                 "actions_count": self._actions_count,
                 "behavior_counters": dict(self.activity.counters),
+                "daily_gift_state": self.activity.daily_gift_state.value,
+                "gift_availability_evidence": self.activity.gift_availability_evidence,
+                "daily_gift_confirmation": (
+                    self.activity.daily_gift_confirmation.as_dict()
+                    if self.activity.daily_gift_confirmation
+                    else None
+                ),
                 "recoveries": self._recoveries,
                 "capture_errors": self._capture_errors,
                 "perception_errors": self._perception_errors,

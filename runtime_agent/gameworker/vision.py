@@ -414,6 +414,29 @@ class VisionDetector:
         )
         self._templates: dict[str, object] = {}
         self._monitor = FrameChangeMonitor()
+        self._gift_hover = None
+
+    def arm_gift_hover(self, frame: Frame, observation: GameObservation) -> None:
+        from runtime_agent.gameworker.gift_icon import HOVER_ROI
+
+        if (
+            observation.screen != DSTScreen.IN_WORLD_IDLE
+            or not observation.production_ready
+            or not observation.is_fresh(self._clock())
+        ):
+            return
+        icon = next((d for d in observation.detections if d.kind == "gift_icon"), None)
+        if icon is None or not icon.detected or not icon.verified:
+            return
+        image = frame.image()
+        self._gift_hover = (
+            self._clock() + 8,
+            frame.runtime_generation,
+            frame.worker_generation,
+            frame.sequence,
+            icon.bounds,
+            image.crop(Viewport(*image.size).region(NormalizedRegion(*HOVER_ROI))),
+        )
 
     def detect(
         self, image, template_id: str, *, deadline: float | None = None
@@ -596,7 +619,6 @@ class VisionDetector:
             for key in (
                 "character_select_title",
                 "character_select_players",
-                "character_select_wilson_name",
                 "character_select_wilson_icon",
             )
         ):
@@ -606,7 +628,6 @@ class VisionDetector:
                 for key in (
                     "character_select_title",
                     "character_select_players",
-                    "character_select_wilson_name",
                     "character_select_wilson_icon",
                 )
             )
@@ -731,7 +752,11 @@ class VisionDetector:
             flags.append("STALE")
         if screen == DSTScreen.UNKNOWN or confidence < self.default_threshold:
             flags.append("UNKNOWN")
-        if any(item.metadata for item in detections):
+        if any(
+            key in {"detector_error", "detector_timeout"}
+            for item in detections
+            for key, _ in item.metadata
+        ):
             flags.append("DETECTOR_ERROR")
         finished = self._clock()
         validity = ObservationValidity.UNKNOWN
@@ -749,6 +774,88 @@ class VisionDetector:
             and confidence >= self.default_threshold
         ):
             validity = ObservationValidity.VALID
+        if (
+            screen == DSTScreen.IN_WORLD_IDLE
+            and validity == ObservationValidity.VALID
+            and calibration.profile_id == "dst-1280x720-linux-v1"
+        ):
+            from runtime_agent.gameworker.gift_icon import (
+                HOVER_ROI,
+                classify_icon,
+                hover_response,
+            )
+
+            icon = detected.get("world_present_banner")
+            active_icon = detected.get("gift_icon_active")
+            if (
+                active_icon is not None
+                and active_icon.verified
+                and active_icon.detected
+            ):
+                icon = active_icon
+            template = self._templates.get("world_present_banner")
+            if icon is not None and template is not None:
+                hovered = False
+                if self._gift_hover is not None:
+                    expires, rg, wg, seq, bounds, before = self._gift_hover
+                    if self._clock() > expires:
+                        self._gift_hover = None
+                    elif (
+                        frame.runtime_generation == rg
+                        and frame.worker_generation == wg
+                        and frame.sequence > seq
+                        and frame.captured_monotonic >= expires - 8
+                        and icon.bounds == bounds
+                    ):
+                        hovered = hover_response(
+                            before,
+                            image.crop(
+                                Viewport(*image.size).region(
+                                    NormalizedRegion(*HOVER_ROI)
+                                )
+                            ),
+                        )
+                evidence = classify_icon(
+                    image,
+                    icon,
+                    template,
+                    active=active_icon,
+                    hover_verified=hovered,
+                )
+                if (
+                    icon.confidence >= 0.94
+                    and evidence.get("chroma_p95", 0) >= 35
+                    and evidence.get("colored_fraction", 0) >= 0.20
+                ):
+                    # Preserve one natural colored candidate; do not infer a claim.
+                    sample = Path("/tmp/dst-gift-active-reference.png")
+                    try:
+                        if not sample.exists():
+                            image.save(sample)
+                            image.crop(Viewport(*image.size).region(icon.bounds)).save(
+                                sample.with_name("dst-gift-active-reference-roi.png")
+                            )
+                        evidence["active_sample_path"] = str(sample)
+                    except OSError:
+                        evidence["active_sample_error"] = "CAPTURE_FAILED"
+                detections += (
+                    Detection(
+                        "gift_icon",
+                        icon.confidence >= 0.85,
+                        icon.confidence,
+                        bounds=icon.bounds,
+                        detector_id="gift-icon-template-chroma",
+                        template_id="world_present_banner",
+                        verified=icon.verified,
+                        metadata=tuple(evidence.items()),
+                    ),
+                    Detection(
+                        "gift_hover_response",
+                        hovered,
+                        1.0 if hovered else 0.0,
+                        verified=True,
+                    ),
+                )
         return GameObservation(
             timestamp=self._wall_clock(),
             observed_monotonic=finished,

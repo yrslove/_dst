@@ -6,6 +6,7 @@ import math
 import time
 from collections import Counter, deque
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import ClassVar, Protocol
 
 from runtime_agent.gameworker.actions import ActionName, ActionResult, ActionStatus
@@ -29,6 +30,35 @@ class ActionProposal:
             raise ValueError("proposal duration is invalid")
         if self.reason is not None and len(self.reason) > 256:
             raise ValueError("proposal reason exceeds bound")
+
+
+class DailyGiftState(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    GIFT_AVAILABILITY_UNKNOWN = "GIFT_AVAILABILITY_UNKNOWN"
+    NO_REWARD_AVAILABLE = "NO_REWARD_AVAILABLE"
+    GIFT_AVAILABLE = "GIFT_AVAILABLE"
+    GIFT_INTERACTION_STARTED = "GIFT_INTERACTION_STARTED"
+    GIFT_UI_OPEN = "GIFT_UI_OPEN"
+    DAILY_GIFT_CONFIRMED = "DAILY_GIFT_CONFIRMED"
+    GIFT_UI_CLOSED = "GIFT_UI_CLOSED"
+
+
+@dataclass(frozen=True, slots=True)
+class DailyGiftConfirmation:
+    semantic: str
+    evidence_frame_id: str
+    evidence_sequence: int
+    observed_at: str
+    action_id: str
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "semantic": self.semantic,
+            "evidence_frame_id": self.evidence_frame_id,
+            "evidence_sequence": self.evidence_sequence,
+            "observed_at": self.observed_at,
+            "action_id": self.action_id,
+        }
 
 
 class Planner(Protocol):
@@ -141,6 +171,14 @@ class ActivityController:
         self._entered_at: float | None = None
         self._awaiting_reward_transition = False
         self._reward_click_attempts = 0
+        self.daily_gift_state = DailyGiftState.UNKNOWN
+        self.daily_gift_confirmation: DailyGiftConfirmation | None = None
+        self.gift_availability_evidence: dict | None = None
+        self._gift_hover_attempted = False
+        self._reward_open_source_sequence: int | None = None
+        self._last_gift_observation_sequence = 0
+        self._last_confirmed_gift_sequence = 0
+        self._confirmed_gift_action_ids: deque[str] = deque(maxlen=32)
         self._dry_run_seen = False
         self.intervention_required = False
         self._recoverable_intervention_action: ActionName | None = None
@@ -190,9 +228,45 @@ class ActivityController:
         if not observation.production_ready:
             self._validation_world_frames = 0
             self._validation_last_world_sequence = None
-            self.counters["unknown_frames"] += 1
-            self._record(observation, "NONE", "unverified observation")
+            self.on_unknown(observation)
             return None
+        icon = next((d for d in observation.detections if d.kind == "gift_icon"), None)
+        if observation.screen == DSTScreen.IN_WORLD_IDLE:
+            if not observation.is_fresh(time.monotonic()):
+                self.on_unknown(observation)
+                return None
+            evidence = dict(icon.metadata) if icon is not None else {}
+            availability = evidence.get("availability", "GIFT_AVAILABILITY_UNKNOWN")
+            if self.daily_gift_confirmation is None and self.daily_gift_state not in {
+                DailyGiftState.GIFT_INTERACTION_STARTED,
+                DailyGiftState.GIFT_UI_OPEN,
+                DailyGiftState.GIFT_UI_CLOSED,
+            }:
+                self.daily_gift_state = DailyGiftState(availability)
+                self.gift_availability_evidence = {
+                    **evidence,
+                    "semantic": availability,
+                    "icon_present": bool(icon and icon.detected and icon.verified),
+                    "identity_confidence": icon.confidence if icon else 0.0,
+                    "evidence_frame_id": observation.source_frame_id,
+                    "evidence_sequence": observation.source_sequence,
+                    "observed_at": observation.timestamp,
+                    "calibration_profile": observation.calibration_profile_id,
+                    "icon_bounds": (
+                        [
+                            icon.bounds.left,
+                            icon.bounds.top,
+                            icon.bounds.right,
+                            icon.bounds.bottom,
+                        ]
+                        if icon and icon.bounds
+                        else None
+                    ),
+                }
+        if observation.source_sequence > self._last_gift_observation_sequence:
+            self._last_gift_observation_sequence = observation.source_sequence
+            if observation.screen == DSTScreen.LOGIN_REWARD_AVAILABLE:
+                self.daily_gift_state = DailyGiftState.GIFT_AVAILABLE
         if observation.screen != self._candidate:
             self._candidate = observation.screen
             self._candidate_frames = 1
@@ -220,6 +294,21 @@ class ActivityController:
         if self.intervention_required:
             self._record(observation, "NONE", "intervention required")
             return None
+        if (
+            self.production_actions_enabled
+            and observation.screen == DSTScreen.IN_WORLD_IDLE
+            and icon is not None
+            and icon.detected
+            and icon.verified
+            and icon.bounds is not None
+            and 0.85 <= icon.confidence < 0.94
+            and not self._gift_hover_attempted
+        ):
+            self._gift_hover_attempted = True
+            return ActionProposal(
+                ActionName.HOVER_GIFT_ICON,
+                reason="verify the localized gift HUD candidate once",
+            )
         if self.validation_flow_enabled and self._validation_host_retry_pending:
             self._validation_host_retry_pending = False
             if (
@@ -262,7 +351,9 @@ class ActivityController:
             ):
                 self._validation_step = 4
                 self._record(
-                    observation, "NONE", "loadout verified after survivor action deadline",
+                    observation,
+                    "NONE",
+                    "loadout verified after survivor action deadline",
                 )
                 return None
             anchor_name = (
@@ -270,13 +361,21 @@ class ActivityController:
                 if observation.screen == DSTScreen.CHARACTER_SELECTION_HOVERED
                 else "character_select_wilson_icon"
             )
-            anchor = next((
-                item for item in observation.detections
-                if item.kind == anchor_name and item.detected and item.verified
-                and item.bounds is not None and item.confidence >= 0.94
-            ), None)
+            anchor = next(
+                (
+                    item
+                    for item in observation.detections
+                    if item.kind == anchor_name
+                    and item.detected
+                    and item.verified
+                    and item.bounds is not None
+                    and item.confidence >= 0.94
+                ),
+                None,
+            )
             if (
-                observation.screen not in {
+                observation.screen
+                not in {
                     DSTScreen.CHARACTER_SELECTION,
                     DSTScreen.CHARACTER_SELECTION_HOVERED,
                 }
@@ -289,7 +388,8 @@ class ActivityController:
             ):
                 self.intervention_required = True
                 self._record(
-                    observation, "NONE",
+                    observation,
+                    "NONE",
                     "survivor retry withheld; fresh unchanged portrait required",
                 )
                 return None
@@ -386,7 +486,9 @@ class ActivityController:
                         ActionName.RESUME_WORLD,
                         reason="resume a visually verified auto-paused world for validation",
                     )
-                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    self._record(
+                        observation, proposal.action.value, proposal.reason or ""
+                    )
                     return proposal
                 if self.state == DSTScreen.HOST_GAME_WORLD_LIST:
                     # Resume from the already-open saved-world list without
@@ -403,13 +505,24 @@ class ActivityController:
                 elif self.state == DSTScreen.IN_WORLD_IDLE:
                     self._validation_step = 3
             route = (
-                (DSTScreen.MAIN_MENU, 0, ActionName.CLICK_HOST_GAME,
-                 "open the detected Host Game menu"),
-                (DSTScreen.HOST_GAME_WORLD_LIST, 1, ActionName.SELECT_EXISTING_WORLD,
-                 "select the detected existing saved world"),
-                (DSTScreen.HOST_GAME_WORLD_SELECTED, 2,
-                 ActionName.START_EXISTING_WORLD,
-                 "start the selected existing world"),
+                (
+                    DSTScreen.MAIN_MENU,
+                    0,
+                    ActionName.CLICK_HOST_GAME,
+                    "open the detected Host Game menu",
+                ),
+                (
+                    DSTScreen.HOST_GAME_WORLD_LIST,
+                    1,
+                    ActionName.SELECT_EXISTING_WORLD,
+                    "select the detected existing saved world",
+                ),
+                (
+                    DSTScreen.HOST_GAME_WORLD_SELECTED,
+                    2,
+                    ActionName.START_EXISTING_WORLD,
+                    "start the selected existing world",
+                ),
             )
             if (
                 self.validation_movement_enabled
@@ -421,28 +534,36 @@ class ActivityController:
                         duration=0.65,
                         reason="verify a short bounded backward movement",
                     )
-                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    self._record(
+                        observation, proposal.action.value, proposal.reason or ""
+                    )
                     return proposal
                 if self._validation_step == 6:
                     proposal = ActionProposal(
                         ActionName.PAUSE_WORLD,
                         reason="return to safe pause after bounded movement validation",
                     )
-                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    self._record(
+                        observation, proposal.action.value, proposal.reason or ""
+                    )
                     return proposal
                 if self._validation_step == 7:
                     proposal = ActionProposal(
                         ActionName.PAUSE_WORLD,
                         reason="return to safe pause after bounded in-world actions",
                     )
-                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    self._record(
+                        observation, proposal.action.value, proposal.reason or ""
+                    )
                     return proposal
                 if self._validation_step == 8:
                     proposal = ActionProposal(
                         ActionName.PAUSE_WORLD,
                         reason="leave DST in a verified safe pause after validation",
                     )
-                    self._record(observation, proposal.action.value, proposal.reason or "")
+                    self._record(
+                        observation, proposal.action.value, proposal.reason or ""
+                    )
                     return proposal
             if self._validation_step == 3:
                 if self.state == DSTScreen.IN_WORLD_IDLE:
@@ -470,7 +591,9 @@ class ActivityController:
                                 ActionName.PAUSE_WORLD,
                                 reason="open the pause menu after four fresh world frames",
                             )
-                        self._record(observation, proposal.action.value, proposal.reason or "")
+                        self._record(
+                            observation, proposal.action.value, proposal.reason or ""
+                        )
                         return proposal
                     else:
                         self._record(
@@ -493,14 +616,16 @@ class ActivityController:
                     required_anchors = {
                         item.kind
                         for item in observation.detections
-                        if item.detected
-                        and item.verified
-                        and item.confidence >= 0.94
+                        if item.detected and item.verified and item.confidence >= 0.94
                     }
-                    if not {
-                        "character_select_wilson_name",
-                        icon,
-                    } <= required_anchors or observation.screen_confidence < 0.94:
+                    if (
+                        not {
+                            "character_select_wilson_name",
+                            icon,
+                        }
+                        <= required_anchors
+                        or observation.screen_confidence < 0.94
+                    ):
                         self._record(
                             observation,
                             "NONE",
@@ -529,7 +654,9 @@ class ActivityController:
                     return None
             if self._validation_step == 4 and self.state == DSTScreen.CHARACTER_LOADOUT:
                 if observation.screen_confidence < 0.94:
-                    self._record(observation, "NONE", "loadout screen confidence insufficient")
+                    self._record(
+                        observation, "NONE", "loadout screen confidence insufficient"
+                    )
                     return None
                 proposal = ActionProposal(
                     ActionName.START_SURVIVOR,
@@ -540,7 +667,11 @@ class ActivityController:
             for source, step, action, reason in route:
                 if self._validation_step == step and self.state == source:
                     if observation.screen_confidence < 0.94:
-                        self._record(observation, "NONE", "validation screen confidence insufficient")
+                        self._record(
+                            observation,
+                            "NONE",
+                            "validation screen confidence insufficient",
+                        )
                         return None
                     if action == ActionName.CLICK_HOST_GAME:
                         self._validation_host_source_sequence = (
@@ -652,30 +783,60 @@ class ActivityController:
         return ActionProposal(action[0], reason=action[1]) if action else None
 
     def on_unknown(self, observation: GameObservation) -> None:
+        if self.daily_gift_state in {
+            DailyGiftState.UNKNOWN,
+            DailyGiftState.GIFT_AVAILABILITY_UNKNOWN,
+            DailyGiftState.NO_REWARD_AVAILABLE,
+            DailyGiftState.GIFT_AVAILABLE,
+        }:
+            self.daily_gift_state = DailyGiftState.GIFT_AVAILABILITY_UNKNOWN
+            self.gift_availability_evidence = None
         self.counters["unknown_frames"] += 1
         self._record(observation, "NONE", "unverified or unknown screen")
 
     def on_action_result(
         self, observation: GameObservation, result: ActionResult
     ) -> ActionResult:
+        if result.action == ActionName.HOVER_GIFT_ICON:
+            # Verification failure leaves availability unknown; never retry or click.
+            self._record(
+                observation,
+                result.action.value,
+                "bounded gift hover",
+                result.status.value,
+            )
+            return result
         if result.action in {
-            ActionName.CLICK_REWARD_OPEN, ActionName.CLICK_OPTIONS,
-            ActionName.CLICK_REWARD_CLOSE, ActionName.CLICK_BACK,
+            ActionName.CLICK_REWARD_OPEN,
+            ActionName.CLICK_OPTIONS,
+            ActionName.CLICK_REWARD_CLOSE,
+            ActionName.CLICK_BACK,
             ActionName.DISCARD_OPTIONS,
-            ActionName.CLICK_HOST_GAME, ActionName.SELECT_SURVIVAL,
-            ActionName.SELECT_NO_CAVES, ActionName.SELECT_EXISTING_WORLD,
+            ActionName.CLICK_HOST_GAME,
+            ActionName.SELECT_SURVIVAL,
+            ActionName.SELECT_NO_CAVES,
+            ActionName.SELECT_EXISTING_WORLD,
             ActionName.START_EXISTING_WORLD,
             ActionName.CONFIRM_MODS_DISABLED,
             ActionName.SELECT_SURVIVOR,
             ActionName.START_SURVIVOR,
-            ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
-            ActionName.CANCEL, ActionName.RESUME_WORLD,
+            ActionName.MOVE_FORWARD,
+            ActionName.MOVE_BACKWARD,
+            ActionName.CANCEL,
+            ActionName.RESUME_WORLD,
             ActionName.PAUSE_WORLD,
             ActionName.INTERACT,
         }:
             if result.status == ActionStatus.VERIFYING:
                 self.counters["active_actions"] += 1
                 self._awaiting_reward_transition = True
+                if result.action == ActionName.CLICK_REWARD_OPEN:
+                    self._reward_open_source_sequence = observation.source_sequence
+                    self._last_gift_observation_sequence = max(
+                        self._last_gift_observation_sequence,
+                        observation.source_sequence,
+                    )
+                    self.daily_gift_state = DailyGiftState.GIFT_INTERACTION_STARTED
             elif result.status == ActionStatus.SUPPRESSED:
                 self._dry_run_seen = True
             elif result.status not in {ActionStatus.PREEMPTED} and result.terminal:
@@ -697,10 +858,65 @@ class ActivityController:
         return result
 
     def on_verified(self, observation: GameObservation, result: ActionResult) -> None:
+        if result.action == ActionName.HOVER_GIFT_ICON:
+            if result.status != ActionStatus.SUCCEEDED:
+                self.on_unknown(observation)
+            return
         self._awaiting_reward_transition = False
         if result.status == ActionStatus.SUCCEEDED:
             self.counters["verified_actions"] += 1
             self.state = observation.screen
+            new_gift_observation = (
+                observation.source_sequence > self._last_gift_observation_sequence
+            )
+            if new_gift_observation:
+                self._last_gift_observation_sequence = observation.source_sequence
+            if result.action == ActionName.CLICK_REWARD_OPEN and new_gift_observation:
+                if observation.screen == DSTScreen.REWARD_RESULT:
+                    if observation.source_sequence > self._last_confirmed_gift_sequence:
+                        self.daily_gift_state = DailyGiftState.GIFT_UI_OPEN
+                    result_title = any(
+                        item.kind == "login_reward_result_title"
+                        and item.detected
+                        and item.verified
+                        for item in observation.detections
+                    )
+                    close_anchor = any(
+                        item.kind == "login_reward_close_button"
+                        and item.detected
+                        and item.verified
+                        for item in observation.detections
+                    )
+                    if (
+                        result_title
+                        and close_anchor
+                        and observation.production_ready
+                        and self._reward_open_source_sequence is not None
+                        and observation.source_sequence
+                        > self._reward_open_source_sequence
+                        and observation.source_sequence
+                        > self._last_confirmed_gift_sequence
+                        and result.action_id not in self._confirmed_gift_action_ids
+                    ):
+                        self.daily_gift_state = DailyGiftState.DAILY_GIFT_CONFIRMED
+                        self.daily_gift_confirmation = DailyGiftConfirmation(
+                            semantic=DailyGiftState.DAILY_GIFT_CONFIRMED.value,
+                            evidence_frame_id=observation.source_frame_id,
+                            evidence_sequence=observation.source_sequence,
+                            observed_at=observation.timestamp,
+                            action_id=result.action_id,
+                        )
+                        self._last_confirmed_gift_sequence = observation.source_sequence
+                        self._confirmed_gift_action_ids.append(result.action_id)
+                        self.counters["reward_claimed"] += 1
+                        self.counters["gift_claimed"] += 1
+                elif observation.screen == DSTScreen.MAIN_MENU:
+                    self.daily_gift_state = DailyGiftState.GIFT_UI_CLOSED
+                self._reward_open_source_sequence = None
+            elif (
+                result.action == ActionName.CLICK_REWARD_CLOSE and new_gift_observation
+            ):
+                self.daily_gift_state = DailyGiftState.GIFT_UI_CLOSED
             if self.validation_flow_enabled:
                 validation_steps = {
                     ActionName.CLICK_HOST_GAME: 1,
@@ -710,9 +926,13 @@ class ActivityController:
                     self._validation_step = expected
                 elif result.action == ActionName.SELECT_EXISTING_WORLD:
                     self._validation_step = (
-                        3 if observation.screen in {
-                            DSTScreen.LOADING, DSTScreen.IN_WORLD_IDLE,
-                        } else 2
+                        3
+                        if observation.screen
+                        in {
+                            DSTScreen.LOADING,
+                            DSTScreen.IN_WORLD_IDLE,
+                        }
+                        else 2
                     )
                 elif (
                     result.action == ActionName.START_EXISTING_WORLD
@@ -739,10 +959,10 @@ class ActivityController:
                     and self._validation_step == 7
                 ):
                     self._validation_step = 8
-                elif (
-                    self.validation_flow_enabled
-                    and result.action in {ActionName.CANCEL, ActionName.PAUSE_WORLD}
-                ):
+                elif self.validation_flow_enabled and result.action in {
+                    ActionName.CANCEL,
+                    ActionName.PAUSE_WORLD,
+                }:
                     self.validation_complete = True
                 elif result.action == ActionName.RESUME_WORLD:
                     self._validation_step = 3
@@ -755,7 +975,8 @@ class ActivityController:
                 and result.action == ActionName.CLICK_HOST_GAME
                 and result.status == ActionStatus.TIMED_OUT
                 and not self._production_host_retry_used
-                and result.reason in {
+                and result.reason
+                in {
                     "verified transition deadline elapsed",
                     "fresh unchanged MAIN_MENU proves Host Game click had no effect",
                 }
@@ -808,7 +1029,8 @@ class ActivityController:
             self.validation_flow_enabled
             and result.action == ActionName.CLICK_HOST_GAME
             and result.status == ActionStatus.TIMED_OUT
-            and result.reason in {
+            and result.reason
+            in {
                 "verified transition deadline elapsed",
                 "fresh unchanged MAIN_MENU proves Host Game click had no effect",
             }

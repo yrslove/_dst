@@ -72,9 +72,14 @@ class Settings:
     background_workers: bool = True
     runtime_view_provider: str = "disabled"
     view_session_ttl_seconds: int = 300
+    session_storage_path: str = "."
+    runtime_safe_idle_world: bool = False
+    session_min_free_bytes: int = 2 * 1024**3
     runtime_display: str = ":99"
     runtime_xauthority: str | None = None
     runtime_worker_plugin: str = "dst"
+    runtime_worker_calibration_profile: str = "dst-1280x720-linux-v1"
+    runtime_worker_calibration_verified: bool = False
     runtime_auto_launch_steam: bool = False
     runtime_auto_launch_dst: bool = False
     runtime_steam_command: str | None = None
@@ -82,6 +87,10 @@ class Settings:
     runtime_display_readiness_timeout_seconds: float = 15
     runtime_steam_readiness_timeout_seconds: float = 120
     runtime_dst_readiness_timeout_seconds: float = 300
+    gameplay_readiness_timeout_seconds: float = 330
+    gameplay_observation_timeout_seconds: float = 90
+    gameplay_execution_timeout_seconds: float = 900
+    gameplay_poll_interval_seconds: float = 2
     scheduler_leader_lease_seconds: int = 15
 
     @classmethod
@@ -147,9 +156,20 @@ class Settings:
                 "RUNTIME_VIEW_PROVIDER", "disabled"
             ).lower(),
             view_session_ttl_seconds=int(os.getenv("VIEW_SESSION_TTL_SECONDS", "300")),
+            session_storage_path=os.getenv("SESSION_STORAGE_PATH", "."),
+            runtime_safe_idle_world=_bool("RUNTIME_SAFE_IDLE_WORLD", False),
+            session_min_free_bytes=int(
+                os.getenv("SESSION_MIN_FREE_BYTES", str(2 * 1024**3))
+            ),
             runtime_display=os.getenv("RUNTIME_DISPLAY", os.getenv("DISPLAY", ":99")),
             runtime_xauthority=os.getenv("RUNTIME_XAUTHORITY") or None,
             runtime_worker_plugin=os.getenv("RUNTIME_WORKER_PLUGIN", "dst").lower(),
+            runtime_worker_calibration_profile=os.getenv(
+                "RUNTIME_WORKER_CALIBRATION_PROFILE", "dst-1280x720-linux-v1"
+            ),
+            runtime_worker_calibration_verified=_bool(
+                "RUNTIME_WORKER_CALIBRATION_VERIFIED", False
+            ),
             runtime_auto_launch_steam=_bool("RUNTIME_AUTO_LAUNCH_STEAM", False),
             runtime_auto_launch_dst=_bool("RUNTIME_AUTO_LAUNCH_DST", False),
             runtime_steam_command=os.getenv("RUNTIME_STEAM_COMMAND") or None,
@@ -162,6 +182,18 @@ class Settings:
             ),
             runtime_dst_readiness_timeout_seconds=float(
                 os.getenv("RUNTIME_DST_READINESS_TIMEOUT_SECONDS", "300")
+            ),
+            gameplay_readiness_timeout_seconds=float(
+                os.getenv("GAMEPLAY_READINESS_TIMEOUT_SECONDS", "330")
+            ),
+            gameplay_observation_timeout_seconds=float(
+                os.getenv("GAMEPLAY_OBSERVATION_TIMEOUT_SECONDS", "90")
+            ),
+            gameplay_execution_timeout_seconds=float(
+                os.getenv("GAMEPLAY_EXECUTION_TIMEOUT_SECONDS", "900")
+            ),
+            gameplay_poll_interval_seconds=float(
+                os.getenv("GAMEPLAY_POLL_INTERVAL_SECONDS", "2")
             ),
             scheduler_leader_lease_seconds=int(
                 os.getenv("SCHEDULER_LEADER_LEASE_SECONDS", "15")
@@ -177,6 +209,8 @@ class Settings:
         return self.database_url.startswith("sqlite")
 
     def validate(self) -> None:
+        if self.session_min_free_bytes < 256 * 1024**2:
+            raise ConfigurationError("SESSION_MIN_FREE_BYTES must be at least 256 MiB")
         if self.environment not in {"development", "test", "production"}:
             raise ConfigurationError(
                 "ENVIRONMENT must be development, test, or production"
@@ -191,9 +225,10 @@ class Settings:
             raise ConfigurationError("RUNTIME_WORKER_PLUGIN must be noop or dst")
         if not re.fullmatch(r":[0-9]{1,4}(?:\.[0-9]+)?", self.runtime_display):
             raise ConfigurationError("RUNTIME_DISPLAY must identify a local X server")
-        if self.runtime_xauthority and not PurePosixPath(
+        if (
             self.runtime_xauthority
-        ).is_absolute():
+            and not PurePosixPath(self.runtime_xauthority).is_absolute()
+        ):
             raise ConfigurationError("RUNTIME_XAUTHORITY must be an absolute path")
         if self.runtime_auto_launch_dst and not self.runtime_auto_launch_steam:
             raise ConfigurationError(
@@ -211,7 +246,9 @@ class Settings:
             steam_command = tuple(shlex.split(self.runtime_steam_command or ""))
             dst_command = tuple(shlex.split(self.runtime_dst_command or ""))
         except ValueError as exc:
-            raise ConfigurationError("runtime launcher command has invalid quoting") from exc
+            raise ConfigurationError(
+                "runtime launcher command has invalid quoting"
+            ) from exc
         if self.runtime_auto_launch_steam and steam_command == ("steam", "-silent"):
             raise ConfigurationError(
                 "RUNTIME_STEAM_COMMAND must be a readiness-aware launcher"
@@ -262,6 +299,10 @@ class Settings:
             "runtime_display_readiness_timeout_seconds",
             "runtime_steam_readiness_timeout_seconds",
             "runtime_dst_readiness_timeout_seconds",
+            "gameplay_readiness_timeout_seconds",
+            "gameplay_observation_timeout_seconds",
+            "gameplay_execution_timeout_seconds",
+            "gameplay_poll_interval_seconds",
         ):
             if getattr(self, name) <= 0:
                 raise ConfigurationError(f"{name} must be positive")
