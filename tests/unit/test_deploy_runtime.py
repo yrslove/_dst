@@ -26,6 +26,7 @@ def test_runtime_manifest_excludes_non_runtime_content() -> None:
     assert "runtime_agent/gameworker/dst/assets/manifest.json" in paths
     assert "runtime_agent/gameworker/dst/assets/main_menu_host_game.png" in paths
     assert "app/runtime/display.py" in paths
+    assert "app/runtime/world_profile.py" in paths
     assert "app/subprocess_env.py" in paths
     assert "app/runtime/bootstrap.py" not in paths
     assert not any(
@@ -75,3 +76,4 @@ def test_guest_metadata_without_a_commit_is_rejected() -> None:
 def test_guest_helpers_are_valid_python() -> None:
     compile(GUEST_INSTALLER, "<guest-installer>", "exec")
     compile(GUEST_PROBE, "<guest-probe>", "exec")
+    assert '"app/runtime/world_profile.py"' in GUEST_INSTALLER

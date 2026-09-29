@@ -196,7 +196,13 @@ try:
             moved.append((target, old, False))
             os.replace(staged, target)
             moved[-1] = (target, old, True)
-        for name in ("app/__init__.py", "app/subprocess_env.py", "app/runtime/__init__.py", "app/runtime/display.py"):
+        for name in (
+            "app/__init__.py",
+            "app/subprocess_env.py",
+            "app/runtime/__init__.py",
+            "app/runtime/display.py",
+            "app/runtime/world_profile.py",
+        ):
             target, staged_file = root / name, stage / name
             if not target.is_file() or not staged_file.is_file(): raise RuntimeError("runtime module missing: " + name)
             old = backup / name
