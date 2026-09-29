@@ -55,6 +55,17 @@ world, a vanilla Science Machine near the operating position, and minimal requir
 gameplay. Avoid building navigation/crafting/survival AI merely to recreate
 infrastructure that can persist in the world.
 
+LIVE_PROVEN on 2026-09-29: Farm 01's latest Master save contains exactly one vanilla
+`researchlab` at `(112, -54)`, and a fresh canonical 1280x720 frame after normal load
+showed it at the operating position. `Master/modoverrides.lua` is empty; the temporary
+provisioning mod is not enabled. The saved entity record has no GUID field; the prior
+live GUID was `127121`. Future gift work must reuse this machine and must not provision,
+build, or search for another one.
+
+The loaded Farm 01 screen currently shows the all-dead reset countdown. GameWorker is
+DISABLED; no world reset was triggered. A fresh `IN_WORLD_IDLE` observation was not
+reached during this persistence proof.
+
 ## Current blockers
 
 - The production fixed-coordinate path
@@ -71,7 +82,8 @@ infrastructure that can persist in the world.
 - Fixed menu click locations must continue to come from
   `dst-1280x720-linux-v1`; do not return to dynamic anchor localization for these
   controls unless the supported display profile changes.
-- Farm 01 has not been verified with a persistent Science Machine near the player.
+- The recent Farm 01 load showed the all-dead reset countdown rather than
+  `IN_WORLD_IDLE`; resolve through existing death/reset recovery before gameplay.
 - The first actionable gift frame has not yet been captured.
 - In-world gift actions/contracts are not implemented.
 - The production gift behavior remains future work; the gift loop is still pending.
@@ -85,6 +97,9 @@ infrastructure that can persist in the world.
 - Recoverable worker intervention no longer rewrites configured ACTIVE intent to
   DISABLED. Unsafe states suppress action execution until observation or recovery is
   verified.
+- Mods Disabled confirmation is supported by fixed production UI handling; the
+  deployed confirmation action cleared the live modal and its fresh verification
+  observed the transition.
 - The canonical host-to-guest application deployment path is implemented and
   LIVE_PROVEN; the guest reports revision
   `67e957f3cd939eb48cb2c7bc60243cb106a7d6ad`. The post-recovery-change production
