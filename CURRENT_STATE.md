@@ -177,9 +177,12 @@ claim validation remains pending. Rollback resources remain preserved.
 - The first actionable gift frame has not yet been captured.
 - Stage 1 live status remains `STAGE_1_LIVE_VALIDATION_PENDING`: a live actionable
   reward must still be claimed and confirmed.
-- Safe built-in settings applied by bootstrap reverted to original defaults after
-  existing-world entry. A 10-minute idle session completed, but does not validate
-  survival with that profile; the 75–90 minute soak is gated on resolving this.
+- Safe world profile ownership and current-process configuration evidence are now
+  implemented and passed a 10-minute live session on 2026-09-29. The short run proves
+  managed world entry, fresh config/process evidence, 51 in-world checkpoints, and
+  clean stop; it does not prove the settings' gameplay effects. Do not start the
+  75–90 minute soak until the profile's effect on the existing world is separately
+  established.
 - Active Control Plane SQLite schema is `0010_long_session`; PostgreSQL migration
   has not been tested.
 - The in-world path still needs recorded evidence of (1) an enabled present beside the
@@ -391,8 +394,42 @@ icon does not establish that safe settings disable rewards. No 6–10 hour soak 
 Implementation and focused/regression tests are in the checkpoint. The requested
 targeted suite passed 194 tests. Ruff passed; `git diff --check` passed. Format check
 passed for 21 changed Python files; seven files retain formatting drift and were
-left untouched. The immediate continuation is to make built-in settings survive
-canonical existing-world entry and verify them live before another soak.
+left untouched. The safe-profile ownership and evidence blocker was closed in Stage
+4A.2 below; reward eligibility and longer survival validation remain separate.
+
+## Stage 4A.2 — safe world config ownership and live evidence (2026-09-29)
+
+The installed DST build is `747465` (Steam build ID `24700692`). Its
+`scripts/tools/generate_worldgenoverride.lua` writes `worldgenoverride.lua` with
+`override_enabled` and partial `overrides`; `scripts/map/customize.lua` exposes the
+safe profile's keys and values. The prepared world's `Master/leveldataoverride.lua`
+is a complete saved level definition and is no longer the safe-profile ownership
+layer.
+
+The canonical safe profile now renders deterministically to the cluster-level
+`worldgenoverride.lua`. Runtime Agent reconciliation runs in the existing DST
+`ProcessSupervisor.before_start` path on every launch/restart and is idempotent.
+Post-ready evidence carries desired/applied SHA-256, account/runtime ID and generation,
+cluster path, DST PID/start ticks, process generation, and verification timestamp.
+Runtime Agent refreshes that evidence only after checking the current file and process
+identity; the Control Plane checks it against the current runtime before admitting
+worker activation. `LongSession` also rejects missing, stale, mismatched, or unverified
+evidence throughout monitoring. The evidence explicitly records that world behavior
+is not verified.
+
+Live validation deployed revision `db938d55ab4f3f1a66fb9ae33e3907c0c2ce512d`, then
+used managed STOP/START. Fresh guest and Control Plane hashes matched
+`c6a17368c19966a901c778b70a8b4b9b28ba71615034f4a183543c83908c1b83` for runtime 1,
+generation 1, DST PID 891/start ticks 5149068. `LONG_SESSION` entered the prepared
+world and completed its 600-second monitoring budget with 51 checkpoints and zero
+recoveries. It finished `TIME_BUDGET_REACHED`; GameWorker ended DISABLED with no held
+inputs, and managed STOP returned runtime 1 to STOPPED. The post-stop
+`worldgenoverride.lua` hash still matched. This proves configuration-file/process
+evidence and short unattended operation, not that DST applied each setting to the
+existing save or that those settings guarantee survival/reward eligibility.
+
+Focused tests passed (26); Ruff and `git diff --check` passed. The work is committed
+and pushed to `main` in `43edc8b` and deployment fix `db938d5`.
 
 ## Do not do now
 
