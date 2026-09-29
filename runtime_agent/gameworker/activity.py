@@ -58,6 +58,7 @@ class ActivityController:
             DSTScreen.MAIN_MENU,
             DSTScreen.HOST_GAME_WORLD_LIST,
             DSTScreen.HOST_GAME_WORLD_SELECTED,
+            DSTScreen.MODS_DISABLED_CONFIRMATION,
             DSTScreen.CHARACTER_SELECTION,
             DSTScreen.CHARACTER_SELECTION_HOVERED,
             DSTScreen.CHARACTER_LOADOUT,
@@ -69,6 +70,7 @@ class ActivityController:
             ActionName.CLICK_HOST_GAME,
             ActionName.SELECT_EXISTING_WORLD,
             ActionName.START_EXISTING_WORLD,
+            ActionName.CONFIRM_MODS_DISABLED,
             ActionName.SELECT_SURVIVOR,
             ActionName.START_SURVIVOR,
         }
@@ -95,6 +97,7 @@ class ActivityController:
         ),
         ActionName.START_EXISTING_WORLD: frozenset(
             {
+                DSTScreen.MODS_DISABLED_CONFIRMATION,
                 DSTScreen.CHARACTER_SELECTION,
                 DSTScreen.CHARACTER_SELECTION_HOVERED,
                 DSTScreen.CHARACTER_LOADOUT,
@@ -628,6 +631,10 @@ class ActivityController:
                 ActionName.START_EXISTING_WORLD,
                 "resume Farm 01 using the fixed UI profile",
             ),
+            DSTScreen.MODS_DISABLED_CONFIRMATION: (
+                ActionName.CONFIRM_MODS_DISABLED,
+                "confirm the verified missing-mod warning using the fixed UI profile",
+            ),
             DSTScreen.CHARACTER_SELECTION: (
                 ActionName.SELECT_SURVIVOR,
                 "select Wilson using the fixed UI profile",
@@ -658,6 +665,7 @@ class ActivityController:
             ActionName.CLICK_HOST_GAME, ActionName.SELECT_SURVIVAL,
             ActionName.SELECT_NO_CAVES, ActionName.SELECT_EXISTING_WORLD,
             ActionName.START_EXISTING_WORLD,
+            ActionName.CONFIRM_MODS_DISABLED,
             ActionName.SELECT_SURVIVOR,
             ActionName.START_SURVIVOR,
             ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,

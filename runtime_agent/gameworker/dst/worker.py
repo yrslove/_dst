@@ -971,6 +971,7 @@ class DSTGameWorker:
                 ActionName.CLICK_HOST_GAME,
                 ActionName.SELECT_EXISTING_WORLD,
                 ActionName.START_EXISTING_WORLD,
+                ActionName.CONFIRM_MODS_DISABLED,
                 ActionName.SELECT_SURVIVOR,
                 ActionName.START_SURVIVOR,
                 ActionName.MOVE_FORWARD,

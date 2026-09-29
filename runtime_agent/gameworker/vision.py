@@ -41,6 +41,7 @@ class DSTScreen(StrEnum):
     REWARD_RESULT = "REWARD_RESULT"
     HOST_GAME_WORLD_LIST = "HOST_GAME_WORLD_LIST"
     HOST_GAME_WORLD_SELECTED = "HOST_GAME_WORLD_SELECTED"
+    MODS_DISABLED_CONFIRMATION = "MODS_DISABLED_CONFIRMATION"
     HOST_GAME_PLAYSTYLE = "HOST_GAME_PLAYSTYLE"
     HOST_GAME_CAVES_PROMPT = "HOST_GAME_CAVES_PROMPT"
     IN_WORLD_IDLE = "IN_WORLD_IDLE"
@@ -539,6 +540,12 @@ class VisionDetector:
         elif all(found(key) for key in discard_anchors):
             screen = DSTScreen.OPTIONS_DISCARD_CONFIRM
             confidence = min(detected[key].confidence for key in discard_anchors)
+        elif found("mods_disabled_title") and found("mods_disabled_continue"):
+            screen = DSTScreen.MODS_DISABLED_CONFIRMATION
+            confidence = min(
+                detected["mods_disabled_title"].confidence,
+                detected["mods_disabled_continue"].confidence,
+            )
         elif found("login_reward_result_title") and found(reward_close):
             screen = DSTScreen.REWARD_RESULT
             confidence = min(

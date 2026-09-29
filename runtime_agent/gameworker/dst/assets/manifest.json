@@ -3,6 +3,34 @@
   "profile": "dst-1280x720-linux-v1",
   "templates": [
     {
+      "id": "mods_disabled_title",
+      "filename": "mods_disabled_title.png",
+      "expected_region": [
+        0.3,
+        0.04,
+        0.7,
+        0.18
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Warning title on the observed disabled-mod confirmation",
+      "verified": true
+    },
+    {
+      "id": "mods_disabled_continue",
+      "filename": "mods_disabled_continue.png",
+      "expected_region": [
+        0.28,
+        0.7,
+        0.54,
+        0.89
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Continue button on the observed disabled-mod confirmation",
+      "verified": true
+    },
+    {
       "id": "game_hud",
       "filename": "game_hud_inventory_slot.png",
       "expected_region": [

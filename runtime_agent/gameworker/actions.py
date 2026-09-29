@@ -44,6 +44,7 @@ class ActionName(StrEnum):
     CLICK_HOST_GAME = "CLICK_HOST_GAME"
     SELECT_EXISTING_WORLD = "SELECT_EXISTING_WORLD"
     START_EXISTING_WORLD = "START_EXISTING_WORLD"
+    CONFIRM_MODS_DISABLED = "CONFIRM_MODS_DISABLED"
     SELECT_SURVIVOR = "SELECT_SURVIVOR"
     START_SURVIVOR = "START_SURVIVOR"
     SELECT_SURVIVAL = "SELECT_SURVIVAL"
@@ -184,6 +185,7 @@ CLICK_REGIONS = {
     # Match the selected-world Resume World detector region. The click point is
     # still resolved from that live template detection; this is only its guard.
     ActionName.START_EXISTING_WORLD: (0.74, 0.89, 0.94, 0.99),
+    ActionName.CONFIRM_MODS_DISABLED: (0.32, 0.75, 0.50, 0.84),
     ActionName.SELECT_SURVIVOR: (0.25, 0.14, 0.42, 0.37),
     ActionName.START_SURVIVOR: (0.81, 0.9, 0.97, 0.98),
     ActionName.SELECT_SURVIVAL: (0.40, 0.35, 0.60, 0.67),

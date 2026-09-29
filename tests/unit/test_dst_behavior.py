@@ -154,6 +154,31 @@ def test_active_production_world_entry_uses_fixed_profile_targets_without_valida
         assert policy._validation_step == 77
 
 
+def test_production_confirms_only_the_verified_mods_disabled_dialog():
+    image = Image.new("RGB", (1280, 720), "black")
+    image.paste(Image.open(ASSETS / "mods_disabled_title.png"), (490, 64))
+    image.paste(Image.open(ASSETS / "mods_disabled_continue.png"), (424, 553))
+    modal = analyze_image(image, "mods-disabled-1", 60)
+    assert modal.screen == DSTScreen.MODS_DISABLED_CONFIRMATION
+    assert modal.screen_confidence >= 0.94
+
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(modal) is None
+    proposal = policy.propose(
+        replace(modal, source_frame_id="mods-disabled-2", source_sequence=61)
+    )
+    assert proposal is not None
+    assert proposal.action == ActionName.CONFIRM_MODS_DISABLED
+    point, viewport = click_request(proposal.action, modal)
+    assert point == DST_FIXED_1280X720.point("MODS_DISABLED_CONTINUE", 1280, 720)
+    assert viewport.width == 1280 and viewport.height == 720
+
+    title_only = Image.new("RGB", (1280, 720), "black")
+    title_only.paste(Image.open(ASSETS / "mods_disabled_title.png"), (490, 64))
+    assert analyze_image(title_only, "not-mods-disabled", 62).screen == DSTScreen.UNKNOWN
+
+
 def test_production_world_entry_ignores_non_entry_states_and_requires_active_gate():
     menu = analyze_image(
         Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),

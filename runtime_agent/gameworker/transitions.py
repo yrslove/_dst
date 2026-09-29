@@ -112,10 +112,18 @@ CONTRACTS = {
         frozenset({DSTScreen.HOST_GAME_WORLD_SELECTED}),
         frozenset({
             DSTScreen.LOADING,
+            DSTScreen.MODS_DISABLED_CONFIRMATION,
             DSTScreen.CHARACTER_SELECTION,
             DSTScreen.IN_WORLD_IDLE,
         }),
         timeout=120.0,
+    ),
+    ActionName.CONFIRM_MODS_DISABLED: ActionContract(
+        ("mods_disabled_continue",),
+        frozenset({DSTScreen.MODS_DISABLED_CONFIRMATION}),
+        frozenset({DSTScreen.HOST_GAME_WORLD_SELECTED}),
+        timeout=15.0,
+        stable_observations=2,
     ),
     # The Redux lobby advances from Survivor Select when Wilson's portrait is
     # clicked. The pointer can leave its gold hover border visible while the

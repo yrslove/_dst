@@ -15,6 +15,7 @@ from runtime_agent.gameworker.actions import (
 )
 from runtime_agent.gameworker.config import InputBindings, WorkerConfig, WorkerMode
 from runtime_agent.gameworker.dst.worker import DSTGameWorker
+from runtime_agent.gameworker.fixed_ui import DST_FIXED_1280X720
 from runtime_agent.gameworker.geometry import NormalizedPoint, Viewport
 from runtime_agent.gameworker.input import (
     DeadmanSafety,
@@ -562,6 +563,29 @@ def test_start_existing_world_guard_accepts_saved_live_resume_anchor():
     assert result.status == ActionStatus.SENT
     assert driver.events[0].operation == "mouse_move"
     assert driver.events[1].value == viewport.point(point)
+
+
+def test_mods_disabled_confirmation_uses_the_fixed_profile_continue_point():
+    value, controller, driver, _deadman = executor(
+        allowed_actions=frozenset({ActionName.CONFIRM_MODS_DISABLED})
+    )
+    point = DST_FIXED_1280X720.point("MODS_DISABLED_CONTINUE", 1280, 720)
+    request = Action(
+        "confirm-missing-mod",
+        ActionName.CONFIRM_MODS_DISABLED,
+        7,
+        3,
+        runtime_id=2,
+        deadline=time.monotonic() + 0.9,
+        parameters=(("x", point.x), ("y", point.y), ("width", 1280), ("height", 720)),
+    )
+
+    result = value.execute(request)
+    value.shutdown()
+
+    assert result.status == ActionStatus.SENT
+    assert driver.events[1].value == Viewport(1280, 720).point(point)
+    assert not controller.has_held_inputs
 
 
 def test_parent_emergency_release_attempts_every_binding_independently(monkeypatch):

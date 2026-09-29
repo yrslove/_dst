@@ -1,4 +1,5 @@
 """Real saved frames exercise the generic action outcome contract."""
+import time
 from dataclasses import replace
 
 import pytest
@@ -26,6 +27,13 @@ from runtime_agent.gameworker.vision import (
 def frame(name, sequence):
     return analyze_image(Image.open(ASSETS / "samples" / name).convert("RGB"),
                          f"frame-{sequence}", sequence)
+
+
+def mods_disabled_frame(sequence):
+    image = Image.new("RGB", (1280, 720), "black")
+    image.paste(Image.open(ASSETS / "mods_disabled_title.png"), (490, 64))
+    image.paste(Image.open(ASSETS / "mods_disabled_continue.png"), (424, 553))
+    return analyze_image(image, f"mods-disabled-{sequence}", sequence)
 
 
 def hovered_survivor(sequence):
@@ -447,8 +455,9 @@ def test_supported_fixed_ui_profile_resolves_all_world_entry_targets():
         ActionName.CLICK_HOST_GAME: frame("main_menu_after_reward.png", 1),
         ActionName.SELECT_EXISTING_WORLD: frame("host_game_world_list_live.png", 2),
         ActionName.START_EXISTING_WORLD: frame("host_game_world_selected_live.png", 3),
-        ActionName.SELECT_SURVIVOR: frame("character_selection_live.png", 4),
-        ActionName.START_SURVIVOR: frame("character_loadout_live.png", 5),
+        ActionName.CONFIRM_MODS_DISABLED: mods_disabled_frame(4),
+        ActionName.SELECT_SURVIVOR: frame("character_selection_live.png", 5),
+        ActionName.START_SURVIVOR: frame("character_loadout_live.png", 6),
     }
     assert set(FIXED_UI_ACTION_TARGETS) == {action.value for action in frames}
     for action, observation in frames.items():
@@ -483,3 +492,21 @@ def test_start_survivor_uses_fixed_point_and_still_requires_fresh_verification()
     lifecycle = ActionLifecycle(clock=lambda: loadout.observed_monotonic + 0.001)
     assert lifecycle.begin(sent(ActionName.START_SURVIVOR), loadout).status == ActionStatus.VERIFYING
     assert lifecycle.observe(loadout) is None
+
+
+def test_start_world_accepts_mod_warning_then_verifies_its_single_confirmation():
+    selected = frame("host_game_world_selected_live.png", 1)
+    lifecycle = ActionLifecycle(clock=lambda: time.monotonic() + 0.001)
+    assert lifecycle.begin(sent(ActionName.START_EXISTING_WORLD), selected).status == ActionStatus.VERIFYING
+    modal = mods_disabled_frame(2)
+    modal2 = replace(modal, source_sequence=3, source_frame_id="mods-disabled-3")
+    assert lifecycle.observe(modal) is None
+    result = lifecycle.observe(modal2)
+    assert result is not None and result.status == ActionStatus.SUCCEEDED
+
+    assert lifecycle.begin(sent(ActionName.CONFIRM_MODS_DISABLED), modal2).status == ActionStatus.VERIFYING
+    selected4 = frame("host_game_world_selected_live.png", 4)
+    selected5 = frame("host_game_world_selected_live.png", 5)
+    assert lifecycle.observe(selected4) is None
+    result = lifecycle.observe(selected5)
+    assert result is not None and result.status == ActionStatus.SUCCEEDED
