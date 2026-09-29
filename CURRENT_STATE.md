@@ -60,8 +60,9 @@ infrastructure that can persist in the world.
 - The canonical Host Game action remained in `VERIFYING` while a fresh screen still
   showed `MAIN_MENU`; no blind retry was made. Live evidence is preserved outside the
   repository at `/home/dst/Farm01-gift-path-blocker*`.
-- The pushed fixed-coordinate profile and production world-entry policy still need
-  deployment to the active runtime and a live acceptance run.
+- The fixed-coordinate profile and production world-entry policy were deployed to the
+  active runtime at revision `cfcdcd3a81a525d7dfd0468813eb200a132bc118`; gameplay
+  acceptance remains pending.
 - Farm 01 has not been verified with a persistent Science Machine near the player.
 - The first actionable gift frame has not yet been captured.
 - In-world gift actions/contracts are not implemented.
@@ -76,6 +77,10 @@ infrastructure that can persist in the world.
 - Recoverable worker intervention no longer rewrites configured ACTIVE intent to
   DISABLED. Unsafe states suppress action execution until observation or recovery is
   verified.
+- The canonical host-to-guest application deployment path is implemented and
+  LIVE_PROVEN; the guest reports revision
+  `cfcdcd3a81a525d7dfd0468813eb200a132bc118`. No gameplay acceptance was run during
+  deployment, and GameWorker remains DISABLED.
 
 The gift milestone is not complete from the gray-present observation alone. The next
 concrete evidence is an enabled-present frame from Farm 01, followed by the real claim
