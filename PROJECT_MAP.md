@@ -18,3 +18,13 @@ Navigation only. Current status and priorities are in [CURRENT_STATE.md](CURRENT
 | Diagnostics | Collect worker/runtime diagnostic state and reports | `runtime_agent/diagnostics.py`, `runtime_agent/gameworker/diagnostics.py` | `tests/unit/test_runtime_hardening.py`, `test_gameworker_lifecycle.py` |
 | Config | Environment-backed Control Plane and Runtime Agent settings | `app/config.py`, `runtime_agent/config.py` | `tests/unit/test_config_and_secrets.py` |
 | Tests | API, integration, provider, concurrency, and worker coverage | `tests/` | Grouped under `tests/api/`, `integration/`, `providers/`, `concurrency/`, `unit/`, `postgres/` |
+
+## Runtime deployment
+
+Use `scripts/deploy_runtime.py dst-000001-g1` from a clean committed checkout. It
+updates Runtime Agent code and required perception assets under
+`/opt/dst-orchestrator`, records the deployed commit in `DEPLOYMENT.json`, then
+reloads only Runtime Agent through its managed-process adoption path. The venv,
+Steam/Klei data, DST worlds, display, and recordings are preserved. Verify with
+`incus exec dst-000001-g1 -- cat /opt/dst-orchestrator/DEPLOYMENT.json` and the
+`runtime_agent_started deployed_revision=...` service log entry.

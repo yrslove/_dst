@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import signal
 import sys
 import threading
+from pathlib import Path
 
 from app.runtime.display import GRAPHICAL_ENVIRONMENT_KEYS
 from app.subprocess_env import purge_sensitive_environment
@@ -72,6 +74,14 @@ def main() -> int:
     stop_event.clear()
     reload_event.clear()
     settings = RuntimeAgentSettings.from_env()
+    revision_file = Path(__file__).resolve().parents[1] / "DEPLOYMENT.json"
+    try:
+        deployed_revision = json.loads(revision_file.read_text(encoding="utf-8")).get(
+            "commit", "INVALID"
+        )
+    except (OSError, json.JSONDecodeError):
+        deployed_revision = "UNDEPLOYED"
+    logger.info("runtime_agent_started deployed_revision=%s", deployed_revision)
     # Settings retains the runtime bearer in parent memory. Child processes inherit
     # no control-plane or account credentials through os.environ.
     purge_sensitive_environment()
