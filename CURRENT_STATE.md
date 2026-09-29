@@ -102,7 +102,7 @@ reached during this persistence proof.
   observed the transition.
 - The canonical host-to-guest application deployment path is implemented and
   LIVE_PROVEN; the guest reports revision
-  `67e957f3cd939eb48cb2c7bc60243cb106a7d6ad`. The post-recovery-change production
+  `f723a9ee5090529240e3775d68a426abfa2a6aff`. The post-recovery-change production
   world-entry acceptance completed; GameWorker was returned to DISABLED afterward.
 
 The gift milestone is not complete from the gray-present observation alone. The next
