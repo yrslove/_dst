@@ -21,10 +21,13 @@ from app.services.jobs import JobQueue
 class Scheduler:
     """Determines which desired-state commands need durable jobs."""
 
-    def __init__(self, db: Database, jobs: JobQueue, leadership=None):
+    def __init__(
+        self, db: Database, jobs: JobQueue, leadership=None, account_scheduler=None
+    ):
         self.db = db
         self.jobs = jobs
         self.leadership = leadership
+        self.account_scheduler = account_scheduler
 
     def tick(self) -> int:
         if self.leadership and not self.leadership.try_acquire():
@@ -92,4 +95,6 @@ class Scheduler:
                     priority=80,
                 )
                 queued += 1
+        if self.account_scheduler is not None:
+            queued += self.account_scheduler.tick()
         return queued

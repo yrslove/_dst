@@ -576,12 +576,25 @@ class AccountScheduleState(Base, TimestampMixin):
     __tablename__ = "account_schedule_states"
     __table_args__ = (
         CheckConstraint(
-            "daily_status IN ('PENDING','DONE')", name="ck_schedule_daily_status"
+            "daily_status IN ('UNKNOWN','PENDING','DONE')",
+            name="ck_schedule_daily_status",
+        ),
+        CheckConstraint(
+            "weekly_state IN ('UNSYNCED_CURRENT_CYCLE','SYNCED')",
+            name="ck_schedule_weekly_state",
         ),
         CheckConstraint(
             "phase IN ('FARMING','FINAL_COLLECTION','DONE')", name="ck_schedule_phase"
         ),
-        CheckConstraint("weekly_collected >= 0", name="ck_schedule_weekly_collected"),
+        CheckConstraint(
+            "weekly_collected IS NULL OR weekly_collected >= 0",
+            name="ck_schedule_weekly_collected",
+        ),
+        CheckConstraint(
+            "(weekly_state = 'UNSYNCED_CURRENT_CYCLE' AND weekly_collected IS NULL) OR "
+            "(weekly_state = 'SYNCED' AND weekly_collected IS NOT NULL)",
+            name="ck_schedule_weekly_sync_count",
+        ),
         CheckConstraint("weekly_target >= 0", name="ck_schedule_weekly_target"),
         CheckConstraint(
             "(active_job_key IS NULL AND active_job_type IS NULL) OR "
@@ -600,10 +613,16 @@ class AccountScheduleState(Base, TimestampMixin):
         ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
     )
     daily_status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="PENDING"
+        String(16), nullable=False, default="UNKNOWN"
     )
-    weekly_collected: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    weekly_target: Mapped[int] = mapped_column(Integer, nullable=False)
+    weekly_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="UNSYNCED_CURRENT_CYCLE"
+    )
+    weekly_collected: Mapped[int | None] = mapped_column(Integer)
+    confirmed_claims_current_observation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    weekly_target: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
     phase: Mapped[str] = mapped_column(String(24), nullable=False, default="FARMING")
     pending_gift: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     next_daily_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

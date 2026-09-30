@@ -44,6 +44,7 @@ from app.providers.base import (
 )
 from app.runtime.bootstrap import RuntimeBootstrapService
 from app.runtime.bootstrap_models import RuntimeAgentConfig
+from app.services.account_scheduler import AccountScheduler, VerifiedOutcome
 from app.services.execution_lock import execution_lock
 from app.services.jobs import JobQueue
 from app.services.leases import LeaseService
@@ -161,6 +162,7 @@ class JobExecutor(LongSessionMixin):
             )
         else:
             self.jobs.succeed(job.id, job.lease_owner)
+            self._reconcile_account_schedule(job)
             logger.info(
                 "job succeeded",
                 extra={
@@ -174,6 +176,40 @@ class JobExecutor(LongSessionMixin):
             stopped.set()
             renewer.join(timeout=2)
             job_id_var.reset(token)
+
+    def _reconcile_account_schedule(self, job: Job) -> None:
+        if not job.payload.get("account_schedule_intent") or job.account_id is None:
+            return
+        try:
+            task_id = int(job.payload.get("gameplay_task_id", 0))
+            task = self._gameplay_task(task_id) if task_id > 0 else None
+            outcome = VerifiedOutcome()
+            if (
+                job.kind == JobKind.DAILY_GIFT_CLAIM
+                and task is not None
+                and task.status == GameplayTaskStatus.SUCCEEDED
+                and isinstance(task.result_json, dict)
+                and task.result_json.get("semantic") == "DAILY_GIFT_CONFIRMED"
+            ):
+                outcome = VerifiedOutcome(
+                    daily_claimed=True, daily_claim_at=task.claim_confirmed_at
+                )
+            elif (
+                job.kind == JobKind.DAILY_GIFT_CLAIM
+                and task is not None
+                and task.status == GameplayTaskStatus.NO_REWARD_AVAILABLE
+            ):
+                outcome = VerifiedOutcome(daily_unavailable=True)
+            AccountScheduler(self.db, self.jobs, self.leases).complete(
+                job.account_id,
+                job.idempotency_key,
+                outcome,
+            )
+        except Exception:
+            logger.exception(
+                "account schedule result reconciliation failed",
+                extra={"event": "ACCOUNT_SCHEDULE_RECONCILIATION_FAILED"},
+            )
 
     def _assert_owned(self, session, job: Job) -> Job:
         stored = self.jobs._owned(session, job.id, job.lease_owner)
