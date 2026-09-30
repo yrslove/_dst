@@ -495,6 +495,67 @@ def test_live_idle_world_accepts_normal_health_marker_variation():
     marker = next(item for item in observation.detections if item.kind == "player_marker")
     assert marker.detected and marker.verified
     assert 0.75 <= marker.confidence < 0.94
+    from app.services.executor import JobExecutor
+
+    assert 0.75 <= observation.screen_confidence < 0.8
+    assert JobExecutor._safe_observation(observation.as_dict())
+    for key in ("validity", "calibration_verified", "assets_verified", "screen_confidence"):
+        malformed = {**observation.as_dict(), "production_ready": True}
+        malformed.pop(key)
+        assert not JobExecutor._safe_observation(malformed)
+    for changes in (
+        {"validity": "UNKNOWN"}, {"validity": "STALE"},
+        {"validity": "INVALID"}, {"screen": "UNKNOWN"},
+        {"screen": "DEAD"}, {"screen": "WORLD_RESET_PENDING"},
+        {"screen": "RESET_PENDING"}, {"calibration_verified": False},
+        {"assets_verified": False}, {"screen_confidence": float("nan")},
+        {"screen_confidence": None},
+    ):
+        assert not JobExecutor._safe_observation({**observation.as_dict(), "production_ready": True, **changes})
+
+
+def test_invalid_player_marker_remains_unknown(monkeypatch):
+    from app.services.executor import JobExecutor
+
+    original = VisionDetector.detect
+
+    def invalid_marker(self, image, template_id, *, deadline=None):
+        item = original(self, image, template_id, deadline=deadline)
+        if template_id == "player_marker":
+            return replace(item, confidence=0.749, detected=False)
+        return item
+
+    monkeypatch.setattr(VisionDetector, "detect", invalid_marker)
+    observation = analyze_image(
+        Image.open(ASSETS / "samples/in_world_idle_player_marker_variation_live.png").convert("RGB"),
+        "below-marker-threshold", 1,
+    )
+    assert observation.screen == DSTScreen.UNKNOWN
+    assert not observation.valid
+    assert not JobExecutor._safe_observation(observation.as_dict())
+
+
+def test_verified_low_confidence_world_can_source_and_verify_action():
+    from app.services.executor import JobExecutor
+    from runtime_agent.gameworker.transitions import action_precondition_error
+
+    observation = analyze_image(
+        Image.open(ASSETS / "samples/in_world_idle_player_marker_variation_live.png").convert("RGB"),
+        "low-confidence-action", 1,
+    )
+    assert action_precondition_error(ActionName.MOVE_FORWARD, observation) is None
+    assert JobExecutor._safe_observation(observation.as_dict())
+    lifecycle = ActionLifecycle(clock=lambda: observation.observed_monotonic)
+    lifecycle.begin(ActionResult(
+        "move-low-confidence", ActionName.MOVE_FORWARD, ActionStatus.SENT,
+        0.1, 1, 1, 1,
+    ), observation)
+    for sequence in (2, 3):
+        result = lifecycle.observe(replace(
+            observation, source_sequence=sequence, source_frame_id=str(sequence),
+            gameplay_change=0.02,
+        ))
+    assert result is not None and result.status == ActionStatus.SUCCEEDED
 
 
 def test_validation_resumes_from_live_world_and_counts_fresh_frames():

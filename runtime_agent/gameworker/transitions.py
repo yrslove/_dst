@@ -202,7 +202,10 @@ def action_precondition_error(
     if (
         observation.screen not in contract.source
         or not observation.production_ready
-        or observation.screen_confidence < contract.confidence
+        or (
+            observation.screen != DSTScreen.IN_WORLD_IDLE
+            and observation.screen_confidence < contract.confidence
+        )
     ):
         return "source state is not visually verified"
     detections = {item.kind: item for item in observation.detections}
@@ -290,7 +293,10 @@ class ActionLifecycle:
             or observation.runtime_id != pending.result.runtime_id
             or observation.runtime_generation != pending.result.runtime_generation
             or observation.worker_generation != pending.result.worker_generation
-            or observation.screen_confidence < pending.contract.confidence
+            or (
+                observation.screen != DSTScreen.IN_WORLD_IDLE
+                and observation.screen_confidence < pending.contract.confidence
+            )
         ):
             pending.candidate, pending.count = DSTScreen.UNKNOWN, 0
             return None

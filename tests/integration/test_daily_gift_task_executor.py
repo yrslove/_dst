@@ -315,6 +315,9 @@ def test_character_selection_executor_gate_requires_verified_structural_anchors(
         "screen": "CHARACTER_SELECTION",
         "screen_confidence": 0.98,
         "production_ready": True,
+        "validity": "VALID",
+        "calibration_verified": True,
+        "assets_verified": True,
         "detections": [
             {
                 "kind": name,
@@ -446,6 +449,9 @@ def test_no_reward_requires_current_fresh_icon_proof(app):
             "screen": "IN_WORLD_IDLE",
             "screen_confidence": 0.99,
             "production_ready": True,
+            "validity": "VALID",
+            "calibration_verified": True,
+            "assets_verified": True,
             "source_frame_id": "fresh-icon",
         },
     }

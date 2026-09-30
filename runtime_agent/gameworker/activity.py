@@ -740,7 +740,10 @@ class ActivityController:
             or self.validation_flow_enabled
             or not observation.production_ready
             or observation.fresh_until < time.monotonic()
-            or observation.screen_confidence < 0.94
+            or (
+                observation.screen != DSTScreen.IN_WORLD_IDLE
+                and observation.screen_confidence < 0.94
+            )
             or observation.screen not in self.RECOVERABLE_WORLD_ENTRY_STATES
             or observation.screen
             not in self.WORLD_ENTRY_CONTINUATIONS.get(failed_action, frozenset())

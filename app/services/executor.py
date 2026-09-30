@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from datetime import timedelta
@@ -851,13 +852,17 @@ class JobExecutor(LongSessionMixin):
             confidence = float(observation.get("screen_confidence", 0) or 0)
         except (TypeError, ValueError, OverflowError):
             return False
-        production_ready = observation.get("production_ready")
-        if production_ready is None:
-            production_ready = bool(
-                observation.get("validity") == "VALID"
-                and observation.get("calibration_verified") is True
-                and observation.get("assets_verified") is True
-            )
+        # Perception owns state-specific confidence policy. Validate its canonical
+        # contract instead of reclassifying observations with a global threshold.
+        production_ready = (
+            observation.get("validity") == "VALID"
+            and observation.get("calibration_verified") is True
+            and observation.get("assets_verified") is True
+            and observation.get("production_ready", True) is True
+            and observation.get("screen_confidence") is not None
+            and math.isfinite(confidence)
+            and 0 <= confidence <= 1
+        )
         safe_screen = bool(
             production_ready
             and isinstance(screen, str)
@@ -871,7 +876,6 @@ class JobExecutor(LongSessionMixin):
                 "RESET_PENDING",
                 "CHARACTER_LOADOUT",
             }
-            and confidence >= 0.8
         )
         if not safe_screen:
             return False
