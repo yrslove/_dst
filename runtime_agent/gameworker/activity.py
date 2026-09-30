@@ -188,7 +188,7 @@ class ActivityController:
         self.gift_availability_evidence: dict | None = None
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
-        self._gift_inventory_open_attempted = False
+        self._gift_crafting_open_attempted = False
         self._reward_open_source_sequence: int | None = None
         self._last_gift_observation_sequence = 0
         self._last_confirmed_gift_sequence = 0
@@ -315,12 +315,12 @@ class ActivityController:
             self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_IDLE
             and self.inworld_gift_state == InWorldGiftState.PENDING_STATION
-            and not self._gift_inventory_open_attempted
+            and not self._gift_crafting_open_attempted
         ):
-            self._gift_inventory_open_attempted = True
+            self._gift_crafting_open_attempted = True
             return ActionProposal(
-                ActionName.OPEN_INVENTORY,
-                reason="enable the prepared nearby giftmachine for a visible pending gift",
+                ActionName.OPEN_CRAFTING_MENU,
+                reason="open DST crafting inventory to enable the prepared nearby giftmachine",
             )
         if (
             self.production_actions_enabled
@@ -856,6 +856,7 @@ class ActivityController:
         if result.action in {
             ActionName.CLICK_GIFT_ICON,
             ActionName.OPEN_INVENTORY,
+            ActionName.OPEN_CRAFTING_MENU,
             ActionName.CLICK_REWARD_OPEN,
             ActionName.CLICK_OPTIONS,
             ActionName.CLICK_REWARD_CLOSE,
@@ -907,7 +908,8 @@ class ActivityController:
         return result
 
     def on_verified(self, observation: GameObservation, result: ActionResult) -> None:
-        if result.action == ActionName.OPEN_INVENTORY:
+        if result.action == ActionName.OPEN_CRAFTING_MENU:
+            self._awaiting_reward_transition = False
             if result.status == ActionStatus.SUCCEEDED:
                 self.counters["verified_actions"] += 1
             else:
@@ -915,7 +917,7 @@ class ActivityController:
             self._record(
                 observation,
                 result.action.value,
-                "opened the canonical inventory to enable the prepared giftmachine",
+                "opened the DST crafting menu to enable the prepared giftmachine",
                 result.status.value,
             )
             return

@@ -81,17 +81,20 @@ animation, or disappearing toast alone is not durable confirmation.
 
 The worker now reports a visible gray toast as `IN_WORLD_GIFT_PENDING`, not
 `NO_REWARD_AVAILABLE`, and exposes a separate `inworld_gift_state` telemetry field so
-daily/login confirmation state is not inferred from the in-world icon. When this
-pending state is seen in ACTIVE mode, the worker sends one bounded canonical
-`OPEN_INVENTORY` action to enable the prepared nearby giftmachine. The action must
-verify a fresh visible in-world screen change. Gift clicking remains gated on an
-independently verified active icon; the actual in-world popup/result/claim path still
-needs separate implementation and live proof.
+daily/login confirmation state is not inferred from the in-world icon. The first
+live experiment sent the canonical `Tab`/`OPEN_INVENTORY` key and verified a visible
+screen change, but the gift stayed gray. Source review showed that this key opens
+`CONTROL_OPEN_INVENTORY`, not the crafting menu needed to establish the prepared
+giftmachine context. The follow-up worker action is `OPEN_CRAFTING_MENU`, bound to
+the installed build's default `b` key for `CONTROL_OPEN_CRAFTING`; it will be verified
+from a fresh screen change. Gift clicking remains gated on an independently verified
+active icon; the actual in-world popup/result/claim path still needs separate
+implementation and live proof.
 
 ## Next experiment
 
-Continue the existing account/world/session. Use the canonical `OPEN_INVENTORY`
-action when the retained gray toast is present. Capture fresh full-frame and gift-ROI
+Continue the existing account/world/session. Use the canonical `OPEN_CRAFTING_MENU`
+action while the retained gray toast is present. Capture fresh full-frame and gift-ROI
 evidence, record whether the toast becomes enabled, and then implement/verify the
 separate `GiftItemPopUp` flow before allowing any gift click. Only afterward compare
 controlled safe activity with idle time; do not restart the current eligibility

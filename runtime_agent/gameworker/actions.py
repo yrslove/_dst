@@ -34,6 +34,7 @@ class ActionName(StrEnum):
     CANCEL = "CANCEL"
     RESUME_WORLD = "RESUME_WORLD"
     OPEN_INVENTORY = "OPEN_INVENTORY"
+    OPEN_CRAFTING_MENU = "OPEN_CRAFTING_MENU"
     STOP_MOVEMENT = "STOP_MOVEMENT"
     RELEASE_ALL = "RELEASE_ALL"
     RECOVERY = "RECOVERY"
@@ -174,6 +175,7 @@ _PRESS_KEYS = {
     ActionName.CANCEL: "cancel",
     ActionName.RESUME_WORLD: "cancel",
     ActionName.OPEN_INVENTORY: "inventory",
+    ActionName.OPEN_CRAFTING_MENU: "open_crafting",
     ActionName.PAUSE_WORLD: "cancel",
 }
 CLICK_REGIONS = {

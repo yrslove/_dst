@@ -486,18 +486,24 @@ bundle. The current source/runtime findings and bounded next experiment are in
 [REWARD_MECHANICS_AUDIT_20260930.md](docs/REWARD_MECHANICS_AUDIT_20260930.md).
 
 This checkpoint adds a separate `inworld_gift_state` telemetry field and reports
-gray visible present as `IN_WORLD_GIFT_PENDING`. Production ACTIVE mode proposes one
-canonical `OPEN_INVENTORY` action to enable the fixture station, with bounded fresh
-screen-change verification. The production gift click remains unproven and must not
-be treated as the daily `LOGIN_REWARD_AVAILABLE` modal. Actual `GiftItemPopUp` result,
-claim confirmation, daily-vs-weekly durable progression, account weekly count, AFK
+gray visible present as `IN_WORLD_GIFT_PENDING`. One live canonical `Tab`/
+`OPEN_INVENTORY` action was fresh-screen-change verified, but the toast stayed gray.
+Build source shows this key opens `CONTROL_OPEN_INVENTORY`, not the crafting menu
+needed for the giftmachine context. Production ACTIVE mode now proposes one bounded
+canonical `OPEN_CRAFTING_MENU` action on `b` (`CONTROL_OPEN_CRAFTING`) for the next
+live check. The production gift click remains unproven and must not be treated as the
+daily `LOGIN_REWARD_AVAILABLE` modal. Actual `GiftItemPopUp` result, claim
+confirmation, daily-vs-weekly durable progression, account weekly count, AFK
 eligibility, and this account's next-due/reset timestamps remain open.
 
 Runtime health evidence at 2026-09-30 13:50 UTC: DST and Steam running, worker ACTIVE,
-no held inputs, zero gameplay actions in the current worker run, and item-server
-HealthCheck returned `OK`. This is service/process health only; it does not prove
-authenticated item-server eligibility or counted playtime. Worker mechanics fix is
-offline tested but has not yet been deployed or exercised live.
+no held inputs, zero world-interaction actions before this stage, and item-server
+HealthCheck returned `OK`. After deployment, the worker opened the canonical
+inventory once (0.52s; fresh UI change verified); the toast remained gray. The agent
+adoption preserved Xvfb/Steam/DST process identities. The currently pending `b` /
+`OPEN_CRAFTING_MENU` fix is offline tested but not yet deployed or exercised live.
+HealthCheck is service health only; it does not prove authenticated item-server
+eligibility or counted playtime.
 
 ## Historical documentation
 

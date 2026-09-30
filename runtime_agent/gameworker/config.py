@@ -51,6 +51,7 @@ class InputBindings:
     move_right: str = "d"
     interact: str = "space"
     inventory: str = "tab"
+    open_crafting: str = "b"
     cancel: str = "Escape"
 
 

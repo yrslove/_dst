@@ -113,6 +113,20 @@ def test_canonical_pause_and_resume_use_the_bound_cancel_key():
     assert not controller.has_held_inputs
 
 
+def test_open_crafting_menu_uses_the_canonical_build_key():
+    value, controller, driver, _deadman = executor()
+    result = value.execute(action("crafting-menu", ActionName.OPEN_CRAFTING_MENU))
+    value.shutdown()
+
+    assert result.status == ActionStatus.SENT
+    assert [
+        (event.operation, event.value)
+        for event in driver.events
+        if event.operation in {"key_down", "key_up"}
+    ] == [("key_down", "b"), ("key_up", "b")]
+    assert not controller.has_held_inputs
+
+
 def test_pause_resume_and_movement_capabilities_are_available_without_validation():
     worker = DSTGameWorker(
         WorkerConfig(

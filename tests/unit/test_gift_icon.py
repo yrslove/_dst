@@ -100,12 +100,39 @@ def test_gray_gift_opens_inventory_before_any_gift_click():
         observation, source_frame_id="gray-live-next", source_sequence=2
     )
     proposal = policy.propose(next_frame)
-    assert proposal is not None and proposal.action == ActionName.OPEN_INVENTORY
+    assert proposal is not None and proposal.action == ActionName.OPEN_CRAFTING_MENU
     assert policy.inworld_gift_state == InWorldGiftState.PENDING_STATION
     assert policy.daily_gift_state == DailyGiftState.UNKNOWN
     assert policy.daily_gift_confirmation is None
     assert policy.counters["gift_claimed"] == 0
     assert action_precondition_error(ActionName.CLICK_GIFT_ICON, next_frame)
+    assert action_precondition_error(ActionName.OPEN_CRAFTING_MENU, next_frame) is None
+
+
+def test_verified_crafting_open_clears_pending_action_state():
+    _, observation = gray_observation()
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    policy.propose(observation)
+    next_frame = replace(
+        observation, source_frame_id="gray-live-craft", source_sequence=2
+    )
+    proposal = policy.propose(next_frame)
+    assert proposal is not None and proposal.action == ActionName.OPEN_CRAFTING_MENU
+    verifying = ActionResult(
+        "crafting-open", ActionName.OPEN_CRAFTING_MENU,
+        ActionStatus.VERIFYING, 0.1, 1, 1, 1,
+    )
+    policy.on_action_result(next_frame, verifying)
+    policy.on_verified(
+        next_frame,
+        ActionResult(
+            "crafting-open", ActionName.OPEN_CRAFTING_MENU,
+            ActionStatus.SUCCEEDED, 0.1, 1, 1, 1,
+        ),
+    )
+    assert not policy._awaiting_reward_transition
+    assert not policy.intervention_required
 
 
 def test_missing_icon_is_unknown():

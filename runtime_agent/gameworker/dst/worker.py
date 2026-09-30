@@ -985,6 +985,7 @@ class DSTGameWorker:
         # ActivityController policies.
         return frozenset(
             {
+                ActionName.OPEN_CRAFTING_MENU,
                 ActionName.OPEN_INVENTORY,
                 ActionName.CLICK_REWARD_OPEN,
                 ActionName.CLICK_REWARD_CLOSE,
