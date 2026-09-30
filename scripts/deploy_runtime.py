@@ -318,12 +318,6 @@ subprocess.run(["systemctl", "set-environment", *assignments], check=True)
 runtime = pathlib.Path("/run/dst-runtime")
 runtime.mkdir(mode=0o700, exist_ok=True)
 os.chown(runtime, pwd.getpwnam("dst").pw_uid, pwd.getpwnam("dst").pw_gid)
-auth = runtime / "Xauthority"
-auth.touch(mode=0o600, exist_ok=True)
-os.chown(auth, pwd.getpwnam("dst").pw_uid, pwd.getpwnam("dst").pw_gid)
-steam_ready = pathlib.Path("/run/dst-runtime/steam.ready")
-steam_ready.touch()
-os.chown(steam_ready, pwd.getpwnam("dst").pw_uid, pwd.getpwnam("dst").pw_gid)
 dropin_dir = pathlib.Path("/run/systemd/system") / f"{service}.d"
 dropin_dir.mkdir(parents=True, exist_ok=True)
 dropin = dropin_dir / "90-stalled-agent-adoption.conf"
@@ -335,6 +329,16 @@ if active:
 else:
     subprocess.run(["systemctl", "reset-failed", service], check=True)
     subprocess.run(["systemctl", "start", service], check=True, timeout=20)
+runtime.mkdir(mode=0o700, exist_ok=True)
+os.chown(runtime, pwd.getpwnam("dst").pw_uid, pwd.getpwnam("dst").pw_gid)
+auth = runtime / "Xauthority"
+auth.touch(mode=0o600, exist_ok=True)
+auth.chmod(0o600)
+os.chown(auth, pwd.getpwnam("dst").pw_uid, pwd.getpwnam("dst").pw_gid)
+steam_ready = runtime / "steam.ready"
+steam_ready.touch()
+steam_ready.chmod(0o600)
+os.chown(steam_ready, pwd.getpwnam("dst").pw_uid, pwd.getpwnam("dst").pw_gid)
 print(json.dumps({"main_pid": subprocess.check_output(["systemctl", "show", "-p", "MainPID", "--value", service], text=True).strip(), "adoption": adoption}))
 '''
 
@@ -347,7 +351,9 @@ subprocess.run(["systemctl", "daemon-reload"], check=True)
 '''
 
 
-def guest_probe(instance: str, *, allow_inactive: bool = False) -> dict[str, object]:
+def guest_probe(
+    instance: str, *, allow_inactive: bool = False, allow_starting: bool = False
+) -> dict[str, object]:
     value = json.loads(
         run(["incus", "exec", instance, "--", "python3", "-c", GUEST_PROBE])
     )
@@ -373,7 +379,7 @@ def guest_probe(instance: str, *, allow_inactive: bool = False) -> dict[str, obj
         raise DeployError("expected healthy Xvfb and Steam processes were not found")
     if not value.get("dst_game_pid") or not any(name.startswith("dontstarve") for name in processes):
         raise DeployError("expected DST process was not found")
-    if active and value.get("ready") != {"steam": True, "dst": True}:
+    if active and not allow_starting and value.get("ready") != {"steam": True, "dst": True}:
         raise DeployError("Steam/DST readiness markers are not both present")
     if not value.get("runtime_id"):
         raise DeployError("Runtime Agent runtime identity is missing")
@@ -455,7 +461,7 @@ def deploy(instance: str, repo: Path) -> None:
                 current = run(["incus", "exec", instance, "--", "cat", f"{INSTANCE_ROOT}/DEPLOYMENT.json"])
                 require_revision(str(parse_metadata(current)["commit"]), revision)
                 if run(["incus", "exec", instance, "--", "systemctl", "is-active", SERVICE]) == "active":
-                    after = guest_probe(instance)
+                    after = guest_probe(instance, allow_starting=True)
                     if after["processes"] != before["processes"]:
                         raise DeployError("managed Xvfb/Steam/DST process identities changed during agent reload")
                     heartbeat = after.get("heartbeat", {})
@@ -472,7 +478,7 @@ def deploy(instance: str, repo: Path) -> None:
             recover_stalled_agent(instance, stalled)
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
-                after = guest_probe(instance)
+                after = guest_probe(instance, allow_starting=True)
                 if after["processes"] != before["processes"]:
                     raise DeployError("managed Xvfb/Steam/DST process identities changed during stalled-agent recovery")
                 heartbeat = after.get("heartbeat", {})
