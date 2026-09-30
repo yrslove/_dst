@@ -505,6 +505,25 @@ adoption preserved Xvfb/Steam/DST process identities. The currently pending `b` 
 HealthCheck is service health only; it does not prove authenticated item-server
 eligibility or counted playtime.
 
+### Stage 4B live follow-up (2026-09-30)
+
+The `OPEN_CRAFTING_MENU` action was deployed and sent once through GameWorker; its
+generic pixel-change verification did not prove that the crafting menu opened. Installed
+`GiftItemToast` source shows `PlayerHud:OpenCrafting` hides toast items until
+`CloseCrafting`. A later read-only screenshot and fresh GameWorker telemetry at
+14:14:49 UTC showed the gift toast visible and gray (`IN_WORLD_GIFT_PENDING`,
+`chroma_p95=13`, `colored_fraction=0`), so there is still no actionable live sample.
+That later frame cannot establish whether the menu opened briefly and then closed.
+
+`OPEN_CRAFTING_MENU` transition verification now requires the verified
+`world_present_banner` detection to disappear in a fresh frame; a generic screen change
+cannot complete the action. Focused transition/action tests passed (59 tests), Ruff and
+`git diff --check` passed. This fix is not yet deployed. The world remains
+`IN_WORLD_IDLE`, the character is alive on day 36, GameWorker is ACTIVE with no held
+inputs, and DST/Steam process identities have not changed since managed deployment.
+The 13:50 item-server HealthCheck is endpoint-only evidence. No login or in-world
+claim, eligible-play duration, weekly progress, or AFK comparison is proven.
+
 ## Historical documentation
 
 Dated stage, progress, handoff, and validation documents are historical evidence. They

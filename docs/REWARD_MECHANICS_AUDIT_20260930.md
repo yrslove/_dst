@@ -81,21 +81,29 @@ animation, or disappearing toast alone is not durable confirmation.
 
 The worker now reports a visible gray toast as `IN_WORLD_GIFT_PENDING`, not
 `NO_REWARD_AVAILABLE`, and exposes a separate `inworld_gift_state` telemetry field so
-daily/login confirmation state is not inferred from the in-world icon. The first
-live experiment sent the canonical `Tab`/`OPEN_INVENTORY` key and verified a visible
-screen change, but the gift stayed gray. Source review showed that this key opens
-`CONTROL_OPEN_INVENTORY`, not the crafting menu needed to establish the prepared
-giftmachine context. The follow-up worker action is `OPEN_CRAFTING_MENU`, bound to
-the installed build's default `b` key for `CONTROL_OPEN_CRAFTING`; it will be verified
-from a fresh screen change. Gift clicking remains gated on an independently verified
-active icon; the actual in-world popup/result/claim path still needs separate
-implementation and live proof.
+daily/login confirmation state is not inferred from the in-world icon. The first live
+experiment sent canonical `Tab`/`OPEN_INVENTORY`; the gift stayed gray. Source review
+showed that key opens `CONTROL_OPEN_INVENTORY`, not the crafting menu. A later
+`OPEN_CRAFTING_MENU` action on `b` was transport and generic pixel-change verified,
+but that did not prove the menu's state. `PlayerHud:OpenCrafting` calls
+`GiftItemToast:ToggleController(true)`, hiding the toast; `CloseCrafting` shows it
+again. At 14:14:49 UTC a fresh worker frame and read-only screenshot showed the toast
+visible and gray, with `IN_WORLD_IDLE`, no held inputs, and no actionable gift. This
+later frame does not say whether the crafting menu briefly opened after the action.
 
-## Next experiment
+The generic `OPEN_CRAFTING_MENU` screen-change check has now been replaced with a fresh
+verified-hidden `world_present_banner` postcondition. Focused transition/action tests
+pass, but that code change has not yet been deployed. The production gift click remains
+gated on an independently verified active icon; the active icon reference is still
+unavailable, and the distinct in-world popup/result/claim flow still needs captured
+live evidence and implementation. Daily login claim is also not live-proven.
 
-Continue the existing account/world/session. Use the canonical `OPEN_CRAFTING_MENU`
-action while the retained gray toast is present. Capture fresh full-frame and gift-ROI
-evidence, record whether the toast becomes enabled, and then implement/verify the
-separate `GiftItemPopUp` flow before allowing any gift click. Only afterward compare
-controlled safe activity with idle time; do not restart the current eligibility
-session or infer a precise drop timer from the community estimate.
+## Next evidence step
+
+Deploy the verified-hidden-toast postcondition and capture the immediate fresh screen
+after the one bounded crafting-menu action. If the verified gift toast remains visible,
+do not repeat `b` blindly: establish the live `hasgiftmachine` context from player
+position, visible tagged machine, and open inventory. Only an active present sample
+can justify the gift click; first implement and verify the distinct `GiftItemPopUp`
+flow. Do not treat the existing session duration as eligible playtime, and do not infer
+a precise timer from community estimates.

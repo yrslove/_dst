@@ -110,6 +110,81 @@ def test_gift_click_requires_fresh_active_detection_and_reacquisition():
     assert 0 < point.x < .25 and 0 < point.y < .2
 
 
+def test_open_crafting_menu_requires_fresh_verified_gift_toast_to_hide():
+    before = frame("gift_icon_gray_in_world_live.png", 1)
+    clock = [before.observed_monotonic + .001]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    assert lifecycle.begin(sent(ActionName.OPEN_CRAFTING_MENU), before).status == ActionStatus.VERIFYING
+
+    still_visible = replace(
+        before,
+        source_frame_id="gift-still-visible",
+        source_sequence=2,
+        source_captured_monotonic=clock[0] + .1,
+        observed_monotonic=clock[0] + .1,
+        fresh_until=clock[0] + 2,
+        screen_change=.02,
+    )
+    assert lifecycle.observe(still_visible) is None
+
+    hidden = replace(
+        still_visible,
+        source_frame_id="gift-hidden-by-crafting",
+        source_sequence=3,
+        source_captured_monotonic=still_visible.observed_monotonic + .1,
+        observed_monotonic=still_visible.observed_monotonic + .1,
+        fresh_until=still_visible.fresh_until + .1,
+        detections=tuple(
+            Detection(
+                item.kind,
+                False,
+                item.confidence,
+                detector_id=item.detector_id,
+                detector_version=item.detector_version,
+                verified=True,
+            )
+            if item.kind == "world_present_banner"
+            else item
+            for item in before.detections
+        ),
+    )
+    result = lifecycle.observe(hidden)
+    assert result is not None and result.status == ActionStatus.SUCCEEDED
+
+
+def test_open_crafting_menu_does_not_treat_unverified_missing_gift_as_success():
+    before = frame("gift_icon_gray_in_world_live.png", 1)
+    clock = [before.observed_monotonic + .001]
+    lifecycle = ActionLifecycle(clock=lambda: clock[0])
+    assert lifecycle.begin(sent(ActionName.OPEN_CRAFTING_MENU), before).status == ActionStatus.VERIFYING
+    hidden_unverified = replace(
+        before,
+        source_frame_id="gift-missing-unverified",
+        source_sequence=2,
+        source_captured_monotonic=clock[0] + .1,
+        observed_monotonic=clock[0] + .1,
+        fresh_until=clock[0] + 1,
+        screen_change=.02,
+        detections=tuple(
+            Detection(
+                item.kind,
+                False,
+                0.0,
+                detector_id=item.detector_id,
+                detector_version=item.detector_version,
+                verified=False,
+            )
+            if item.kind == "world_present_banner"
+            else item
+            for item in before.detections
+        ),
+    )
+    assert lifecycle.observe(hidden_unverified) is None
+    clock[0] += 8.1
+    result = lifecycle.poll()
+    assert result is not None and result.status == ActionStatus.TIMED_OUT
+
+
 def test_gift_icon_transport_success_waits_for_specific_reward_ui_transition():
     before = active_gift_frame(1)
     clock = [before.observed_monotonic + .001]

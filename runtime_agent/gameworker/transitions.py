@@ -26,6 +26,7 @@ class ActionContract:
     min_gameplay_change: float = 0.0
     required_detections: tuple[str, ...] = ()
     postcondition_detections: tuple[str, ...] = ()
+    postcondition_hidden_detections: tuple[str, ...] = ()
     interaction_prompt_hidden: bool = False
     anchor_point: tuple[float, float] = (0.5, 0.5)
 
@@ -38,6 +39,7 @@ CONTRACTS = {
         timeout=8.0,
         stable_observations=1,
         min_screen_change=0.01,
+        postcondition_hidden_detections=("world_present_banner",),
     ),
     ActionName.OPEN_INVENTORY: ActionContract(
         (),
@@ -363,6 +365,16 @@ class ActionLifecycle:
             if pending.movement_evidence is None:
                 pending.movement_evidence = observation.gameplay_change
         if observation.screen in pending.contract.targets:
+            if any(
+                (item := next(
+                    (d for d in observation.detections if d.kind == kind), None
+                )) is None
+                or item.detected
+                or not item.verified
+                for kind in pending.contract.postcondition_hidden_detections
+            ):
+                pending.candidate, pending.count = DSTScreen.UNKNOWN, 0
+                return None
             if pending.result.action == ActionName.CLICK_GIFT_ICON:
                 if observation.source_captured_monotonic < pending.sent_at:
                     return None
