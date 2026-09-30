@@ -553,10 +553,10 @@ The local change adds the verified active crop as an independent HUD anchor and 
 `CLICK_GIFT_ICON` track only in-world opening/received states, leaving daily login state
 separate. The matching corpus fixture and focused regression are added. Commit
 `003e1fa` contains this patch and the live regression fixture. The deploy script
-installed metadata for this revision, but timed out without proving the new Runtime Agent
-startup/adoption heartbeat. At the last live heartbeat the GameWorker was OBSERVE /
+installed metadata for this revision, but two consecutive deploy attempts timed out
+without proving the new Runtime Agent startup/adoption heartbeat. At the last live heartbeat the GameWorker was OBSERVE /
 NEEDS_ATTENTION and held inputs were false. Runtime Agent heartbeats stopped during the
-reload attempt and Control Plane currently marks the runtime STALE. A subsequent
+reload attempts and Control Plane currently marks the runtime STALE. A subsequent
 read-only screenshot still showed the active gift, live Wilson, and Day 37;
 Xvfb/Steam/DST process identities were unchanged. The real `GiftItemPopUp`/`Use Later` transition still
 lacks a live fixture, and no gift click has been sent. Exact activation time,

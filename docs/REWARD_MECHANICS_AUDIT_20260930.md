@@ -104,7 +104,7 @@ deployed classifier to return UNKNOWN for a valid in-world HUD. Commit `003e1fa`
 the regression patch, which classifies the retained frame as
 `IN_WORLD_IDLE` plus `GIFT_AVAILABLE` offline while daily login state remains UNKNOWN.
 It also separates in-world opening/received telemetry from daily state. Deployment
-metadata now names `003e1fa`, but `deploy_runtime.py` timed out before confirming the
+metadata now names `003e1fa`, but two `deploy_runtime.py` attempts timed out before confirming the
 new agent startup/adoption heartbeat. The last heartbeat reported OBSERVE /
 NEEDS_ATTENTION and held inputs false; the Control Plane now marks the runtime STALE.
 A fresh read-only screenshot still showed alive Wilson, Day 37, and the active gift, and
