@@ -206,7 +206,7 @@ def test_pending_inworld_gift_causes_only_one_short_step_toward_prepared_station
         replace(observation, source_frame_id="gift-station-approach-2", source_sequence=2)
     )
     assert proposal is not None
-    assert proposal.action == ActionName.TURN_RIGHT
+    assert proposal.action == ActionName.TURN_LEFT
     assert proposal.duration == 0.45
 
     assert policy.propose(

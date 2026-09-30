@@ -344,9 +344,9 @@ class ActivityController:
         ):
             self._gift_station_approach_attempted = True
             return ActionProposal(
-                ActionName.TURN_RIGHT,
+                ActionName.TURN_LEFT,
                 duration=0.45,
-                reason="take one bounded rightward step toward the visible prepared Science Machine",
+                reason="take one bounded leftward step toward the visible prepared Science Machine",
             )
         if (
             self.production_actions_enabled
