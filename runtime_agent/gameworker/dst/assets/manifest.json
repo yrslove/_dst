@@ -73,6 +73,20 @@
       "verified": true
     },
     {
+      "id": "gift_icon_active",
+      "filename": "samples/gift_icon_active_live.png",
+      "expected_region": [
+        0.115,
+        0.0,
+        0.2,
+        0.14
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Localized active pink gift icon from the first live actionable in-world sample",
+      "verified": true
+    },
+    {
       "id": "login_reward_title",
       "filename": "login_reward_title.png",
       "expected_region": [

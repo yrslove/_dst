@@ -60,7 +60,10 @@ def test_real_perception_corpus_replays_ground_truth():
     for fixture in corpus["fixtures"]:
         image_path = ASSETS / "samples" / fixture["image"]
         observation = analyze_image(
-            Image.open(image_path).convert("RGB"), fixture["id"], 1
+            Image.open(image_path).convert("RGB"),
+            fixture["id"],
+            1,
+            profile_id="dst-1280x720-linux-v1",
         )
         assert observation.validity == ObservationValidity.VALID, fixture["id"]
         assert observation.screen.value == fixture["expected_state"], fixture["id"]
@@ -691,7 +694,13 @@ def observe(
     return analyze_image(image, "test-frame", 1)
 
 
-def analyze_image(image: Image.Image, frame_id: str, sequence: int):
+def analyze_image(
+    image: Image.Image,
+    frame_id: str,
+    sequence: int,
+    *,
+    profile_id: str = "dst",
+):
     now = time.monotonic()
     frame = Frame(
         frame_id=frame_id,
@@ -710,7 +719,7 @@ def analyze_image(image: Image.Image, frame_id: str, sequence: int):
         AssetRegistry(ASSETS / "manifest.json"), default_threshold=0.8
     ).analyze(
         frame,
-        calibration=CalibrationProfile("dst", 1, 1280, 720, verified=True),
+        calibration=CalibrationProfile(profile_id, 1, 1280, 720, verified=True),
         observation_generation=1,
         max_frame_age=3,
         deadline=now + 3,
@@ -1665,6 +1674,28 @@ def test_world_present_banner_does_not_imply_gift_available():
         ))
     assert policy.daily_gift_confirmation is None
     assert policy.counters["gift_claimed"] == 0
+
+
+def test_live_active_inworld_gift_is_distinct_from_daily_login_reward():
+    observation = analyze_image(
+        Image.open(ASSETS / "samples/gift_icon_active_in_world_live.png").convert("RGB"),
+        "live-active-gift",
+        1,
+        profile_id="dst-1280x720-linux-v1",
+    )
+    assert observation.screen == DSTScreen.IN_WORLD_IDLE
+    assert observation.validity == ObservationValidity.VALID
+    active = next(item for item in observation.detections if item.kind == "gift_icon_active")
+    icon = next(item for item in observation.detections if item.kind == "gift_icon")
+    assert active.detected and active.verified and active.confidence >= .94
+    assert icon.detected and icon.verified
+    assert dict(icon.metadata)["availability"] == "GIFT_AVAILABLE"
+    assert dict(icon.metadata)["active_reference_verified"] is True
+
+    policy = ActivityController()
+    policy.propose(observation)
+    assert policy.inworld_gift_state.value == "IN_WORLD_GIFT_ACTIONABLE"
+    assert policy.daily_gift_state == DailyGiftState.UNKNOWN
 
 
 def test_daily_gift_available_and_open_action_are_not_confirmation():

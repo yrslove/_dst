@@ -78,6 +78,19 @@
       }
     },
     {
+      "id": "in-world-active-gift-live-20260930",
+      "image": "gift_icon_active_in_world_live.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "source": "live 1280x720 DST framebuffer captured 2026-09-30 14:30:30 UTC after safe canonical proximity adjustment",
+      "real_fixture": true,
+      "detector_metadata": {
+        "anchors": ["game_hud", "gift_icon_active"],
+        "gift_meaning": "ACTIVE; button is actionable through the nearby prepared Science Machine",
+        "gift_bounds_px": [168, 9, 226, 67],
+        "activity_state_at_capture": "GameWorker OBSERVE after prior action timeout; no held inputs"
+      }
+    },
+    {
       "id": "reset-pending-live",
       "image": "death_world_reset_live.png",
       "expected_state": "WORLD_RESET_PENDING",

@@ -46,6 +46,8 @@ class DSTScreen(StrEnum):
     HOST_GAME_CAVES_PROMPT = "HOST_GAME_CAVES_PROMPT"
     IN_WORLD_IDLE = "IN_WORLD_IDLE"
     GIFT_AVAILABLE = "GIFT_AVAILABLE"
+    IN_WORLD_GIFT_OPENING = "IN_WORLD_GIFT_OPENING"
+    IN_WORLD_GIFT_RECEIVED = "IN_WORLD_GIFT_RECEIVED"
     LOADING = "LOADING"
     DISCONNECTED = "DISCONNECTED"
     PAUSED = "PAUSED"
@@ -735,6 +737,15 @@ class VisionDetector:
         elif found("game_hud") and found("player_marker"):
             screen = DSTScreen.IN_WORLD_IDLE
             confidence = min(game.confidence, player.confidence)
+        elif found("game_hud") and found("gift_icon_active"):
+            # The live ACTIVE gift changes the gray toast color enough that its
+            # gray identity template no longer matches. Its separately verified
+            # crop is an independent in-world HUD anchor for this state.
+            screen = DSTScreen.IN_WORLD_IDLE
+            confidence = min(
+                game.confidence,
+                detected["gift_icon_active"].confidence,
+            )
         elif found("game_hud") and found("world_present_banner"):
             # The health-heart template is sensitive to its changing fill and
             # overlay rendering. Two independent, verified HUD anchors can

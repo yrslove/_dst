@@ -87,38 +87,35 @@ animation, or disappearing toast alone is not durable confirmation.
 - No movement is inherently required to claim when the character is already visible
   to a giftmachine with the inventory open. Claim still requires canonical UI input.
 
-## Worker correction in this checkpoint
+## Current live state after the active-present capture
 
-The worker now reports a visible gray toast as `IN_WORLD_GIFT_PENDING`, not
-`NO_REWARD_AVAILABLE`, and exposes a separate `inworld_gift_state` telemetry field so
-daily/login confirmation state is not inferred from the in-world icon. The first live
-experiment sent canonical `Tab`/`OPEN_INVENTORY`; the gift stayed gray. Source review
-showed that key opens `CONTROL_OPEN_INVENTORY`, not the crafting menu. A later
-`OPEN_CRAFTING_MENU` action on `b` was transport and generic pixel-change verified,
-but that did not prove the menu's state. `PlayerHud:OpenCrafting` calls
-`GiftItemToast:ToggleController(true)`, hiding the toast; `CloseCrafting` shows it
-again. At 14:14:49 UTC a fresh worker frame and read-only screenshot showed the toast
-visible and gray, with `IN_WORLD_IDLE`, no held inputs, and no actionable gift. This
-later frame does not say whether the crafting menu briefly opened after the action.
+The worker correction for gray pending icons remains deployed: it reports
+`IN_WORLD_GIFT_PENDING`, not `NO_REWARD_AVAILABLE`, and keeps a separate
+`inworld_gift_state`. Source inspection established that a fresh player starts with its
+server inventory open. `Tab` only toggles controller inventory UI and `b` toggles the
+crafting UI. The initial player position `(369.599, 193.648)` was 4.99 units from the
+prepared Science Machine `(374, 196)`, outside the 4-unit research-machine radius.
+The one-shot 0.45-second canonical station approach was deployed; two steps were sent
+and each fresh gameplay ROI verified. An active pink/red gift appeared afterward.
 
-The generic `OPEN_CRAFTING_MENU` screen-change check was replaced with a fresh
-verified-hidden `world_present_banner` postcondition and deployed. One live `b` press
-then timed out after eight seconds with the gray toast still visible. GameWorker
-returned to safe `OBSERVE`/`NEEDS_ATTENTION` with no held input. Repeating the
-crafting-menu action is not useful. A single 0.45-second canonical step toward the
-visible prepared Science Machine is now proposed when a pending gift is detected; it is
-bounded to one attempt and has focused tests, but is not yet deployed.
+A real 1280x720 frame and 58x58 active gift crop were captured at 14:30:30 UTC. The
+active template scores 0.99994; the gray template scores 0.91665 and misses, causing the
+deployed classifier to return UNKNOWN for a valid in-world HUD. The local, uncommitted
+regression patch classifies the frame as `IN_WORLD_IDLE` plus `GIFT_AVAILABLE`, while
+daily login state remains UNKNOWN. It also separates in-world opening/received telemetry
+from daily state. The worker was left in OBSERVE with no held inputs.
 
-The production gift click remains gated on an independently verified active icon; the
-active icon reference is still unavailable, and the distinct in-world popup/result/claim
-flow still needs captured live evidence and implementation. Daily login claim is also
-not live-proven.
+No gift icon click has been sent because the live `GiftItemPopUp`/`Use Later` claim path
+is not yet observable or implemented end to end. There is no real daily claim, durable
+in-world claim, repeated gift claim, eligible-time measurement, or proof of AFK/activity
+semantics. The session is online and the item server HealthCheck previously returned
+OK, but authenticated reward eligibility is not established.
 
 ## Next evidence step
 
-Deploy the one-shot canonical station-approach action and capture the immediate fresh
-screen plus gift ROI. If the gift remains gray, the fixed prepared fixture is outside
-the machine eligibility context; resolve its measured position/range before another
-input. Only an active present sample can justify the gift click; first implement and
-verify the distinct `GiftItemPopUp` flow. Do not treat the existing session duration as
-eligible playtime, and do not infer a precise timer from community estimates.
+Deploy the focused active-present classifier patch while keeping the worker in OBSERVE;
+verify the fresh live frame becomes `IN_WORLD_IDLE` / `GIFT_AVAILABLE`. Then prepare the
+production gift popup handling before enabling its canonical click, so that opening can
+be observed and the result/Use Later/durable confirmation path can be completed without
+claiming success from icon disappearance or modal closure. Do not count time before the
+exact ACTIVE timestamp as measured eligible time.

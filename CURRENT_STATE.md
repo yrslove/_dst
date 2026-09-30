@@ -44,7 +44,8 @@ Known gift evidence:
 - A gray wrapped-present means a gift is pending but not actionable.
 - A nearby valid Science Machine / Alchemy Engine enables gift access.
 - The gray-present ROI exists; it identifies the pending state, not an enabled actionable gift.
-- An enabled-present live fixture is still required to establish the actionable visual state.
+- An enabled-present live fixture has been captured; it proves the actionable visual
+  state but no gift has yet been opened or claimed.
 - Required real path: `enabled gift -> Opening -> You Received -> Use Later -> fresh IN_WORLD`.
 - The claim is complete only after the fresh observation confirms return to `IN_WORLD`.
 
@@ -174,7 +175,7 @@ claim validation remains pending. Rollback resources remain preserved.
 - Fixed menu click locations must continue to come from
   `dst-1280x720-linux-v1`; do not return to dynamic anchor localization for these
   controls unless the supported display profile changes.
-- The first actionable gift frame has not yet been captured.
+- The first actionable gift frame has been captured; its exact activation time is unknown.
 - Stage 1 live status remains `STAGE_1_LIVE_VALIDATION_PENDING`: a live actionable
   reward must still be claimed and confirmed.
 - Safe world profile ownership and current-process configuration evidence are now
@@ -207,9 +208,9 @@ claim validation remains pending. Rollback resources remain preserved.
   `f723a9ee5090529240e3775d68a426abfa2a6aff`. The post-recovery-change production
   world-entry acceptance completed; GameWorker was returned to DISABLED afterward.
 
-The gift milestone is not complete from the gray-present observation alone. The next
-concrete evidence is an enabled-present frame from Farm 01, followed by the real claim
-sequence and fresh-state verification.
+The gift milestone is not complete from the gray-present observation alone. An enabled
+present has since been captured. The real claim sequence and fresh-state verification
+remain outstanding.
 
 ## Stage 3B safe world-entry reconciliation (2026-09-29)
 
@@ -527,9 +528,8 @@ Further source audit found `inventory_replica.lua` schedules server-side
 `b` opens/closes crafting UI. Neither proves gift-machine eligibility. With the gray
 toast, `hasgiftmachine` is false. The latest screenshot shows the prepared Science
 Machine below the player, so the next bounded experiment is one 0.45-second canonical
-step toward it. The proposal is unit-tested but not deployed; no additional input has
-been sent. Focused transition/action tests passed (59 before the new proposal; 113 for
-the combined activity/transition/action set), Ruff and `git diff --check` passed. The
+step toward it. The station approach was deployed and used in two bounded steps, each verified from a
+fresh gameplay ROI. A pink/red ACTIVE gift was then captured; see Stage 4C below. The
 13:50 item-server HealthCheck is endpoint-only evidence. No login or in-world claim,
 eligible-play duration, weekly progress, or AFK comparison is proven.
 
@@ -538,3 +538,22 @@ eligible-play duration, weekly progress, or AFK comparison is proven.
 Dated stage, progress, handoff, and validation documents are historical evidence. They
 are not current task authority unless the user explicitly names one. Use this document
 for current status and blockers.
+
+
+## Stage 4C — live active-present regression and current status (2026-09-30)
+
+At 14:30:30 UTC, a real 1280x720 screenshot and 58x58 present crop were saved as
+`runtime_agent/gameworker/dst/assets/samples/gift_icon_active_in_world_live.png` and
+`gift_icon_active_live.png`. The active template matches at 0.99994 confidence. The
+gray template scores 0.91665 and misses the icon; the old HUD classifier consequently
+returned `UNKNOWN` despite a valid in-world HUD. Offline replay with the local patch
+recognizes `IN_WORLD_IDLE` and `GIFT_AVAILABLE`; daily login state remains `UNKNOWN`.
+
+The local change adds the verified active crop as an independent HUD anchor and makes
+`CLICK_GIFT_ICON` track only in-world opening/received states, leaving daily login state
+separate. The matching corpus fixture and focused regression are added. Deployed
+revision is still `ba11c5a`; the patch has not yet been deployed. The worker was observed
+in safe OBSERVE mode with no held inputs after the classifier failure. The real
+`GiftItemPopUp`/`Use Later` transition still lacks a live fixture, and no click has been
+sent. Exact activation time, AFK-vs-active requirement, eligible-play interval, durable
+in-world claim, repeated claim, daily claim, and weekly target/reset remain unknown.

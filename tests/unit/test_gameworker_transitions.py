@@ -205,26 +205,37 @@ def test_gift_icon_transport_success_waits_for_specific_reward_ui_transition():
     assert result is not None and result.status == ActionStatus.TIMED_OUT
 
 
-def test_gift_open_succeeds_only_with_reward_panel_and_open_anchor():
+def test_inworld_gift_click_does_not_accept_the_daily_login_modal():
     before = active_gift_frame(1)
     clock = [before.observed_monotonic + .001]
     lifecycle = ActionLifecycle(clock=lambda: clock[0])
     assert lifecycle.begin(sent(ActionName.CLICK_GIFT_ICON), before).status == ActionStatus.VERIFYING
     panel = gift_reward_panel(before, sequence=2)
     result = lifecycle.observe(panel)
-    assert result is not None and result.status == ActionStatus.SUCCEEDED
-    assert "LOGIN_REWARD_AVAILABLE" in result.reason
+    assert result is not None and result.status == ActionStatus.FAILED
+    assert "unexpected state LOGIN_REWARD_AVAILABLE" in result.reason
 
 
-def test_gift_open_without_specific_ui_anchors_times_out_without_success():
+def test_inworld_gift_opening_has_its_own_transition_state():
     before = active_gift_frame(1)
     clock = [before.observed_monotonic + .001]
     lifecycle = ActionLifecycle(clock=lambda: clock[0])
     assert lifecycle.begin(sent(ActionName.CLICK_GIFT_ICON), before).status == ActionStatus.VERIFYING
-    panel = gift_reward_panel(before, sequence=2, markers=False)
-    assert lifecycle.observe(panel) is None
-    clock[0] += 12.1
-    assert lifecycle.poll().status == ActionStatus.TIMED_OUT
+    popup = replace(
+        before,
+        timestamp="gift-popup-opening-2",
+        observation_generation=2,
+        source_frame_id="gift-popup-opening-2",
+        source_sequence=2,
+        source_captured_monotonic=clock[0] + .1,
+        observed_monotonic=clock[0] + .1,
+        fresh_until=clock[0] + 3,
+        screen=DSTScreen.IN_WORLD_GIFT_OPENING,
+        screen_confidence=.99,
+    )
+    result = lifecycle.observe(popup)
+    assert result is not None and result.status == ActionStatus.SUCCEEDED
+    assert "IN_WORLD_GIFT_OPENING" in result.reason
 
 
 def test_survivor_hover_is_known_but_requires_loadout_to_complete():

@@ -60,13 +60,13 @@ CONTRACTS = {
     ActionName.CLICK_GIFT_ICON: ActionContract(
         ("gift_icon",),
         frozenset({DSTScreen.IN_WORLD_IDLE}),
-        frozenset({DSTScreen.LOGIN_REWARD_AVAILABLE}),
+        frozenset({
+            DSTScreen.IN_WORLD_GIFT_OPENING,
+            DSTScreen.IN_WORLD_GIFT_RECEIVED,
+        }),
         timeout=12.0,
         confidence=0.94,
         stable_observations=1,
-        postcondition_detections=(
-            "login_reward_title", "login_reward_open_button",
-        ),
     ),
     ActionName.MOVE_FORWARD: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),

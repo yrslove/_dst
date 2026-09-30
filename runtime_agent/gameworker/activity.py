@@ -280,6 +280,10 @@ class ActivityController:
                     else None
                 ),
             }
+        elif observation.screen == DSTScreen.IN_WORLD_GIFT_OPENING:
+            self.inworld_gift_state = InWorldGiftState.OPENING
+        elif observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED:
+            self.inworld_gift_state = InWorldGiftState.RECEIVED
         if observation.source_sequence > self._last_gift_observation_sequence:
             self._last_gift_observation_sequence = observation.source_sequence
             if observation.screen == DSTScreen.LOGIN_REWARD_AVAILABLE:
@@ -929,7 +933,11 @@ class ActivityController:
         if result.action == ActionName.CLICK_GIFT_ICON:
             self._awaiting_reward_transition = False
             if result.status == ActionStatus.SUCCEEDED:
-                self.daily_gift_state = DailyGiftState.GIFT_UI_OPEN
+                self.inworld_gift_state = (
+                    InWorldGiftState.RECEIVED
+                    if observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
+                    else InWorldGiftState.OPENING
+                )
                 self._gift_icon_click_attempts = 2
                 self.counters["verified_actions"] += 1
             elif (
@@ -939,7 +947,7 @@ class ActivityController:
             ):
                 # Retry only through the normal planner on a later fresh frame;
                 # it must still detect the active icon before proposing a click.
-                self.daily_gift_state = DailyGiftState.GIFT_AVAILABLE
+                self.inworld_gift_state = InWorldGiftState.ACTIONABLE
             else:
                 self.intervention_required = True
             self._record(
