@@ -7,6 +7,7 @@ from app.scheduling.core import (
     JobIntent,
     JobType,
     ResourceContext,
+    WeeklyState,
     WorkerSlot,
     decide_next_job,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "JobIntent",
     "JobType",
     "ResourceContext",
+    "WeeklyState",
     "WorkerSlot",
     "decide_next_job",
 ]

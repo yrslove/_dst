@@ -55,6 +55,7 @@ from app.schemas import (
     ViewSessionCreate,
     WorkerModeRequest,
 )
+from app.services.account_scheduler import AccountScheduler
 from app.services.accounts import (
     AccountBusyError,
     AccountService,
@@ -75,7 +76,7 @@ from app.services.views import ViewService, ViewSessionNotFound, ViewSessionNotR
 from app.services.watchdog import Watchdog
 from app.services.workers import WorkerControlError, WorkerControlService
 
-EXPECTED_SCHEMA_REVISION = "0010_long_session"
+EXPECTED_SCHEMA_REVISION = "0011_account_schedule_state"
 logger = logging.getLogger("control_plane")
 
 
@@ -115,6 +116,7 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
         lease_seconds=settings.slot_lease_seconds,
         node_stale_seconds=settings.node_stale_seconds,
     )
+    account_scheduler = AccountScheduler(db, jobs, leases)
     accounts = AccountService(db, secrets_service, jobs, settings)
     auth = AuthService(db, settings)
     selected_provider = provider or (
@@ -146,7 +148,7 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
         f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}",
         lease_seconds=settings.scheduler_leader_lease_seconds,
     )
-    scheduler = Scheduler(db, jobs, leadership)
+    scheduler = Scheduler(db, jobs, leadership, account_scheduler)
     reconciler = Reconciler(db, selected_provider, leadership)
     watchdog = Watchdog(db, leases, settings)
     executor = JobExecutor(
@@ -263,6 +265,7 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
     app.state.provider = selected_provider
     app.state.agents = agents
     app.state.scheduler = scheduler
+    app.state.account_scheduler = account_scheduler
     app.state.leadership = leadership
     app.state.reconciler = reconciler
     app.state.watchdog = watchdog

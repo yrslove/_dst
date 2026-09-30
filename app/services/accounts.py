@@ -12,6 +12,7 @@ from app.domain.errors import AccountNotFound, NodeOffline
 from app.domain.state import transition_account, transition_node
 from app.models import (
     Account,
+    AccountScheduleState,
     AccountSecret,
     AccountState,
     AuditEvent,
@@ -115,6 +116,19 @@ class AccountService:
                 )
                 session.add(account)
                 session.flush()
+                session.add(
+                    AccountScheduleState(
+                        account_id=account.id,
+                        daily_status="UNKNOWN",
+                        weekly_state="UNSYNCED_CURRENT_CYCLE",
+                        weekly_collected=None,
+                        confirmed_claims_current_observation=0,
+                        weekly_target=8,
+                        phase="FARMING",
+                        pending_gift=False,
+                        schedule_revision=0,
+                    )
+                )
                 session.add(
                     AccountSecret(
                         account_id=account.id,

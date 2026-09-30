@@ -36,7 +36,10 @@ from app.models import (
     utcnow,
 )
 from app.schemas import NodeHeartbeatRequest, RuntimeHeartbeatRequest
-from app.services.gameplay import persist_worker_gift_progress
+from app.services.gameplay import (
+    persist_worker_gift_progress,
+    persist_worker_inworld_gift_confirmation,
+)
 from app.services.leases import LeaseService
 from app.services.records import add_event
 from app.services.security import ensure_utc, token_matches
@@ -397,6 +400,15 @@ class AgentService:
             worker_run=current,
             report=report,
             worker_state=state,
+            now=now,
+            sqlite=self.db.is_sqlite,
+        )
+        persist_worker_inworld_gift_confirmation(
+            session,
+            account_id=runtime.account_id,
+            runtime_id=runtime.id,
+            worker_run=current,
+            report=report,
             now=now,
             sqlite=self.db.is_sqlite,
         )

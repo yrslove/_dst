@@ -7,10 +7,20 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import GameplayTask, GameplayTaskStatus, WorkerRun, utcnow
+from app.models import (
+    AccountScheduleState,
+    GameplayTask,
+    GameplayTaskStatus,
+    Job,
+    JobStatus,
+    WorkerRun,
+    utcnow,
+)
 
 DAILY_GIFT_TASK = "DAILY_GIFT_CLAIM"
+INWORLD_WEEKLY_CLAIM_TASK = "INWORLD_WEEKLY_CLAIM"
 CONFIRMED_SEMANTIC = "DAILY_GIFT_CONFIRMED"
+INWORLD_CONFIRMED_SEMANTIC = "IN_WORLD_GIFT_CONFIRMED"
 ACTIVE_TASK_STATUSES = (
     GameplayTaskStatus.PENDING,
     GameplayTaskStatus.RUNNING,
@@ -62,6 +72,209 @@ def _confirmation_parts(value: object) -> tuple[str, dict] | None:
         "evidence_sequence": sequence,
         "observed_at": observed_at,
     }
+
+
+def inworld_claim_identity(action_id: str, received_frame_id: str) -> str:
+    return json.dumps(
+        [INWORLD_WEEKLY_CLAIM_TASK, action_id, received_frame_id],
+        separators=(",", ":"),
+    )
+
+
+def _inworld_confirmation_parts(value: object, runtime_id: int):
+    if not isinstance(value, dict) or value.get("semantic") != INWORLD_CONFIRMED_SEMANTIC:
+        return None
+    action_id = value.get("action_id")
+    frame_id = value.get("evidence_frame_id")
+    received_frame_id = value.get("received_frame_id")
+    sequence = value.get("evidence_sequence")
+    observed_at = value.get("observed_at")
+    backend = value.get("backend")
+    item_id = value.get("item_id")
+    if (
+        not isinstance(action_id, str)
+        or not action_id
+        or len(action_id) > 256
+        or not isinstance(frame_id, str)
+        or not frame_id
+        or len(frame_id) > 256
+        or not isinstance(received_frame_id, str)
+        or not received_frame_id
+        or len(received_frame_id) > 256
+        or not isinstance(sequence, int)
+        or isinstance(sequence, bool)
+        or sequence < 1
+        or _parse_timestamp(observed_at) is None
+        or value.get("runtime_id") != runtime_id
+        or value.get("verification") != "RECORDED_CANONICAL_CLOSE_FRESH_WORLD"
+        or not isinstance(item_id, int)
+        or isinstance(item_id, bool)
+        or item_id < 1
+        or not isinstance(backend, dict)
+        or backend.get("operation") != "SetItemOpened_Complete"
+        or backend.get("http_status") != 200
+        or backend.get("error") is not False
+        or not isinstance(backend.get("ack_sha256"), str)
+        or len(backend["ack_sha256"]) != 64
+        or any(char not in "0123456789abcdef" for char in backend["ack_sha256"])
+    ):
+        return None
+    identity = inworld_claim_identity(action_id, received_frame_id)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest(), {
+        "semantic": INWORLD_CONFIRMED_SEMANTIC,
+        "action_id": action_id,
+        "received_frame_id": received_frame_id,
+        "evidence_frame_id": frame_id,
+        "evidence_sequence": sequence,
+        "observed_at": observed_at,
+        "item_id": item_id,
+        "backend_operation": backend["operation"],
+        "backend_http_status": 200,
+        "backend_ack_sha256": backend["ack_sha256"],
+    }
+
+
+def persist_worker_inworld_gift_confirmation(
+    session: Session,
+    *,
+    account_id: int,
+    runtime_id: int,
+    worker_run: WorkerRun | None,
+    report: dict,
+    now: datetime,
+    sqlite: bool,
+) -> GameplayTask | None:
+    """Persist verified claim receipts and fresh claimability in the heartbeat transaction."""
+    telemetry = report.get("telemetry")
+    confirmation = (
+        _inworld_confirmation_parts(telemetry.get("inworld_gift_confirmation"), runtime_id)
+        if isinstance(telemetry, dict)
+        else None
+    )
+    if not isinstance(telemetry, dict):
+        return None
+    statement = select(AccountScheduleState).where(
+        AccountScheduleState.account_id == account_id
+    )
+    if not sqlite:
+        statement = statement.with_for_update()
+    state = session.scalar(statement)
+    if state is None:
+        return None
+    changed = False
+    observed_at = _parse_timestamp(report.get("last_observation_at"))
+    fresh = observed_at is not None and -5 <= (now - observed_at).total_seconds() <= 180
+    availability = telemetry.get("inworld_gift_state")
+    if confirmation is None:
+        if fresh and availability == "IN_WORLD_GIFT_ACTIONABLE":
+            if not state.pending_gift:
+                state.pending_gift = True
+                changed = True
+        elif fresh and availability in {
+            "IN_WORLD_GIFT_PENDING",
+            "NO_REWARD_AVAILABLE",
+        }:
+            if state.pending_gift:
+                state.pending_gift = False
+                changed = True
+            if state.next_weekly_eligible_at is not None or state.estimated_due_at is not None:
+                state.next_weekly_eligible_at = None
+                state.estimated_due_at = None
+                changed = True
+        if changed:
+            _cancel_obsolete_queued_schedule_job(session, state, now)
+            state.schedule_revision += 1
+        return None
+
+    confirmation_key, result = confirmation
+    existing = session.scalar(
+        select(GameplayTask).where(
+            GameplayTask.account_id == account_id,
+            GameplayTask.kind == INWORLD_WEEKLY_CLAIM_TASK,
+            GameplayTask.confirmation_key == confirmation_key,
+        )
+    )
+    if existing is not None:
+        if state.pending_gift:
+            state.pending_gift = False
+            state.schedule_revision += 1
+        return existing
+    if worker_run is not None and worker_run.id is None:
+        session.flush()
+    confirmed_at = _parse_timestamp(result["observed_at"]) or now
+    receipt = GameplayTask(
+        account_id=account_id,
+        runtime_id=runtime_id,
+        worker_run_id=worker_run.id if worker_run else None,
+        kind=INWORLD_WEEKLY_CLAIM_TASK,
+        status=GameplayTaskStatus.SUCCEEDED,
+        started_at=confirmed_at,
+        updated_at=now,
+        completed_at=now,
+        confirmation_key=confirmation_key,
+        claim_confirmed_at=confirmed_at,
+        claim_persisted_at=now,
+        result_json=result,
+    )
+    session.add(receipt)
+    if state.weekly_state == "SYNCED":
+        state.weekly_collected += 1
+        if state.weekly_collected >= state.weekly_target:
+            state.phase = "DONE"
+        elif state.weekly_target - state.weekly_collected == 1:
+            state.phase = "FINAL_COLLECTION"
+        else:
+            state.phase = "FARMING"
+    else:
+        state.confirmed_claims_current_observation += 1
+    state.pending_gift = False
+    state.last_weekly_claim_at = confirmed_at
+    state.next_weekly_eligible_at = None
+    state.estimated_due_at = None
+    _cancel_obsolete_queued_schedule_job(session, state, now)
+    state.schedule_revision += 1
+    session.flush()
+    return receipt
+
+
+def _cancel_obsolete_queued_schedule_job(session, state, now: datetime) -> None:
+    if not state.active_job_key:
+        return
+    job = session.scalar(
+        select(Job).where(Job.idempotency_key == state.active_job_key)
+    )
+    if job is None or job.status not in {JobStatus.PENDING, JobStatus.RETRY}:
+        return
+    intent = job.payload.get("account_schedule_intent")
+    weekly_complete = (
+        state.weekly_state == "SYNCED"
+        and state.weekly_collected >= state.weekly_target
+    )
+    obsolete = (
+        state.pending_gift and intent in {"WEEKLY_FARM", "FINAL_COLLECTION"}
+    ) or (
+        state.weekly_state != "SYNCED"
+        and intent in {"WEEKLY_FARM", "FINAL_COLLECTION"}
+    ) or (
+        weekly_complete and intent in {"WEEKLY_FARM", "FINAL_COLLECTION"}
+    ) or (not state.pending_gift and intent == "CLAIM_PENDING_GIFT") or (
+        state.daily_status != "PENDING" and intent == "DAILY_MAINTENANCE"
+    )
+    if not obsolete:
+        return
+    job.status = JobStatus.CANCELLED
+    job.completed_at = now
+    task_id = job.payload.get("gameplay_task_id")
+    task = session.get(GameplayTask, task_id) if task_id else None
+    if task is not None and task.status in {
+        GameplayTaskStatus.PENDING,
+        GameplayTaskStatus.RUNNING,
+    }:
+        task.status = GameplayTaskStatus.CANCELLED
+        task.completed_at = now
+        task.updated_at = now
+    state.active_job_key = None
+    state.active_job_type = None
 
 
 def _active_task(

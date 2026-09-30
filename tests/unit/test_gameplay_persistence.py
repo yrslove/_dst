@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db import Database, migrate
 from app.models import (
     Account,
+    AccountScheduleState,
     GameplayTask,
     GameplayTaskStatus,
     Node,
@@ -96,6 +97,26 @@ def _confirmation(
     }
 
 
+def _inworld_confirmation(runtime_id: int) -> dict:
+    return {
+        "semantic": "IN_WORLD_GIFT_CONFIRMED",
+        "action_id": "runtime-1:worker-1:action-2",
+        "received_frame_id": "r1-w1-f2",
+        "evidence_frame_id": "r1-w2-f2",
+        "evidence_sequence": 2,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "runtime_id": runtime_id,
+        "verification": "RECORDED_CANONICAL_CLOSE_FRESH_WORLD",
+        "item_id": 123456,
+        "backend": {
+            "operation": "SetItemOpened_Complete",
+            "http_status": 200,
+            "error": False,
+            "ack_sha256": "a" * 64,
+        },
+    }
+
+
 def _update(db: Database, run_ids: tuple[int, int, int], report: dict) -> None:
     _, runtime_id, _ = run_ids
     service = AgentService(db, leases=None, settings=None)
@@ -154,6 +175,20 @@ def test_runtime_heartbeat_persists_worker_pipeline_result(tmp_path):
         session.add(runtime)
         session.flush()
         runtime_id = runtime.id
+        account_id = account.id
+        session.add(
+            AccountScheduleState(
+                account_id=account.id,
+                daily_status="UNKNOWN",
+                weekly_state="UNSYNCED_CURRENT_CYCLE",
+                weekly_collected=None,
+                confirmed_claims_current_observation=1,
+                weekly_target=8,
+                phase="FARMING",
+                pending_gift=False,
+                schedule_revision=0,
+            )
+        )
 
     class LeaseSink:
         def renew_slot(self, _runtime_id):
@@ -176,6 +211,7 @@ def test_runtime_heartbeat_persists_worker_pipeline_result(tmp_path):
                 "telemetry"
             ],
             "daily_gift_confirmation": _confirmation(),
+            "inworld_gift_confirmation": _inworld_confirmation(runtime_id),
         },
     }
     payload = RuntimeHeartbeatRequest(
@@ -195,10 +231,18 @@ def test_runtime_heartbeat_persists_worker_pipeline_result(tmp_path):
     with db.session() as session:
         tasks = list(session.scalars(select(GameplayTask)))
         runs = list(session.scalars(select(WorkerRun)))
-        assert len(tasks) == 1
-        assert tasks[0].status == GameplayTaskStatus.SUCCEEDED
-        assert tasks[0].runtime_id == runtime_id
-        assert tasks[0].worker_run_id == runs[0].id
+        assert len(tasks) == 2
+        daily = next(task for task in tasks if task.kind == "DAILY_GIFT_CLAIM")
+        inworld = next(task for task in tasks if task.kind == "INWORLD_WEEKLY_CLAIM")
+        assert daily.status == GameplayTaskStatus.SUCCEEDED
+        assert daily.runtime_id == runtime_id
+        assert daily.worker_run_id == runs[0].id
+        assert inworld.status == GameplayTaskStatus.SUCCEEDED
+        assert inworld.worker_run_id == runs[0].id
+        state = session.get(AccountScheduleState, account_id)
+        assert state.weekly_state == "UNSYNCED_CURRENT_CYCLE"
+        assert state.weekly_collected is None
+        assert state.confirmed_claims_current_observation == 2
     db.dispose()
 
 
