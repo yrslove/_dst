@@ -570,6 +570,59 @@ class GameplayTask(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
 
 
+class AccountScheduleState(Base, TimestampMixin):
+    """Durable reward cadence state consumed by the orchestration scheduler."""
+
+    __tablename__ = "account_schedule_states"
+    __table_args__ = (
+        CheckConstraint(
+            "daily_status IN ('PENDING','DONE')", name="ck_schedule_daily_status"
+        ),
+        CheckConstraint(
+            "phase IN ('FARMING','FINAL_COLLECTION','DONE')", name="ck_schedule_phase"
+        ),
+        CheckConstraint("weekly_collected >= 0", name="ck_schedule_weekly_collected"),
+        CheckConstraint("weekly_target >= 0", name="ck_schedule_weekly_target"),
+        CheckConstraint(
+            "(active_job_key IS NULL AND active_job_type IS NULL) OR "
+            "(active_job_key IS NOT NULL AND active_job_type IS NOT NULL)",
+            name="ck_schedule_active_job_pair",
+        ),
+        CheckConstraint(
+            "active_job_type IS NULL OR active_job_type IN "
+            "('DAILY_MAINTENANCE','WEEKLY_FARM','FINAL_COLLECTION','CLAIM_PENDING_GIFT')",
+            name="ck_schedule_active_job_type",
+        ),
+        UniqueConstraint("active_job_key", name="uq_account_schedule_active_job"),
+    )
+
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    daily_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="PENDING"
+    )
+    weekly_collected: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    weekly_target: Mapped[int] = mapped_column(Integer, nullable=False)
+    phase: Mapped[str] = mapped_column(String(24), nullable=False, default="FARMING")
+    pending_gift: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    next_daily_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_weekly_eligible_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    estimated_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_daily_claim_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_weekly_claim_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    estimated_time_to_gift_seconds: Mapped[float | None] = mapped_column(Float)
+    schedule_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active_job_key: Mapped[str | None] = mapped_column(String(160))
+    active_job_type: Mapped[str | None] = mapped_column(String(32))
+
+
 class RuntimeImage(Base, TimestampMixin):
     __tablename__ = "runtime_images"
     version: Mapped[str] = mapped_column(String(120), primary_key=True)
