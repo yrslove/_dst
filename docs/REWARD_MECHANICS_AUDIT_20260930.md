@@ -100,10 +100,15 @@ and each fresh gameplay ROI verified. An active pink/red gift appeared afterward
 
 A real 1280x720 frame and 58x58 active gift crop were captured at 14:30:30 UTC. The
 active template scores 0.99994; the gray template scores 0.91665 and misses, causing the
-deployed classifier to return UNKNOWN for a valid in-world HUD. The local, uncommitted
-regression patch classifies the frame as `IN_WORLD_IDLE` plus `GIFT_AVAILABLE`, while
-daily login state remains UNKNOWN. It also separates in-world opening/received telemetry
-from daily state. The worker was left in OBSERVE with no held inputs.
+deployed classifier to return UNKNOWN for a valid in-world HUD. Commit `003e1fa` adds
+the regression patch, which classifies the retained frame as
+`IN_WORLD_IDLE` plus `GIFT_AVAILABLE` offline while daily login state remains UNKNOWN.
+It also separates in-world opening/received telemetry from daily state. Deployment
+metadata now names `003e1fa`, but `deploy_runtime.py` timed out before confirming the
+new agent startup/adoption heartbeat. The last heartbeat reported OBSERVE /
+NEEDS_ATTENTION and held inputs false; the Control Plane now marks the runtime STALE.
+A fresh read-only screenshot still showed alive Wilson, Day 37, and the active gift, and
+the Xvfb/Steam/DST PIDs did not change. No click was sent.
 
 No gift icon click has been sent because the live `GiftItemPopUp`/`Use Later` claim path
 is not yet observable or implemented end to end. There is no real daily claim, durable
@@ -113,9 +118,9 @@ OK, but authenticated reward eligibility is not established.
 
 ## Next evidence step
 
-Deploy the focused active-present classifier patch while keeping the worker in OBSERVE;
-verify the fresh live frame becomes `IN_WORLD_IDLE` / `GIFT_AVAILABLE`. Then prepare the
-production gift popup handling before enabling its canonical click, so that opening can
-be observed and the result/Use Later/durable confirmation path can be completed without
-claiming success from icon disappearance or modal closure. Do not count time before the
-exact ACTIVE timestamp as measured eligible time.
+Restore Runtime Agent heartbeat/adoption through the existing safe managed lifecycle
+while preserving the live Steam/DST session; verify the current deployed revision and fresh
+OBSERVE classification without input. Then prepare the production gift popup handling
+before enabling its canonical click, so opening and durable confirmation can be
+verified from live evidence. Do not count time before the exact ACTIVE timestamp as
+measured eligible time.
