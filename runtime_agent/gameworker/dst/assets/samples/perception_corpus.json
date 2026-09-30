@@ -103,6 +103,19 @@
       }
     },
     {
+      "id": "in-world-active-gift-multibanner-live-20260930",
+      "image": "gift_icon_active_multibanner_live.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "source": "live 1280x720 DST framebuffer captured 2026-09-30 16:41:57 UTC after one bounded production approach step",
+      "real_fixture": true,
+      "detector_metadata": {
+        "anchors": ["game_hud", "gift_icon_active"],
+        "gift_bounds_px": [353, 10, 411, 68],
+        "activity_state_at_capture": "GameWorker ACTIVE after one TURN_LEFT 0.47s; no held inputs",
+        "gift_meaning": "ACTIVE; actionable"
+      }
+    },
+    {
       "id": "reset-pending-live",
       "image": "death_world_reset_live.png",
       "expected_state": "WORLD_RESET_PENDING",

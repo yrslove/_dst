@@ -108,6 +108,42 @@ def test_gray_gift_banner_after_additional_hud_banner_remains_pending():
     assert icon.detected and dict(icon.metadata)["availability"] == "IN_WORLD_GIFT_PENDING"
 
 
+def test_active_gift_click_anchor_accepts_displaced_live_banner():
+    image = Image.open(
+        ASSETS / "samples/gift_icon_active_multibanner_live.png"
+    ).convert("RGB")
+    observation = analyze_image(image, "gift-active-multibanner-live", 1)
+    icon = next(item for item in observation.detections if item.kind == "gift_icon")
+
+    assert icon.detected and icon.verified
+    assert dict(icon.metadata)["availability"] == "GIFT_AVAILABLE"
+    assert action_precondition_error(ActionName.CLICK_GIFT_ICON, observation) is None
+    target, viewport = click_request(ActionName.CLICK_GIFT_ICON, observation)
+    actions, _controller, _driver, _deadman = executor()
+    try:
+        result = actions.execute(
+            Action(
+                "gift-click-multibanner",
+                ActionName.CLICK_GIFT_ICON,
+                runtime_generation=7,
+                worker_generation=3,
+                runtime_id=2,
+                deadline=min(time.monotonic() + 1.0, observation.fresh_until),
+                parameters=(
+                    ("x", target.x),
+                    ("y", target.y),
+                    ("width", viewport.width),
+                    ("height", viewport.height),
+                    ("evidence_sequence", observation.source_sequence),
+                ),
+            )
+        )
+    finally:
+        actions.shutdown()
+
+    assert result.status == ActionStatus.SENT
+
+
 def test_gray_gift_approaches_station_once_before_any_gift_click():
     _, observation = gray_observation()
     policy = ActivityController()

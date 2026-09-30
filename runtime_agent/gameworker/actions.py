@@ -180,9 +180,9 @@ _PRESS_KEYS = {
     ActionName.PAUSE_WORLD: "cancel",
 }
 CLICK_REGIONS = {
-    ActionName.HOVER_GIFT_ICON: (0.115, 0.0, 0.2, 0.14),
+    ActionName.HOVER_GIFT_ICON: (0.115, 0.0, 0.36, 0.14),
     # Guard only. The actual point is resolved from the current gift detection.
-    ActionName.CLICK_GIFT_ICON: (0.115, 0.0, 0.2, 0.14),
+    ActionName.CLICK_GIFT_ICON: (0.115, 0.0, 0.36, 0.14),
     ActionName.CLICK_INWORLD_USE_LATER: (0.34, 0.79, 0.51, 0.9),
     ActionName.CLICK_REWARD_OPEN: (0.35, 0.75, 0.65, 0.97),
     ActionName.CLICK_REWARD_CLOSE: (0.35, 0.75, 0.65, 0.97),
