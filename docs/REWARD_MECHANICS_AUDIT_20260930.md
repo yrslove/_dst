@@ -37,6 +37,16 @@ adds this tag. A nearby, visible Science Machine/Alchemy Engine and open invento
 are therefore required to make the gift button actionable. The code also tags
 Bookcase as a gift machine; it is not required for the prepared fixture.
 
+`scripts/components/inventory_replica.lua` schedules `components.inventory:Open()` at
+player creation, so a normal fresh player starts with the server inventory open.
+`CONTROL_OPEN_INVENTORY` only toggles controller inventory UI, while
+`CONTROL_OPEN_CRAFTING` toggles the crafting UI; neither input directly opens the
+server inventory component or establishes a nearby giftmachine. A visible gray toast
+is live evidence that `hasgiftmachine` is currently false. The prepared Science Machine
+is visible below the character in the live screenshot, so the remaining source
+conditions point to its current range/visibility context; the screenshot does not prove
+the exact player-to-machine distance.
+
 `GiftItemToast` shows while `numitems > 0`; its click is enabled only when
 `hasgiftmachine` is true. A gray visible present therefore means a gift is pending
 but the machine context is not currently enabled. `gray == NO_REWARD_AVAILABLE` is
@@ -91,19 +101,24 @@ again. At 14:14:49 UTC a fresh worker frame and read-only screenshot showed the 
 visible and gray, with `IN_WORLD_IDLE`, no held inputs, and no actionable gift. This
 later frame does not say whether the crafting menu briefly opened after the action.
 
-The generic `OPEN_CRAFTING_MENU` screen-change check has now been replaced with a fresh
-verified-hidden `world_present_banner` postcondition. Focused transition/action tests
-pass, but that code change has not yet been deployed. The production gift click remains
-gated on an independently verified active icon; the active icon reference is still
-unavailable, and the distinct in-world popup/result/claim flow still needs captured
-live evidence and implementation. Daily login claim is also not live-proven.
+The generic `OPEN_CRAFTING_MENU` screen-change check was replaced with a fresh
+verified-hidden `world_present_banner` postcondition and deployed. One live `b` press
+then timed out after eight seconds with the gray toast still visible. GameWorker
+returned to safe `OBSERVE`/`NEEDS_ATTENTION` with no held input. Repeating the
+crafting-menu action is not useful. A single 0.45-second canonical step toward the
+visible prepared Science Machine is now proposed when a pending gift is detected; it is
+bounded to one attempt and has focused tests, but is not yet deployed.
+
+The production gift click remains gated on an independently verified active icon; the
+active icon reference is still unavailable, and the distinct in-world popup/result/claim
+flow still needs captured live evidence and implementation. Daily login claim is also
+not live-proven.
 
 ## Next evidence step
 
-Deploy the verified-hidden-toast postcondition and capture the immediate fresh screen
-after the one bounded crafting-menu action. If the verified gift toast remains visible,
-do not repeat `b` blindly: establish the live `hasgiftmachine` context from player
-position, visible tagged machine, and open inventory. Only an active present sample
-can justify the gift click; first implement and verify the distinct `GiftItemPopUp`
-flow. Do not treat the existing session duration as eligible playtime, and do not infer
-a precise timer from community estimates.
+Deploy the one-shot canonical station-approach action and capture the immediate fresh
+screen plus gift ROI. If the gift remains gray, the fixed prepared fixture is outside
+the machine eligibility context; resolve its measured position/range before another
+input. Only an active present sample can justify the gift click; first implement and
+verify the distinct `GiftItemPopUp` flow. Do not treat the existing session duration as
+eligible playtime, and do not infer a precise timer from community estimates.

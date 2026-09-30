@@ -176,6 +176,41 @@ def test_validation_disabled_does_not_propose_validation_actions_in_world():
     assert policy._validation_step == 0
 
 
+def test_pending_inworld_gift_causes_only_one_short_step_toward_prepared_station():
+    observation = analyze_image(
+        Image.open(ASSETS / "samples/gift_icon_gray_in_world_live.png").convert("RGB"),
+        "gift-station-approach-1",
+        1,
+    )
+    present = next(
+        item for item in observation.detections if item.kind == "world_present_banner"
+    )
+    pending = Detection(
+        "gift_icon",
+        True,
+        present.confidence,
+        bounds=present.bounds,
+        detector_id="gift-icon-test",
+        verified=True,
+        metadata=(("availability", "IN_WORLD_GIFT_PENDING"),),
+    )
+    observation = replace(observation, detections=observation.detections + (pending,))
+    policy = ActivityController(validation_flow_enabled=False)
+    policy.set_production_actions_enabled(True)
+
+    assert policy.propose(observation) is None
+    proposal = policy.propose(
+        replace(observation, source_frame_id="gift-station-approach-2", source_sequence=2)
+    )
+    assert proposal is not None
+    assert proposal.action == ActionName.MOVE_BACKWARD
+    assert proposal.duration == 0.45
+
+    assert policy.propose(
+        replace(observation, source_frame_id="gift-station-approach-3", source_sequence=3)
+    ) is None
+
+
 def test_active_production_world_entry_uses_fixed_profile_targets_without_validation_step():
     cases = (
         ("main_menu_after_reward.png", ActionName.CLICK_HOST_GAME, "HOST_GAME"),

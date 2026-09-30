@@ -515,14 +515,23 @@ generic pixel-change verification did not prove that the crafting menu opened. I
 `chroma_p95=13`, `colored_fraction=0`), so there is still no actionable live sample.
 That later frame cannot establish whether the menu opened briefly and then closed.
 
-`OPEN_CRAFTING_MENU` transition verification now requires the verified
+`OPEN_CRAFTING_MENU` transition verification requires the verified
 `world_present_banner` detection to disappear in a fresh frame; a generic screen change
-cannot complete the action. Focused transition/action tests passed (59 tests), Ruff and
-`git diff --check` passed. This fix is not yet deployed. The world remains
-`IN_WORLD_IDLE`, the character is alive on day 36, GameWorker is ACTIVE with no held
-inputs, and DST/Steam process identities have not changed since managed deployment.
-The 13:50 item-server HealthCheck is endpoint-only evidence. No login or in-world
-claim, eligible-play duration, weekly progress, or AFK comparison is proven.
+cannot complete the action. Commit `f9a18da` was deployed at 14:18:07 UTC without
+changing Steam/DST/Xvfb PIDs. Its single bounded `b` press timed out after 8s; the toast
+remained visible and gray. GameWorker safely fell back to `OBSERVE`/`NEEDS_ATTENTION`,
+with held inputs false.
+
+Further source audit found `inventory_replica.lua` schedules server-side
+`Inventory:Open()` at player creation. `Tab` opens/closes controller inventory UI;
+`b` opens/closes crafting UI. Neither proves gift-machine eligibility. With the gray
+toast, `hasgiftmachine` is false. The latest screenshot shows the prepared Science
+Machine below the player, so the next bounded experiment is one 0.45-second canonical
+step toward it. The proposal is unit-tested but not deployed; no additional input has
+been sent. Focused transition/action tests passed (59 before the new proposal; 113 for
+the combined activity/transition/action set), Ruff and `git diff --check` passed. The
+13:50 item-server HealthCheck is endpoint-only evidence. No login or in-world claim,
+eligible-play duration, weekly progress, or AFK comparison is proven.
 
 ## Historical documentation
 

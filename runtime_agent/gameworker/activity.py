@@ -188,7 +188,7 @@ class ActivityController:
         self.gift_availability_evidence: dict | None = None
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
-        self._gift_crafting_open_attempted = False
+        self._gift_station_approach_attempted = False
         self._reward_open_source_sequence: int | None = None
         self._last_gift_observation_sequence = 0
         self._last_confirmed_gift_sequence = 0
@@ -315,12 +315,13 @@ class ActivityController:
             self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_IDLE
             and self.inworld_gift_state == InWorldGiftState.PENDING_STATION
-            and not self._gift_crafting_open_attempted
+            and not self._gift_station_approach_attempted
         ):
-            self._gift_crafting_open_attempted = True
+            self._gift_station_approach_attempted = True
             return ActionProposal(
-                ActionName.OPEN_CRAFTING_MENU,
-                reason="open DST crafting inventory to enable the prepared nearby giftmachine",
+                ActionName.MOVE_BACKWARD,
+                duration=0.45,
+                reason="take one bounded step toward the visible prepared Science Machine",
             )
         if (
             self.production_actions_enabled
