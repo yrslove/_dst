@@ -735,6 +735,15 @@ class VisionDetector:
         elif found("game_hud") and found("player_marker"):
             screen = DSTScreen.IN_WORLD_IDLE
             confidence = min(game.confidence, player.confidence)
+        confidence_threshold = self.default_threshold
+        if screen == DSTScreen.IN_WORLD_IDLE:
+            marker_asset = self.registry.assets.get("player_marker")
+            if marker_asset is not None:
+                # The player health marker has its own verified threshold; it
+                # can vary slightly as DST renders the animated health icon.
+                confidence_threshold = min(
+                    confidence_threshold, marker_asset.threshold
+                )
         assets_verified = self.registry.production_ready
         calibration_verified = calibration.verified and calibration.matches(
             frame.width, frame.height
@@ -750,7 +759,7 @@ class VisionDetector:
             flags.append("SCREEN_FROZEN")
         if stale:
             flags.append("STALE")
-        if screen == DSTScreen.UNKNOWN or confidence < self.default_threshold:
+        if screen == DSTScreen.UNKNOWN or confidence < confidence_threshold:
             flags.append("UNKNOWN")
         if any(
             key in {"detector_error", "detector_timeout"}
@@ -771,7 +780,7 @@ class VisionDetector:
             assets_verified
             and calibration_verified
             and screen != DSTScreen.UNKNOWN
-            and confidence >= self.default_threshold
+            and confidence >= confidence_threshold
         ):
             validity = ObservationValidity.VALID
         if (

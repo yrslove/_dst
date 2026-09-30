@@ -483,6 +483,20 @@ def test_live_wilson_world_requires_both_hud_anchors():
         assert observation.screen != DSTScreen.IN_WORLD_IDLE
 
 
+def test_live_idle_world_accepts_normal_health_marker_variation():
+    image = Image.open(
+        ASSETS / "samples/in_world_idle_player_marker_variation_live.png"
+    ).convert("RGB")
+    observation = analyze_image(image, "live-player-marker-variation", 1)
+
+    assert observation.validity == ObservationValidity.VALID
+    assert observation.screen == DSTScreen.IN_WORLD_IDLE
+    assert observation.screen_confidence >= 0.75
+    marker = next(item for item in observation.detections if item.kind == "player_marker")
+    assert marker.detected and marker.verified
+    assert 0.75 <= marker.confidence < 0.94
+
+
 def test_validation_resumes_from_live_world_and_counts_fresh_frames():
     image = Image.open(ASSETS / "samples/in_world_wilson_later_live.png").convert("RGB")
     observation = analyze_image(image, "wilson-world-1", 1)
