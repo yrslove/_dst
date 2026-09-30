@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -233,7 +234,7 @@ except Exception:
     raise
 '''
 
-GUEST_PROBE = r'''import json, pathlib, shlex, subprocess
+GUEST_PROBE = r'''import json, pathlib, shlex, subprocess, time
 values = {}
 for line in pathlib.Path("/etc/dst-runtime/agent.env").read_text().splitlines():
     if "=" in line and not line.lstrip().startswith("#"):
@@ -252,7 +253,11 @@ ready = {name: pathlib.Path(path).is_file() for name, path in (("steam", values.
 unit = pathlib.Path("/etc/systemd/system/dst-runtime-agent.service").read_text()
 venv_python = pathlib.Path("/opt/dst-orchestrator/.venv/bin/python")
 agent_state = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[0] if pid > 1 else "X"
-print(json.dumps({"active": subprocess.call(["systemctl", "is-active", "--quiet", "dst-runtime-agent.service"]) == 0, "agent_pid": pid, "agent_state": agent_state, "runtime_id": values.get("RUNTIME_ID"), "worker_mode": values.get("WORKER_MODE", "DISABLED").strip('"'), "worker_autostart": values.get("WORKER_AUTOSTART", "0").strip('"'), "validation_flow": values.get("WORKER_VALIDATION_FLOW_ENABLED", "0").strip('"'), "validation_movement": values.get("WORKER_VALIDATION_MOVEMENT_ENABLED", "0").strip('"'), "processes": processes, "ready": ready, "service_layout_ok": venv_python.is_file() and "WorkingDirectory=/opt/dst-orchestrator" in unit and "ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main" in unit and "ExecReload=/bin/kill -HUP $MAINPID" in unit and "KillMode=mixed" in unit}))
+try: heartbeat = json.loads(pathlib.Path("/run/dst-runtime/heartbeat.json").read_text())
+except (OSError, json.JSONDecodeError): heartbeat = {}
+heartbeat_age = time.time() - heartbeat.get("timestamp_unix", 0) if isinstance(heartbeat, dict) else 999999
+heartbeat_fresh = 0 <= heartbeat_age <= 30 and heartbeat.get("runtime_id") == int(values.get("RUNTIME_ID", "0")) and heartbeat.get("phase") == "GAME_READY" and heartbeat.get("healthy") is True
+print(json.dumps({"active": subprocess.call(["systemctl", "is-active", "--quiet", "dst-runtime-agent.service"]) == 0, "agent_pid": pid, "agent_state": agent_state, "runtime_id": values.get("RUNTIME_ID"), "heartbeat": heartbeat, "heartbeat_fresh": heartbeat_fresh, "worker_mode": values.get("WORKER_MODE", "DISABLED").strip('"'), "worker_autostart": values.get("WORKER_AUTOSTART", "0").strip('"'), "validation_flow": values.get("WORKER_VALIDATION_FLOW_ENABLED", "0").strip('"'), "validation_movement": values.get("WORKER_VALIDATION_MOVEMENT_ENABLED", "0").strip('"'), "processes": processes, "ready": ready, "service_layout_ok": venv_python.is_file() and "WorkingDirectory=/opt/dst-orchestrator" in unit and "ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main" in unit and "ExecReload=/bin/kill -HUP $MAINPID" in unit and "KillMode=mixed" in unit}))
 '''
 
 
@@ -327,50 +332,29 @@ def deploy(instance: str, repo: Path) -> None:
         print(f"guest previous revision: {previous}")
         # The agent was paused only for the tree swap. Its established HUP path
         # re-execs the new code while adopting healthy display/Steam/DST processes.
-        cursor_output = run([
-            "incus", "exec", instance, "--", "journalctl", "-u", SERVICE,
-            "-n", "0", "--no-pager", "--show-cursor",
-        ])
-        cursor = next(
-            (
-                line.removeprefix("-- cursor: ")
-                for line in cursor_output.splitlines()
-                if line.startswith("-- cursor: ")
-            ),
-            None,
-        )
-        if not cursor:
-            raise DeployError("could not establish a Runtime Agent journal cursor")
+        reload_started = time.time()
         run(["incus", "exec", instance, "--", "systemctl", "reload", SERVICE])
-        heartbeat = (
-            f"runtime_heartbeat_accepted runtime_id={before['runtime_id']} "
-            "phase=GAME_READY healthy=True"
-        )
-        deadline = __import__("time").monotonic() + 60
-        while __import__("time").monotonic() < deadline:
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
             current = run(["incus", "exec", instance, "--", "cat", f"{INSTANCE_ROOT}/DEPLOYMENT.json"])
             require_revision(str(parse_metadata(current)["commit"]), revision)
-            log = run([
-                "incus", "exec", instance, "--", "journalctl", "-u", SERVICE,
-                "--after-cursor", cursor, "--no-pager", "-o", "cat",
-            ])
-            if (
-                f"runtime_agent_started deployed_revision={revision}" in log
-                and "runtime_agent_reload_preserving_managed_processes" in log
-                and heartbeat in log
-                and run(["incus", "exec", instance, "--", "systemctl", "is-active", SERVICE])
-                == "active"
-            ):
+            if run(["incus", "exec", instance, "--", "systemctl", "is-active", SERVICE]) == "active":
                 after = guest_probe(instance)
                 if after["processes"] != before["processes"]:
                     raise DeployError("managed Xvfb/Steam/DST process identities changed during agent reload")
-                break
-            __import__("time").sleep(2)
+                heartbeat = after.get("heartbeat", {})
+                if (
+                    after.get("heartbeat_fresh")
+                    and heartbeat.get("revision") == revision
+                    and heartbeat.get("timestamp_unix", 0) >= reload_started
+                ):
+                    break
+            time.sleep(2)
         else:
             raise DeployError("Runtime Agent did not prove healthy adoption of the deployed revision")
         run(["incus", "exec", instance, "--", "rm", "-rf", installed["backup"], installed["stage"]])
         print(f"guest deployed revision: {revision}")
-        print("Runtime Agent health: fresh GAME_READY heartbeat after managed-process adoption")
+        print("Runtime Agent health: fresh accepted GAME_READY heartbeat after managed-process adoption")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

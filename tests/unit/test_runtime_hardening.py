@@ -333,6 +333,29 @@ def test_worker_crash_fails_pending_command_and_replaces_ipc(monkeypatch):
     assert host.acknowledgements() == [{"id": 77, "result": "WORKER_CRASHED"}]
 
 
+def test_dead_worker_ipc_is_abandoned_without_reading_partial_queue(monkeypatch):
+    class UnreadableQueue(FakeQueue):
+        def get_nowait(self):
+            raise AssertionError("dead worker queue must not be read")
+
+    context = WorkerContext(1, 2, DisplayEnvironment(":99"), runtime_verified=True)
+    host = WorkerProcessHost(WorkerConfig(plugin="dst"), context, max_restarts=0)
+    fake_context = FakeMPContext()
+    host._ctx = fake_context
+    monkeypatch.setattr(
+        "runtime_agent.gameworker.process.emergency_release_all",
+        lambda *_args, **_kwargs: None,
+    )
+    host.start()
+    host._reports = UnreadableQueue()
+    host._ack_reports = UnreadableQueue()
+    fake_context.processes[0].alive = False
+
+    host.tick()
+
+    assert host.process_state.value == "FAILED"
+
+
 def test_game_lost_is_sent_to_live_worker(monkeypatch):
     context = WorkerContext(1, 2, DisplayEnvironment(":99"), runtime_verified=True)
     host = WorkerProcessHost(WorkerConfig(plugin="dst"), context)

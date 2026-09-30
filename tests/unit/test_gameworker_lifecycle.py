@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing as mp
 import pickle
@@ -180,7 +181,7 @@ def test_worker_bridge_forwards_terminal_ack_and_allows_next_command(
     assert 61 in host._pending_command_ids
 
 
-def test_control_plane_submission_logs_terminal_ack_response(monkeypatch, caplog):
+def test_control_plane_submission_logs_terminal_ack_response(monkeypatch, caplog, tmp_path):
     caplog.set_level(logging.INFO)
     sent = []
 
@@ -205,6 +206,7 @@ def test_control_plane_submission_logs_terminal_ack_response(monkeypatch, caplog
         request_timeout_seconds=1,
         agent_version="test",
         protocol_version=1,
+        xdg_runtime_dir=str(tmp_path),
     )
 
     response = send_heartbeat(
@@ -222,6 +224,11 @@ def test_control_plane_submission_logs_terminal_ack_response(monkeypatch, caplog
     assert response["ok"] is True
     assert sent[0]["worker_command_results"] == [{"id": 60, "result": "OK"}]
     assert "runtime_heartbeat_accepted runtime_id=2 phase=GAME_READY healthy=True" in caplog.text
+    heartbeat = json.loads((tmp_path / "heartbeat.json").read_text())
+    assert heartbeat["runtime_id"] == 2
+    assert heartbeat["phase"] == "GAME_READY"
+    assert heartbeat["healthy"] is True
+    assert isinstance(heartbeat["revision"], str)
     assert "worker_ack_control_plane_submit" in caplog.text
     assert "worker_ack_control_plane_response" in caplog.text
 

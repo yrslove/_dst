@@ -712,6 +712,17 @@ class WorkerProcessHost:
         return self._spawn()
 
     def _drain(self) -> None:
+        # A multiprocessing Queue can block in recv_bytes on a partial frame after
+        # its producer exits because the parent still owns the writer endpoint.
+        # Treat unacknowledged IPC as lost once the worker process has exited.
+        if self._process is not None and not self._process.is_alive():
+            logger.warning(
+                "worker_ipc_drain_skipped runtime_id=%s generation=%s "
+                "reason=worker_exited",
+                self.context.runtime_id,
+                self._worker_generation,
+            )
+            return
         pending_at_start = sorted(self._pending_command_ids)
         with self._command_transport_lock:
             transport_at_start = sorted(self._command_transport_state.items())

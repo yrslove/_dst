@@ -1,12 +1,48 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
+import time
+from pathlib import Path
 
 import httpx
 
 from runtime_agent.config import RuntimeAgentSettings
 
 logger = logging.getLogger("runtime_agent.heartbeat")
+
+
+def _record_accepted_heartbeat(settings, *, phase: str, healthy: bool) -> None:
+    runtime_dir = getattr(settings, "xdg_runtime_dir", None)
+    if not runtime_dir:
+        return
+    marker = Path(runtime_dir) / "heartbeat.json"
+    temporary = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
+    revision_file = Path(__file__).resolve().parents[1] / "DEPLOYMENT.json"
+    try:
+        revision = json.loads(revision_file.read_text(encoding="utf-8")).get(
+            "commit", "UNKNOWN"
+        )
+    except (OSError, json.JSONDecodeError):
+        revision = "UNKNOWN"
+    payload = {
+        "runtime_id": settings.runtime_id,
+        "agent_pid": os.getpid(),
+        "revision": revision,
+        "timestamp_unix": time.time(),
+        "phase": phase,
+        "healthy": healthy,
+    }
+    try:
+        temporary.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        os.replace(temporary, marker)
+    except OSError:
+        logger.warning("could not persist accepted heartbeat marker", exc_info=True)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def send_heartbeat(
@@ -62,12 +98,15 @@ def send_heartbeat(
         )
         response.raise_for_status()
         value = response.json()
+        value = value if isinstance(value, dict) else {"ok": True}
         logger.info(
             "runtime_heartbeat_accepted runtime_id=%s phase=%s healthy=%s",
             settings.runtime_id,
             phase,
             healthy,
         )
+        if value.get("ok", True) is not False:
+            _record_accepted_heartbeat(settings, phase=phase, healthy=healthy)
         if results:
             logger.info(
                 "worker_ack_control_plane_response runtime_id=%s results=%s "
@@ -77,7 +116,7 @@ def send_heartbeat(
                 response.status_code,
                 value.get("ok") if isinstance(value, dict) else None,
             )
-        return value if isinstance(value, dict) else {"ok": True}
+        return value
     except (httpx.HTTPError, ValueError) as exc:
         if results:
             logger.warning(
