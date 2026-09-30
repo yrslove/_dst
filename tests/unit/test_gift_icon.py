@@ -100,7 +100,7 @@ def test_gray_gift_approaches_station_once_before_any_gift_click():
         observation, source_frame_id="gray-live-next", source_sequence=2
     )
     proposal = policy.propose(next_frame)
-    assert proposal is not None and proposal.action == ActionName.MOVE_BACKWARD
+    assert proposal is not None and proposal.action == ActionName.TURN_LEFT
     assert proposal.duration == 0.45
     assert policy.inworld_gift_state == InWorldGiftState.PENDING_STATION
     assert policy.daily_gift_state == DailyGiftState.UNKNOWN

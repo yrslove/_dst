@@ -116,11 +116,23 @@ in-world claim, repeated gift claim, eligible-time measurement, or proof of AFK/
 semantics. The session is online and the item server HealthCheck previously returned
 OK, but authenticated reward eligibility is not established.
 
-## Next evidence step
+## Actual claim result — 2026-09-30, supersedes unclaimed checkpoint above
 
-Restore Runtime Agent heartbeat/adoption through the existing safe managed lifecycle
-while preserving the live Steam/DST session; verify the current deployed revision and fresh
-OBSERVE classification without input. Then prepare the production gift popup handling
-before enabling its canonical click, so opening and durable confirmation can be
-verified from live evidence. Do not count time before the exact ACTIVE timestamp as
-measured eligible time.
+Path B retained the existing live session and all Xvfb/Steam/DST PIDs. Production
+GameWorker performed bounded station approach, fresh ACTIVE detection, canonical
+`CLICK_GIFT_ICON`, actual `GiftItemPopUp`, and canonical `CLICK_INWORLD_USE_LATER`.
+Pinstripe Pants item `986745024922813965` received native
+`SetItemOpened_Complete Success:200`, `Error=false`, Modified `1790780509.1803596`.
+The backend ACK occurred at reveal, before Use Later closed the popup.
+
+Close verification initially timed out. Recovery read the genuine production action
+recording, sent no inputs, and required two fresh in-world observations before writing
+an atomic, fsynced `IN_WORLD_GIFT_CONFIRMED` state. Source frame `r1-w1005-f2`,
+canonical close `runtime-1:worker-1005:action-1`, final frame `r1-w1006-f2` at
+2026-09-30T15:13:10.174148+00:00. Local before/received/after frames, action logs,
+receipt, and stopped worker report are in `.data/claim-convergence-20260930/`.
+
+The live in-world popup is separate from daily login. No eligible-start timestamp,
+AFK/timer rule, weekly ordinal/target/reset, repeated claim, or daily claim is proven.
+Control Plane heartbeat remains stale; agent PID 491 is intentionally suspended because
+systemd control-group restart would also stop the preserved game processes.

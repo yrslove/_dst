@@ -206,7 +206,7 @@ def test_pending_inworld_gift_causes_only_one_short_step_toward_prepared_station
         replace(observation, source_frame_id="gift-station-approach-2", source_sequence=2)
     )
     assert proposal is not None
-    assert proposal.action == ActionName.MOVE_BACKWARD
+    assert proposal.action == ActionName.TURN_LEFT
     assert proposal.duration == 0.45
 
     assert policy.propose(
@@ -550,7 +550,7 @@ def test_live_idle_world_accepts_normal_health_marker_variation():
     assert 0.75 <= marker.confidence < 0.94
     from app.services.executor import JobExecutor
 
-    assert 0.75 <= observation.screen_confidence < 0.8
+    assert observation.screen_confidence >= 0.94
     assert JobExecutor._safe_observation(observation.as_dict())
     for key in ("validity", "calibration_verified", "assets_verified", "screen_confidence"):
         malformed = {**observation.as_dict(), "production_ready": True}
@@ -596,7 +596,7 @@ def test_invalid_player_marker_without_second_world_anchor_remains_unknown(monke
         item = original(self, image, template_id, deadline=deadline)
         if template_id == "player_marker":
             return replace(item, confidence=0.657998, detected=False)
-        if template_id == "world_present_banner":
+        if template_id in {"world_present_banner", "world_inventory_frame"}:
             return replace(item, detected=False)
         return item
 
@@ -1968,3 +1968,48 @@ def test_visual_click_focuses_dst_before_mouse_event():
         "mouse_down",
         "mouse_up",
     ]
+
+
+def test_real_inworld_popup_and_canonical_use_later_remain_separate_from_daily():
+    opening = analyze_image(
+        Image.open(ASSETS / 'samples/inworld_gift_opening_live.png').convert('RGB'),
+        'inworld-opening', 1, profile_id='dst-1280x720-linux-v1',
+    )
+    received = analyze_image(
+        Image.open(ASSETS / 'samples/inworld_gift_received_live.png').convert('RGB'),
+        'inworld-received', 2, profile_id='dst-1280x720-linux-v1',
+    )
+    assert opening.screen == DSTScreen.IN_WORLD_GIFT_OPENING
+    assert received.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(opening) is None
+    assert policy.propose(replace(opening, source_sequence=2)) is None
+    assert policy.propose(replace(received, source_sequence=3)) is None
+    proposal = policy.propose(replace(received, source_sequence=4))
+    assert proposal.action == ActionName.CLICK_INWORLD_USE_LATER
+    point, _ = click_request(proposal.action, received)
+    assert 462 / 1280 <= point.x <= 622 / 1280
+    assert 589 / 720 <= point.y <= 622 / 720
+    assert policy.daily_gift_state.value == 'UNKNOWN'
+    assert policy.inworld_gift_confirmation is None
+
+
+def test_inworld_received_title_without_use_later_never_enables_close():
+    image = Image.open(ASSETS / 'samples/inworld_gift_received_live.png').convert('RGB')
+    image.paste('black', (450, 570, 635, 640))
+    observation = analyze_image(image, 'inworld-incomplete', 1,
+                                profile_id='dst-1280x720-linux-v1')
+    assert observation.screen != DSTScreen.IN_WORLD_GIFT_RECEIVED
+
+
+def test_live_post_claim_world_has_no_gift_popup():
+    observation = analyze_image(
+        Image.open(ASSETS / "samples/inworld_gift_after_live.png").convert("RGB"),
+        "live-post-claim", 1,
+    )
+    assert observation.production_ready
+    assert observation.screen == DSTScreen.IN_WORLD_IDLE
+    assert observation.screen_confidence >= .94
+    assert not any(d.detected for d in observation.detections
+                   if d.kind in {"inworld_gift_received_title", "inworld_gift_use_later"})

@@ -68,6 +68,14 @@ CONTRACTS = {
         confidence=0.94,
         stable_observations=1,
     ),
+    ActionName.CLICK_INWORLD_USE_LATER: ActionContract(
+        ("inworld_gift_use_later",),
+        frozenset({DSTScreen.IN_WORLD_GIFT_RECEIVED}),
+        frozenset({DSTScreen.IN_WORLD_IDLE}),
+        timeout=45.0,
+        required_detections=("inworld_gift_received_title", "inworld_gift_use_now"),
+        postcondition_hidden_detections=("inworld_gift_received_title", "inworld_gift_use_later"),
+    ),
     ActionName.MOVE_FORWARD: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
         frozenset({DSTScreen.IN_WORLD_IDLE}), timeout=15.0,

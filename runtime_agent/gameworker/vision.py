@@ -571,6 +571,18 @@ class VisionDetector:
                 detected["mods_disabled_title"].confidence,
                 detected["mods_disabled_continue"].confidence,
             )
+        elif all(found(key) for key in (
+            "inworld_gift_received_title", "inworld_gift_use_later", "inworld_gift_use_now",
+        )):
+            screen = DSTScreen.IN_WORLD_GIFT_RECEIVED
+            confidence = min(detected[key].confidence for key in (
+                "inworld_gift_received_title", "inworld_gift_use_later", "inworld_gift_use_now",
+            ))
+        elif found("inworld_gift_opening_title") and found("inworld_gift_popup_ribbon"):
+            screen = DSTScreen.IN_WORLD_GIFT_OPENING
+            confidence = min(detected[key].confidence for key in (
+                "inworld_gift_opening_title", "inworld_gift_popup_ribbon",
+            ))
         elif found("login_reward_result_title") and found(reward_close):
             screen = DSTScreen.REWARD_RESULT
             confidence = min(
@@ -734,6 +746,9 @@ class VisionDetector:
                 )
         elif found("pause_menu"):
             screen, confidence = DSTScreen.PAUSED, menu.confidence
+        elif found("game_hud") and found("world_inventory_frame"):
+            screen = DSTScreen.IN_WORLD_IDLE
+            confidence = min(game.confidence, detected["world_inventory_frame"].confidence)
         elif found("game_hud") and found("player_marker"):
             screen = DSTScreen.IN_WORLD_IDLE
             confidence = min(game.confidence, player.confidence)

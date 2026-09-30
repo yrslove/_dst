@@ -54,8 +54,9 @@ class DSTGameWorker:
     VERIFY_OBSERVATION_INTERVAL_SECONDS = 0.15
     VERIFY_TICK_INTERVAL_SECONDS = 0.1
 
-    def __init__(self, config: WorkerConfig, *, worker_generation: int = 0):
+    def __init__(self, config: WorkerConfig, *, worker_generation: int = 0, claim_evidence=None):
         self.config = config
+        self.claim_evidence = claim_evidence
         self.worker_generation = max(1, worker_generation)
         self.machine = WorkerStateMachine(
             WorkerState.DISABLED
@@ -631,6 +632,16 @@ class DSTGameWorker:
                         # and display processes alive for evidence capture.
                         self.actions.release_all()
                 self._sync_action_mode()
+            if self.claim_evidence:
+                receipt = (
+                    self.claim_evidence.confirm(self.activity.inworld_close_evidence)
+                    if self.activity.inworld_close_evidence
+                    else self.claim_evidence.observe(observation) if observation else None
+                )
+                if receipt:
+                    from runtime_agent.gameworker.activity import InWorldGiftState
+                    self.activity.inworld_gift_confirmation = receipt
+                    self.activity.inworld_gift_state = InWorldGiftState.CONFIRMED
             self._would_execute = (
                 outcome.proposal.action if outcome.proposal is not None else None
             )
@@ -1008,6 +1019,7 @@ class DSTGameWorker:
                 ActionName.INTERACT,
                 ActionName.HOVER_GIFT_ICON,
                 ActionName.CLICK_GIFT_ICON,
+                ActionName.CLICK_INWORLD_USE_LATER,
             }
         )
 
@@ -1088,6 +1100,7 @@ class DSTGameWorker:
                 "daily_gift_state": self.activity.daily_gift_state.value,
                 "inworld_gift_state": self.activity.inworld_gift_state.value,
                 "gift_availability_evidence": self.activity.gift_availability_evidence,
+                "inworld_gift_confirmation": self.activity.inworld_gift_confirmation,
                 "daily_gift_confirmation": (
                     self.activity.daily_gift_confirmation.as_dict()
                     if self.activity.daily_gift_confirmation

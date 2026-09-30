@@ -52,6 +52,8 @@ class InWorldGiftState(StrEnum):
     OPENING = "IN_WORLD_GIFT_OPENING"
     RECEIVED = "IN_WORLD_GIFT_RECEIVED"
     CLAIMED = "IN_WORLD_GIFT_CLAIMED"
+    UI_CLOSED = "IN_WORLD_GIFT_UI_CLOSED"
+    CONFIRMED = "IN_WORLD_GIFT_CONFIRMED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +187,10 @@ class ActivityController:
         self.daily_gift_state = DailyGiftState.UNKNOWN
         self.inworld_gift_state = InWorldGiftState.UNKNOWN
         self.daily_gift_confirmation: DailyGiftConfirmation | None = None
+        self.inworld_gift_confirmation: dict | None = None
+        self.inworld_close_evidence: dict | None = None
+        self._inworld_received_evidence: dict | None = None
+        self._inworld_close_attempted = False
         self.gift_availability_evidence: dict | None = None
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
@@ -284,6 +290,11 @@ class ActivityController:
             self.inworld_gift_state = InWorldGiftState.OPENING
         elif observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED:
             self.inworld_gift_state = InWorldGiftState.RECEIVED
+            self._inworld_received_evidence = {
+                "received_frame_id": observation.source_frame_id,
+                "received_sequence": observation.source_sequence,
+                "received_at": observation.timestamp,
+            }
         if observation.source_sequence > self._last_gift_observation_sequence:
             self._last_gift_observation_sequence = observation.source_sequence
             if observation.screen == DSTScreen.LOGIN_REWARD_AVAILABLE:
@@ -317,15 +328,25 @@ class ActivityController:
             return None
         if (
             self.production_actions_enabled
+            and observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
+            and not self._inworld_close_attempted
+        ):
+            self._inworld_close_attempted = True
+            return ActionProposal(
+                ActionName.CLICK_INWORLD_USE_LATER,
+                reason="finish the verified in-world item receipt with Use Later",
+            )
+        if (
+            self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_IDLE
             and self.inworld_gift_state == InWorldGiftState.PENDING_STATION
             and not self._gift_station_approach_attempted
         ):
             self._gift_station_approach_attempted = True
             return ActionProposal(
-                ActionName.MOVE_BACKWARD,
+                ActionName.TURN_LEFT,
                 duration=0.45,
-                reason="take one bounded step toward the visible prepared Science Machine",
+                reason="take one bounded leftward step toward the visible prepared Science Machine",
             )
         if (
             self.production_actions_enabled
@@ -860,6 +881,7 @@ class ActivityController:
             return result
         if result.action in {
             ActionName.CLICK_GIFT_ICON,
+            ActionName.CLICK_INWORLD_USE_LATER,
             ActionName.OPEN_INVENTORY,
             ActionName.OPEN_CRAFTING_MENU,
             ActionName.CLICK_REWARD_OPEN,
@@ -913,6 +935,22 @@ class ActivityController:
         return result
 
     def on_verified(self, observation: GameObservation, result: ActionResult) -> None:
+        if result.action == ActionName.CLICK_INWORLD_USE_LATER:
+            self._awaiting_reward_transition = False
+            if result.status == ActionStatus.SUCCEEDED and self._inworld_received_evidence:
+                self.inworld_gift_state = InWorldGiftState.UI_CLOSED
+                self.inworld_close_evidence = {
+                    **self._inworld_received_evidence,
+                    "evidence_frame_id": observation.source_frame_id,
+                    "evidence_sequence": observation.source_sequence,
+                    "observed_at": observation.timestamp,
+                    "action_id": result.action_id,
+                }
+                self.counters["verified_actions"] += 1
+            else:
+                self.intervention_required = True
+            self._record(observation, result.action.value, "in-world receipt close", result.status.value)
+            return
         if result.action == ActionName.OPEN_CRAFTING_MENU:
             self._awaiting_reward_transition = False
             if result.status == ActionStatus.SUCCEEDED:

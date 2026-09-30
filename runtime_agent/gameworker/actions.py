@@ -31,6 +31,7 @@ class ActionName(StrEnum):
     INTERACT = "INTERACT"
     HOVER_GIFT_ICON = "HOVER_GIFT_ICON"
     CLICK_GIFT_ICON = "CLICK_GIFT_ICON"
+    CLICK_INWORLD_USE_LATER = "CLICK_INWORLD_USE_LATER"
     CANCEL = "CANCEL"
     RESUME_WORLD = "RESUME_WORLD"
     OPEN_INVENTORY = "OPEN_INVENTORY"
@@ -182,6 +183,7 @@ CLICK_REGIONS = {
     ActionName.HOVER_GIFT_ICON: (0.115, 0.0, 0.2, 0.14),
     # Guard only. The actual point is resolved from the current gift detection.
     ActionName.CLICK_GIFT_ICON: (0.115, 0.0, 0.2, 0.14),
+    ActionName.CLICK_INWORLD_USE_LATER: (0.34, 0.79, 0.51, 0.9),
     ActionName.CLICK_REWARD_OPEN: (0.35, 0.75, 0.65, 0.97),
     ActionName.CLICK_REWARD_CLOSE: (0.35, 0.75, 0.65, 0.97),
     ActionName.CLICK_OPTIONS: (0.02, 0.66, 0.18, 0.75),

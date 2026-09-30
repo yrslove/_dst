@@ -37,17 +37,26 @@ only when code directly affecting it changed or new evidence indicates regressio
 
 ## Current milestone
 
-**FIRST REAL IN-WORLD GIFT CLAIM**
+**FIRST REAL IN-WORLD GIFT CLAIM — LIVE_PROVEN (2026-09-30)**
 
-Known gift evidence:
-
-- A gray wrapped-present means a gift is pending but not actionable.
-- A nearby valid Science Machine / Alchemy Engine enables gift access.
-- The gray-present ROI exists; it identifies the pending state, not an enabled actionable gift.
-- An enabled-present live fixture has been captured; it proves the actionable visual
-  state but no gift has yet been opened or claimed.
-- Required real path: `enabled gift -> Opening -> You Received -> Use Later -> fresh IN_WORLD`.
-- The claim is complete only after the fresh observation confirms return to `IN_WORLD`.
+- Existing session retained: production GameWorker detected ACTIVE, used canonical
+  `CLICK_GIFT_ICON`, observed `Opening` / `You Received`, and clicked `Use Later`.
+- Received Pinstripe Pants, item `986745024922813965`. Native item service reported
+  `SetItemOpened_Complete Success:200`, `Error=false`, Modified `1790780509.1803596`.
+- The initial close-verification timed out. Verification-only recovery used the actual
+  canonical action recording plus two fresh world observations; no input was replayed.
+  Worker generation 1006 persisted `IN_WORLD_GIFT_CONFIRMED` atomically with fsync.
+- Evidence: `.data/claim-convergence-20260930/` (local, excluded from git), guest
+  `/home/dst/.local/state/dst-runtime/claim-convergence/confirmed/`.
+- Path B used the existing production GameWorker through a bounded one-shot adapter.
+  Systemd `KillMode=control-group` includes Xvfb/Steam/DST, so no restart was attempted.
+  Agent PID 491 remains SIGSTOP suspended to prevent competing input/lifecycle cleanup.
+  Xvfb 498, Steam 507/600, DST 1026/1237 remained unchanged. Worker stopped cleanly,
+  held inputs false; Control Plane heartbeat remains STALE.
+- Durable result is native backend ACK + fsynced worker state, not a Control Plane DB
+  claim or weekly counter. Normal managed worker receipt-provider wiring is not proven.
+- In-world receipt semantics are distinct from daily login. Daily claim, repeat gift,
+  weekly ordinal/target/reset, eligible timing, and AFK/activity requirement remain unknown.
 
 ## Current environment direction
 

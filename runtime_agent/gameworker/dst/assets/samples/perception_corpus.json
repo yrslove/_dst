@@ -163,6 +163,30 @@
       "detector_metadata": {
         "required_anchors": ["login_reward_result_title", "login_reward_close_button"]
       }
+    },
+    {
+      "id": "in_world_gift_opening-20260930",
+      "image": "inworld_gift_opening_live.png",
+      "expected_state": "IN_WORLD_GIFT_OPENING",
+      "evidence": {
+        "source": "live production canonical gift click; no held inputs"
+      }
+    },
+    {
+      "id": "in_world_gift_received-20260930",
+      "image": "inworld_gift_received_live.png",
+      "expected_state": "IN_WORLD_GIFT_RECEIVED",
+      "evidence": {
+        "source": "live production canonical gift click; no held inputs"
+      }
+    },
+    {
+      "id": "in_world_gift_after-20260930",
+      "image": "inworld_gift_after_live.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "evidence": {
+        "source": "fresh live post-claim world; native item-service success and canonical Use Later"
+      }
     }
   ],
   "coverage_gaps": {
