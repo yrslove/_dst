@@ -735,6 +735,17 @@ class VisionDetector:
         elif found("game_hud") and found("player_marker"):
             screen = DSTScreen.IN_WORLD_IDLE
             confidence = min(game.confidence, player.confidence)
+        elif found("game_hud") and found("world_present_banner"):
+            # The health-heart template is sensitive to its changing fill and
+            # overlay rendering. Two independent, verified HUD anchors can
+            # identify the world when that player-specific template misses.
+            # Keep this after the explicit menu, reward, pause, loading, and
+            # reset classifiers above so those states retain precedence.
+            screen = DSTScreen.IN_WORLD_IDLE
+            confidence = min(
+                detected["game_hud"].confidence,
+                detected["world_present_banner"].confidence,
+            )
         confidence_threshold = self.default_threshold
         if screen == DSTScreen.IN_WORLD_IDLE:
             marker_asset = self.registry.assets.get("player_marker")

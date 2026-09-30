@@ -514,25 +514,69 @@ def test_live_idle_world_accepts_normal_health_marker_variation():
         assert not JobExecutor._safe_observation({**observation.as_dict(), "production_ready": True, **changes})
 
 
-def test_invalid_player_marker_remains_unknown(monkeypatch):
+def test_live_player_marker_false_negative_uses_independent_world_anchors():
+    image = Image.open(
+        ASSETS / "samples/in_world_marker_false_negative_live.png"
+    ).convert("RGB")
+    observation = analyze_image(image, "live-marker-false-negative", 1)
+    detections = {item.kind: item for item in observation.detections}
+
+    # The frame is the human-inspected live failure. The local replay score is
+    # lower than the production observation's 0.657998, but the same marker
+    # appearance is below its unchanged 0.75 template threshold.
+    assert 0.60 < detections["player_marker"].confidence < 0.75
+    assert not detections["player_marker"].detected
+    assert detections["game_hud"].detected and detections["game_hud"].verified
+    assert detections["world_present_banner"].detected
+    assert detections["world_present_banner"].verified
+    assert observation.validity == ObservationValidity.VALID
+    assert observation.screen == DSTScreen.IN_WORLD_IDLE
+    assert observation.screen_confidence >= 0.94
+
+
+def test_invalid_player_marker_without_second_world_anchor_remains_unknown(monkeypatch):
     from app.services.executor import JobExecutor
 
     original = VisionDetector.detect
 
-    def invalid_marker(self, image, template_id, *, deadline=None):
+    def invalidate_world_anchors(self, image, template_id, *, deadline=None):
         item = original(self, image, template_id, deadline=deadline)
         if template_id == "player_marker":
-            return replace(item, confidence=0.749, detected=False)
+            return replace(item, confidence=0.657998, detected=False)
+        if template_id == "world_present_banner":
+            return replace(item, detected=False)
         return item
 
-    monkeypatch.setattr(VisionDetector, "detect", invalid_marker)
+    monkeypatch.setattr(VisionDetector, "detect", invalidate_world_anchors)
     observation = analyze_image(
-        Image.open(ASSETS / "samples/in_world_idle_player_marker_variation_live.png").convert("RGB"),
-        "below-marker-threshold", 1,
+        Image.open(
+            ASSETS / "samples/in_world_marker_false_negative_live.png"
+        ).convert("RGB"),
+        "ambiguous-world-anchors", 1,
     )
     assert observation.screen == DSTScreen.UNKNOWN
     assert not observation.valid
     assert not JobExecutor._safe_observation(observation.as_dict())
+
+
+def test_reset_evidence_keeps_precedence_over_world_anchor_fallback(monkeypatch):
+    original = VisionDetector.detect
+    failure_frame = Image.open(
+        ASSETS / "samples/in_world_marker_false_negative_live.png"
+    ).convert("RGB")
+    reset_frame = Image.open(
+        ASSETS / "samples/death_world_reset_live.png"
+    ).convert("RGB")
+
+    def with_reset_evidence(self, image, template_id, *, deadline=None):
+        if template_id in {"death_world_reset_text", "death_reset_now_button"}:
+            return original(self, reset_frame, template_id, deadline=deadline)
+        return original(self, image, template_id, deadline=deadline)
+
+    monkeypatch.setattr(VisionDetector, "detect", with_reset_evidence)
+    observation = analyze_image(failure_frame, "world-anchors-plus-reset", 1)
+    assert observation.screen == DSTScreen.WORLD_RESET_PENDING
+    assert observation.validity == ObservationValidity.VALID
 
 
 def test_verified_low_confidence_world_can_source_and_verify_action():
