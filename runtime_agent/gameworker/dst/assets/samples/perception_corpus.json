@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "corpus_root": "runtime_agent/gameworker/dst/assets/samples",
+  "fixtures": [
+    {
+      "id": "in-world-marker-false-negative-20260930",
+      "image": "in_world_marker_false_negative_live.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "source": "real DST framebuffer; user visually confirmed normal AFK world",
+      "real_fixture": true,
+      "detector_metadata": {
+        "production_player_marker_score": 0.657998,
+        "player_marker_threshold": 0.75,
+        "stable_anchors": ["game_hud", "world_present_banner"],
+        "root_cause": "animated health-heart pixels make player_marker a brittle hard requirement"
+      }
+    },
+    {
+      "id": "in-world-marker-false-negative-20260930-0246",
+      "image": "in_world_marker_false_negative_live_20260930_0246.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "source": "live 1280x720 DST framebuffer captured 2026-09-30 02:46 UTC; visually inspected full frame and detector ROIs",
+      "real_fixture": true,
+      "detector_metadata": {
+        "production_player_marker_score": 0.5540125966,
+        "player_marker_threshold": 0.75,
+        "game_hud_score": 0.9999508262,
+        "world_present_banner_score": 0.9999369974,
+        "root_cause": "the heart template assumes an unobscured red fill; this frame has a changing white overlay over the heart and defeats pixel-template matching",
+        "visual_ground_truth": "alive Wilson in ordinary IN_WORLD_IDLE with day clock, hotbar, survival HUD, no modal"
+      }
+    },
+    {
+      "id": "in-world-marker-variation-live",
+      "image": "in_world_idle_player_marker_variation_live.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "source": "real DST framebuffer; retained health-marker variation sample",
+      "real_fixture": true,
+      "detector_metadata": {
+        "replay_player_marker_score": 0.763,
+        "player_marker_threshold": 0.75,
+        "stable_anchors": ["game_hud", "world_present_banner"]
+      }
+    },
+    {
+      "id": "in-world-wilson-live",
+      "image": "in_world_wilson_live.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {"required_anchors": ["game_hud", "player_marker"]}
+    },
+    {
+      "id": "in-world-wilson-later-live",
+      "image": "in_world_wilson_later_live.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {"required_anchors": ["game_hud", "player_marker"]}
+    },
+    {
+      "id": "in-world-wilson-reentry-live",
+      "image": "in_world_wilson_reentry_live.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {"required_anchors": ["game_hud", "player_marker"]}
+    },
+    {
+      "id": "in-world-gray-gift-live",
+      "image": "gift_icon_gray_in_world_live.png",
+      "expected_state": "IN_WORLD_IDLE",
+      "source": "real DST framebuffer; gray present is visible but not actionable",
+      "real_fixture": true,
+      "detector_metadata": {
+        "anchors": ["game_hud", "player_marker", "world_present_banner"],
+        "gift_meaning": "GRAY_PENDING; does not establish ACTIVE"
+      }
+    },
+    {
+      "id": "reset-pending-live",
+      "image": "death_world_reset_live.png",
+      "expected_state": "WORLD_RESET_PENDING",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {
+        "required_anchors": ["death_world_reset_text", "death_reset_now_button"]
+      }
+    },
+    {
+      "id": "main-menu-after-reward-live",
+      "image": "main_menu_after_reward.png",
+      "expected_state": "MAIN_MENU",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {
+        "required_anchors": ["main_menu_browse", "main_menu_host_game", "main_menu_options"]
+      }
+    },
+    {
+      "id": "main-menu-input-test-live",
+      "image": "main_menu_input_test_source.png",
+      "expected_state": "MAIN_MENU",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {
+        "required_anchors": ["main_menu_browse", "main_menu_host_game", "main_menu_options"]
+      }
+    },
+    {
+      "id": "loading-live",
+      "image": "dst_world_loading_live.png",
+      "expected_state": "LOADING",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {"required_anchor": "loading_label"}
+    },
+    {
+      "id": "loading-animated-live",
+      "image": "dst_world_loading_animated_live.png",
+      "expected_state": "LOADING",
+      "source": "real DST framebuffer; animation variation",
+      "real_fixture": true,
+      "detector_metadata": {"required_anchor": "loading_label", "replay_score": 0.949}
+    },
+    {
+      "id": "paused-world-live",
+      "image": "in_world_auto_paused_live.png",
+      "expected_state": "PAUSED",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {"required_anchor": "pause_menu_auto_paused"}
+    },
+    {
+      "id": "options-discard-modal-live",
+      "image": "options_discard_confirm.png",
+      "expected_state": "OPTIONS_DISCARD_CONFIRM",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {
+        "required_anchors": ["options_discard_title", "options_discard_body", "options_discard_yes"]
+      }
+    },
+    {
+      "id": "login-reward-result-live",
+      "image": "login_reward_result_live.png",
+      "expected_state": "REWARD_RESULT",
+      "source": "real DST framebuffer",
+      "real_fixture": true,
+      "detector_metadata": {
+        "required_anchors": ["login_reward_result_title", "login_reward_close_button"]
+      }
+    }
+  ],
+  "coverage_gaps": {
+    "DEAD": "No retained real DEAD-only screenshot; do not synthesize or deliberately kill the live character to obtain one.",
+    "LOGIN_REWARD_AVAILABLE": "Only synthetic/template-built regression coverage exists; a real actionable reward frame is still required.",
+    "NO_REWARD_AVAILABLE": "No real no-reward result frame is retained.",
+    "UNKNOWN_REAL": "No inspected live frame was genuinely ambiguous; UNKNOWN remains covered by detector-failure and missing-anchor tests."
+  }
+}

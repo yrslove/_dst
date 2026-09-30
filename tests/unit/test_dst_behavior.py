@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -49,6 +50,20 @@ from runtime_agent.gameworker.vision import (
 )
 
 ASSETS = Path(__file__).resolve().parents[2] / "runtime_agent/gameworker/dst/assets"
+
+
+def test_real_perception_corpus_replays_ground_truth():
+    corpus_path = ASSETS / "samples/perception_corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    assert corpus["schema_version"] == 1
+    assert corpus["fixtures"]
+    for fixture in corpus["fixtures"]:
+        image_path = ASSETS / "samples" / fixture["image"]
+        observation = analyze_image(
+            Image.open(image_path).convert("RGB"), fixture["id"], 1
+        )
+        assert observation.validity == ObservationValidity.VALID, fixture["id"]
+        assert observation.screen.value == fixture["expected_state"], fixture["id"]
 
 
 def test_real_world_reset_frame_and_canonical_recovery_route():
@@ -1292,6 +1307,57 @@ def test_worker_recovers_late_known_state_without_mode_command():
     )
     proposal = policy.propose(next_observation)
     assert proposal is not None and proposal.action == ActionName.SELECT_EXISTING_WORLD
+
+
+def test_worker_releases_inputs_on_first_uncertain_observation():
+    unknown = replace(
+        analyze_image(
+            Image.open(ASSETS / "samples/main_menu_after_reward.png").convert("RGB"),
+            "uncertain-worker-observation",
+            1,
+        ),
+        validity=ObservationValidity.UNKNOWN,
+        screen=DSTScreen.UNKNOWN,
+        screen_confidence=0.0,
+    )
+
+    class Actions:
+        def __init__(self):
+            self.releases = 0
+
+        def release_all(self):
+            self.releases += 1
+
+        def set_safety(self, **_values):
+            pass
+
+    class Pipeline:
+        verification_pending = False
+
+        def tick(self):
+            return PipelineOutcome("UNKNOWN", unknown.source_frame_id, unknown)
+
+        def health(self):
+            return {}
+
+    worker = DSTGameWorker(
+        WorkerConfig(plugin="dst", mode=WorkerMode.ACTIVE, validation_flow_enabled=False)
+    )
+    context = WorkerContext(1, 1, DisplayEnvironment(":99"), runtime_verified=True)
+    worker.context = context
+    worker._game_ready = True
+    worker.machine.transition(WorkerState.WAITING_FOR_GAME, "test runtime ready")
+    worker.machine.transition(WorkerState.OBSERVING, "test worker active")
+    worker.capture = object()
+    worker.actions = Actions()
+    worker.pipeline = Pipeline()
+
+    report = worker.tick(context)
+
+    assert worker.mode == WorkerMode.ACTIVE
+    assert worker.actions.releases == 1
+    assert report.mode == WorkerMode.OBSERVE
+    assert worker._unknown_since is not None
 
 
 def test_worker_tick_recovers_stable_state_locally_and_releases_input():

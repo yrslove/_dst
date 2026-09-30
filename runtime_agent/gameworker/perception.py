@@ -53,6 +53,10 @@ class RecordingSink(Protocol):
     def record_proposal(
         self, proposal: ActionProposal, *, frame_id: str, observation_id: str
     ) -> bool: ...
+
+
+class DiagnosticsSink(Protocol):
+    def observe(self, frame, observation, *, assets, calibration) -> None: ...
     def record_action_result(
         self,
         result: ActionResult,
@@ -92,6 +96,7 @@ class ObservePipeline:
         planner_timeout: float,
         clock=time.monotonic,
         recorder: RecordingSink | None = None,
+        diagnostics: DiagnosticsSink | None = None,
     ):
         if runtime_generation < 1 or worker_generation < 1:
             raise ValueError("pipeline generations must be positive")
@@ -118,6 +123,7 @@ class ObservePipeline:
         self.planner_timeout = planner_timeout
         self._clock = clock
         self.recorder = recorder
+        self.diagnostics = diagnostics
         self.action_lifecycle = ActionLifecycle(clock=clock)
         self._slot = LatestFrameSlot()
         self._store = ObservationStore(runtime_generation, worker_generation)
@@ -336,6 +342,19 @@ class ObservePipeline:
                 self.recorder.record_observation(observation)
             except Exception:
                 logger.warning("recording rejected an observation", exc_info=True)
+        if self.diagnostics is not None:
+            try:
+                assets = getattr(getattr(self.engine, "registry", None), "assets", {})
+                self.diagnostics.observe(
+                    frame,
+                    observation,
+                    assets=assets,
+                    calibration=self.calibration,
+                )
+            except Exception:
+                logger.warning(
+                    "diagnostics rejected perception evidence", exc_info=True
+                )
         logger.info(
             "perception result runtime_id=%s runtime_generation=%s "
             "worker_generation=%s frame_sequence=%s frame_age=%.3f "

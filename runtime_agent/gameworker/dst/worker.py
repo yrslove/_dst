@@ -145,6 +145,12 @@ class DSTGameWorker:
         return not failed
 
     def _release_resources(self) -> bool:
+        self.diagnostics.flush(
+            assets=(self.vision.registry.assets if self.vision is not None else {}),
+            calibration=(
+                self.pipeline.calibration if self.pipeline is not None else None
+            ),
+        )
         failed = not self._release_partial(
             self.capture,
             self.input,
@@ -308,6 +314,7 @@ class DSTGameWorker:
                 perception_timeout=self.config.perception_timeout,
                 planner_timeout=self.config.planner_timeout,
                 recorder=recorder,
+                diagnostics=self.diagnostics,
             )
             if deadman is not None:
                 deadman.start()
@@ -602,6 +609,13 @@ class DSTGameWorker:
         try:
             if self.pipeline is None or self.actions is None:
                 raise CaptureError("worker capture is not prepared")
+            self.diagnostics.update_context(
+                worker_mode=self._effective_mode().value,
+                worker_state=self.machine.state.value,
+                task_state=self.activity.state.value,
+                gift_state=self.activity.daily_gift_state.value,
+                held_inputs=bool(self.input is not None and self.input.has_held_inputs),
+            )
             outcome = self.pipeline.tick()
             observation = outcome.observation
             if observation is not None:
@@ -611,6 +625,11 @@ class DSTGameWorker:
                     self._unknown_since = None
                 elif self.mode == WorkerMode.ACTIVE and self._unknown_since is None:
                     self._unknown_since = now
+                    if self.actions:
+                        # Stop gameplay and release any held key/button on the
+                        # first uncertain observation while keeping the game
+                        # and display processes alive for evidence capture.
+                        self.actions.release_all()
                 self._sync_action_mode()
             self._would_execute = (
                 outcome.proposal.action if outcome.proposal is not None else None
