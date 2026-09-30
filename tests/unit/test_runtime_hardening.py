@@ -181,7 +181,7 @@ def test_supervisor_uses_only_canonical_graphical_environment(monkeypatch):
     supervisor.shutdown()
 
 
-def test_supervisor_adopts_only_exact_isolated_launcher_identity():
+def test_supervisor_adopts_only_exact_isolated_launcher_identity(tmp_path):
     command = (sys.executable, "-c", "import time; time.sleep(30)")
     process = subprocess.Popen(command, start_new_session=True)
     original = ProcessSupervisor("dst", command, popen=lambda *_a, **_k: process)
@@ -191,6 +191,8 @@ def test_supervisor_adopts_only_exact_isolated_launcher_identity():
         identity = original.adoption_identity()
         assert identity is not None
         pid, start_ticks = identity
+        ready = tmp_path / "steam.ready"
+        ready.touch()
         with pytest.raises(RuntimeError, match="cannot safely adopt"):
             replacement.adopt(pid, start_ticks + 1)
         with pytest.raises(RuntimeError, match="cannot safely adopt"):
@@ -199,6 +201,9 @@ def test_supervisor_adopts_only_exact_isolated_launcher_identity():
         replacement.adopt(pid, start_ticks)
         assert replacement.alive
         assert replacement.status.process_group == pid
+        from runtime_agent.processes.steam import SteamProcess, SteamState
+
+        assert SteamProcess(replacement, ready).status() == SteamState.READY
     finally:
         if replacement.alive:
             replacement.shutdown(timeout=1, kill_timeout=1)

@@ -180,12 +180,13 @@ try:
         path = stage / name
         if not path.is_file() or digest(path) != checksum: raise RuntimeError("staged file checksum mismatch: " + name)
     pid = int(subprocess.check_output(["systemctl", "show", "-p", "MainPID", "--value", "dst-runtime-agent.service"], text=True).strip())
-    if pid <= 1 or subprocess.check_output(["systemctl", "is-active", "dst-runtime-agent.service"], text=True).strip() != "active":
-        raise RuntimeError("Runtime Agent is not active")
+    active = subprocess.call(["systemctl", "is-active", "--quiet", "dst-runtime-agent.service"]) == 0
+    if active and pid <= 1: raise RuntimeError("active Runtime Agent has no MainPID")
+    if not active and pid > 1: raise RuntimeError("Runtime Agent state is inconsistent")
     replacements = [("runtime_agent", "runtime_agent")]
     (backup / "app").mkdir()
     moved = []
-    os.kill(pid, signal.SIGSTOP)
+    if pid > 1: os.kill(pid, signal.SIGSTOP)
     try:
         for source, destination in replacements:
             target = root / destination
@@ -226,7 +227,7 @@ try:
         if (backup / "DEPLOYMENT.json").is_file(): os.replace(backup / "DEPLOYMENT.json", root / "DEPLOYMENT.json")
         raise
     finally:
-        os.kill(pid, signal.SIGCONT)
+        if pid > 1: os.kill(pid, signal.SIGCONT)
     print(json.dumps({"previous_metadata": previous_text, "revision": expected, "agent_pid": pid, "backup": str(backup), "stage": str(stage)}))
 except Exception:
     if stage.exists(): shutil.rmtree(stage)
@@ -254,9 +255,9 @@ unit = pathlib.Path("/etc/systemd/system/dst-runtime-agent.service").read_text()
 venv_python = pathlib.Path("/opt/dst-orchestrator/.venv/bin/python")
 agent_state = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[0] if pid > 1 else "X"
 agent_wchan = pathlib.Path(f"/proc/{pid}/wchan").read_text().strip() if pid > 1 else "unknown"
-agent_uid = pathlib.Path(f"/proc/{pid}").stat().st_uid if pid > 1 else -1
+agent_uid = pathlib.Path(f"/proc/{pid}").stat().st_uid if pid > 1 else int(subprocess.check_output(["id", "-u", "dst"], text=True).strip())
 agent_environment = (pathlib.Path(f"/proc/{pid}/environ").read_bytes().split(bytes([0])) if pid > 1 else [])
-agent_adoption = {item.split(b"=", 1)[0].decode(): item.split(b"=", 1)[1].decode() for item in agent_environment if item.startswith(b"RUNTIME_ADOPT_") and b"=" in item}
+agent_adoption = {item.split(b"=", 1)[0].decode(): item.split(b"=", 1)[1].decode() for item in agent_environment if (item.startswith(b"RUNTIME_ADOPT_") or item.startswith(b"DST_ADOPT_GAME_PID=")) and b"=" in item}
 adoption = {}
 for entry in pathlib.Path("/proc").iterdir():
     if not entry.name.isdigit(): continue
@@ -270,51 +271,96 @@ for entry in pathlib.Path("/proc").iterdir():
     same_user = (entry / "").stat().st_uid == agent_uid
     if role in {"DISPLAY", "STEAM", "DST"} and role not in adoption and stat[0] != "Z" and identity_isolated and same_user:
         adoption[role] = f"{entry.name}:{int(stat[19])}"
+steam_pid = int(adoption.get("STEAM", "0:0").split(":", 1)[0])
+def descends_from(child, ancestor):
+    current = child
+    visited = set()
+    for _ in range(64):
+        if current == ancestor: return True
+        if current <= 1 or current in visited: return False
+        visited.add(current)
+        try: stat = pathlib.Path(f"/proc/{current}/stat").read_text().rsplit(") ", 1)[1].split()
+        except OSError: return False
+        current = int(stat[1])
+    return False
+dst_game_pid = None
+for entry in pathlib.Path("/proc").iterdir():
+    if not entry.name.isdigit(): continue
+    try:
+        executable = (entry / "exe").resolve()
+        stat = (entry / "stat").read_text().rsplit(") ", 1)[1].split()
+    except (OSError, RuntimeError): continue
+    if executable.name == "dontstarve_steam_x64" and entry.stat().st_uid == agent_uid and descends_from(int(entry.name), steam_pid):
+        dst_game_pid = int(entry.name)
+        break
 try: heartbeat = json.loads(pathlib.Path("/run/dst-runtime/heartbeat.json").read_text())
 except (OSError, json.JSONDecodeError): heartbeat = {}
 heartbeat_age = time.time() - heartbeat.get("timestamp_unix", 0) if isinstance(heartbeat, dict) else 999999
 heartbeat_fresh = 0 <= heartbeat_age <= 30 and heartbeat.get("runtime_id") == int(values.get("RUNTIME_ID", "0")) and heartbeat.get("phase") == "GAME_READY" and heartbeat.get("healthy") is True
-print(json.dumps({"active": subprocess.call(["systemctl", "is-active", "--quiet", "dst-runtime-agent.service"]) == 0, "agent_pid": pid, "agent_state": agent_state, "agent_wchan": agent_wchan, "agent_adoption": agent_adoption, "runtime_id": values.get("RUNTIME_ID"), "adoption": adoption, "heartbeat": heartbeat, "heartbeat_fresh": heartbeat_fresh, "worker_mode": values.get("WORKER_MODE", "DISABLED").strip('"'), "worker_autostart": values.get("WORKER_AUTOSTART", "0").strip('"'), "validation_flow": values.get("WORKER_VALIDATION_FLOW_ENABLED", "0").strip('"'), "validation_movement": values.get("WORKER_VALIDATION_MOVEMENT_ENABLED", "0").strip('"'), "processes": processes, "ready": ready, "service_layout_ok": venv_python.is_file() and "WorkingDirectory=/opt/dst-orchestrator" in unit and "ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main" in unit and "ExecReload=/bin/kill -HUP $MAINPID" in unit and "KillMode=mixed" in unit}))
+service_core_ok = venv_python.is_file() and "WorkingDirectory=/opt/dst-orchestrator" in unit and "ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main" in unit and "ExecReload=/bin/kill -HUP $MAINPID" in unit and "KillMode=mixed" in unit
+print(json.dumps({"active": subprocess.call(["systemctl", "is-active", "--quiet", "dst-runtime-agent.service"]) == 0, "agent_pid": pid, "agent_state": agent_state, "agent_wchan": agent_wchan, "agent_adoption": agent_adoption, "runtime_id": values.get("RUNTIME_ID"), "adoption": adoption, "dst_game_pid": dst_game_pid, "heartbeat": heartbeat, "heartbeat_fresh": heartbeat_fresh, "worker_mode": values.get("WORKER_MODE", "DISABLED").strip('"'), "worker_autostart": values.get("WORKER_AUTOSTART", "0").strip('"'), "validation_flow": values.get("WORKER_VALIDATION_FLOW_ENABLED", "0").strip('"'), "validation_movement": values.get("WORKER_VALIDATION_MOVEMENT_ENABLED", "0").strip('"'), "processes": processes, "ready": ready, "service_core_ok": service_core_ok, "service_layout_ok": service_core_ok and "RuntimeDirectoryPreserve=restart" in unit}))
 '''
 
-GUEST_RECOVER_STALLED_AGENT = r'''import json, pathlib, subprocess, sys
+GUEST_RECOVER_STALLED_AGENT = r'''import json, os, pathlib, pwd, subprocess, sys
 service, raw = sys.argv[1:]
 adoption = json.loads(raw)
-if set(adoption) != {"DISPLAY", "STEAM", "DST"}:
-    raise RuntimeError("complete managed-process adoption identities are required")
+game_pid = int(adoption.pop("dst_game_pid", 0))
+if set(adoption) != {"DISPLAY", "STEAM"} or game_pid <= 1:
+    raise RuntimeError("verified display, Steam, and live game identities are required")
 assignments = []
 for name, identity in adoption.items():
     pid, ticks = identity.split(":", 1)
     if not pid.isdigit() or not ticks.isdigit(): raise RuntimeError("invalid adoption identity")
     assignments.append(f"RUNTIME_ADOPT_{name}={identity}")
+assignments.append(f"DST_ADOPT_GAME_PID={game_pid}")
+subprocess.run(["systemctl", "unset-environment", "RUNTIME_ADOPT_DST"], check=True)
 subprocess.run(["systemctl", "set-environment", *assignments], check=True)
+runtime = pathlib.Path("/run/dst-runtime")
+runtime.mkdir(mode=0o700, exist_ok=True)
+os.chown(runtime, pwd.getpwnam("dst").pw_uid, pwd.getpwnam("dst").pw_gid)
+auth = runtime / "Xauthority"
+auth.touch(mode=0o600, exist_ok=True)
+os.chown(auth, pwd.getpwnam("dst").pw_uid, pwd.getpwnam("dst").pw_gid)
+steam_ready = pathlib.Path("/run/dst-runtime/steam.ready")
+steam_ready.touch()
+os.chown(steam_ready, pwd.getpwnam("dst").pw_uid, pwd.getpwnam("dst").pw_gid)
 dropin_dir = pathlib.Path("/run/systemd/system") / f"{service}.d"
 dropin_dir.mkdir(parents=True, exist_ok=True)
 dropin = dropin_dir / "90-stalled-agent-adoption.conf"
-dropin.write_text("[Service]\nKillMode=process\nTimeoutStopSec=5\n")
+dropin.write_text("[Service]\nKillMode=process\nTimeoutStopSec=5\nRuntimeDirectoryPreserve=restart\n")
 subprocess.run(["systemctl", "daemon-reload"], check=True)
-subprocess.run(["systemctl", "restart", service], check=True, timeout=20)
+active = subprocess.call(["systemctl", "is-active", "--quiet", service]) == 0
+if active:
+    subprocess.run(["systemctl", "restart", service], check=True, timeout=20)
+else:
+    subprocess.run(["systemctl", "reset-failed", service], check=True)
+    subprocess.run(["systemctl", "start", service], check=True, timeout=20)
 print(json.dumps({"main_pid": subprocess.check_output(["systemctl", "show", "-p", "MainPID", "--value", service], text=True).strip(), "adoption": adoption}))
 '''
 
 GUEST_FINISH_STALLED_AGENT_RECOVERY = r'''import pathlib, subprocess, sys
 service = sys.argv[1]
-subprocess.run(["systemctl", "unset-environment", "RUNTIME_ADOPT_DISPLAY", "RUNTIME_ADOPT_STEAM", "RUNTIME_ADOPT_DST"], check=True)
+subprocess.run(["systemctl", "unset-environment", "RUNTIME_ADOPT_DISPLAY", "RUNTIME_ADOPT_STEAM", "RUNTIME_ADOPT_DST", "DST_ADOPT_GAME_PID"], check=True)
 dropin = pathlib.Path("/run/systemd/system") / f"{service}.d/90-stalled-agent-adoption.conf"
 dropin.unlink(missing_ok=True)
 subprocess.run(["systemctl", "daemon-reload"], check=True)
 '''
 
 
-def guest_probe(instance: str) -> dict[str, object]:
+def guest_probe(instance: str, *, allow_inactive: bool = False) -> dict[str, object]:
     value = json.loads(
         run(["incus", "exec", instance, "--", "python3", "-c", GUEST_PROBE])
     )
-    if not value.get("active") or value.get("agent_pid", 0) <= 1:
+    active = value.get("active")
+    if active and value.get("agent_pid", 0) <= 1:
         raise DeployError("Runtime Agent service is not active with a valid MainPID")
-    if not value.get("service_layout_ok"):
+    if not active and (not allow_inactive or value.get("agent_pid", 0) > 1):
+        raise DeployError("Runtime Agent service is not active with a valid MainPID")
+    if not value.get("service_layout_ok") and not (
+        allow_inactive and value.get("service_core_ok")
+    ):
         raise DeployError("installed venv or Runtime Agent service layout is incompatible")
-    if value.get("agent_state") in {"T", "t", "Z", "X"}:
+    if active and value.get("agent_state") in {"T", "t", "Z", "X"}:
         raise DeployError("Runtime Agent MainPID is stopped or not runnable")
     if value.get("worker_mode") != "DISABLED" or value.get("worker_autostart") != "0":
         raise DeployError("GameWorker must remain DISABLED with autostart off for deployment")
@@ -325,9 +371,9 @@ def guest_probe(instance: str) -> dict[str, object]:
     processes = value.get("processes", {})
     if not isinstance(processes, dict) or not {"Xvfb", "steam"}.issubset(processes):
         raise DeployError("expected healthy Xvfb and Steam processes were not found")
-    if not any(name.startswith("dontstarve") for name in processes):
+    if not value.get("dst_game_pid") or not any(name.startswith("dontstarve") for name in processes):
         raise DeployError("expected DST process was not found")
-    if value.get("ready") != {"steam": True, "dst": True}:
+    if active and value.get("ready") != {"steam": True, "dst": True}:
         raise DeployError("Steam/DST readiness markers are not both present")
     if not value.get("runtime_id"):
         raise DeployError("Runtime Agent runtime identity is missing")
@@ -336,10 +382,13 @@ def guest_probe(instance: str) -> dict[str, object]:
 
 def recover_stalled_agent(instance: str, probe: dict[str, object]) -> None:
     adoption = probe.get("adoption")
-    if probe.get("agent_wchan") != "anon_pipe_read" or not isinstance(adoption, dict):
+    inactive_safe = not probe.get("active") and probe.get("agent_pid") == 0
+    stalled_safe = probe.get("agent_wchan") == "anon_pipe_read"
+    if (not inactive_safe and not stalled_safe) or not isinstance(adoption, dict):
         raise DeployError("Runtime Agent did not respond to reload and no safe adoption recovery was proven")
-    if set(adoption) != {"DISPLAY", "STEAM", "DST"}:
-        raise DeployError("cannot recover stalled Runtime Agent without all managed launchers")
+    if set(adoption) != {"DISPLAY", "STEAM"} or not probe.get("dst_game_pid"):
+        raise DeployError("cannot recover Runtime Agent without verified display, Steam, and game processes")
+    adoption = {**adoption, "dst_game_pid": probe["dst_game_pid"]}
     run([
         "incus", "exec", instance, "--", "python3", "-c", GUEST_RECOVER_STALLED_AGENT,
         SERVICE, json.dumps(adoption, sort_keys=True),
@@ -354,7 +403,7 @@ def deploy(instance: str, repo: Path) -> None:
     revision = run(["git", "rev-parse", "HEAD"], cwd=repo)
     files = runtime_files(repo)
     metadata = make_metadata(revision, files, repo)
-    before = guest_probe(instance)
+    before = guest_probe(instance, allow_inactive=True)
     with tempfile.TemporaryDirectory(prefix="dst-runtime-deploy-") as temporary:
         archive_path = Path(temporary) / f"runtime-{revision}.tar.gz"
         archive_digest = write_archive(repo, files, metadata, archive_path)
@@ -387,30 +436,39 @@ def deploy(instance: str, repo: Path) -> None:
         except DeployError:
             previous = "NONE"
         print(f"guest previous revision: {previous}")
-        # The agent was paused only for the tree swap. Its established HUP path
-        # re-execs the new code while adopting healthy display/Steam/DST processes.
+        # Install the matching unit before reload so restart preservation and
+        # KillMode are in force for every future agent replacement.
+        unit_source = repo / "deploy/systemd/dst-runtime-agent.service"
+        unit_stage = f"/tmp/dst-runtime-agent-{revision}.service"
+        run(["incus", "file", "push", "--uid", "0", "--gid", "0", "--mode", "0644", str(unit_source), f"{instance}{unit_stage}"])
+        run(["incus", "exec", instance, "--", "install", "-o", "root", "-g", "root", "-m", "0644", unit_stage, "/etc/systemd/system/dst-runtime-agent.service"])
+        run(["incus", "exec", instance, "--", "rm", "-f", unit_stage])
+        run(["incus", "exec", instance, "--", "systemctl", "daemon-reload"])
+        # The agent is paused only for the tree swap. Its HUP path re-execs the
+        # new code; an already failed agent is safely started through adoption.
         reload_started = time.time()
-        run(["incus", "exec", instance, "--", "systemctl", "reload", SERVICE])
-        deadline = time.monotonic() + 60
         adopted = False
-        while time.monotonic() < deadline:
-            current = run(["incus", "exec", instance, "--", "cat", f"{INSTANCE_ROOT}/DEPLOYMENT.json"])
-            require_revision(str(parse_metadata(current)["commit"]), revision)
-            if run(["incus", "exec", instance, "--", "systemctl", "is-active", SERVICE]) == "active":
-                after = guest_probe(instance)
-                if after["processes"] != before["processes"]:
-                    raise DeployError("managed Xvfb/Steam/DST process identities changed during agent reload")
-                heartbeat = after.get("heartbeat", {})
-                if (
-                    after.get("heartbeat_fresh")
-                    and heartbeat.get("revision") == revision
-                    and heartbeat.get("timestamp_unix", 0) >= reload_started
-                ):
-                    adopted = True
-                    break
-            time.sleep(2)
+        if before.get("active"):
+            run(["incus", "exec", instance, "--", "systemctl", "reload", SERVICE])
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                current = run(["incus", "exec", instance, "--", "cat", f"{INSTANCE_ROOT}/DEPLOYMENT.json"])
+                require_revision(str(parse_metadata(current)["commit"]), revision)
+                if run(["incus", "exec", instance, "--", "systemctl", "is-active", SERVICE]) == "active":
+                    after = guest_probe(instance)
+                    if after["processes"] != before["processes"]:
+                        raise DeployError("managed Xvfb/Steam/DST process identities changed during agent reload")
+                    heartbeat = after.get("heartbeat", {})
+                    if (
+                        after.get("heartbeat_fresh")
+                        and heartbeat.get("revision") == revision
+                        and heartbeat.get("timestamp_unix", 0) >= reload_started
+                    ):
+                        adopted = True
+                        break
+                time.sleep(2)
         if not adopted:
-            stalled = guest_probe(instance)
+            stalled = guest_probe(instance, allow_inactive=True)
             recover_stalled_agent(instance, stalled)
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
@@ -420,10 +478,10 @@ def deploy(instance: str, repo: Path) -> None:
                 heartbeat = after.get("heartbeat", {})
                 if (
                     after.get("active")
-                    and after.get("agent_pid") != before["agent_pid"]
                     and after.get("agent_adoption", {}).get("RUNTIME_ADOPT_DISPLAY") == after["adoption"].get("DISPLAY")
                     and after.get("agent_adoption", {}).get("RUNTIME_ADOPT_STEAM") == after["adoption"].get("STEAM")
-                    and after.get("agent_adoption", {}).get("RUNTIME_ADOPT_DST") == after["adoption"].get("DST")
+                    and after.get("agent_adoption", {}).get("DST_ADOPT_GAME_PID") == str(after["dst_game_pid"])
+                    and after.get("dst_game_pid") == before.get("dst_game_pid")
                     and after.get("heartbeat_fresh")
                     and heartbeat.get("revision") == revision
                     and heartbeat.get("timestamp_unix", 0) >= reload_started

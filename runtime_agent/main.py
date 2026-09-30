@@ -112,20 +112,28 @@ def main() -> int:
         backoff_seconds=settings.restart_backoff_seconds,
         environment=process_environment,
     )
+    dst_environment = dict(process_environment)
+    adopted_game_pid = os.getenv("DST_ADOPT_GAME_PID")
+    if adopted_game_pid:
+        if not adopted_game_pid.isdecimal() or int(adopted_game_pid) <= 1:
+            raise RuntimeError("DST_ADOPT_GAME_PID must be a positive process id")
+        dst_environment["DST_ADOPT_GAME_PID"] = adopted_game_pid
+        os.environ.pop("DST_ADOPT_GAME_PID", None)
     dst = ProcessSupervisor(
         "dst",
         settings.dst_command,
         max_restarts=settings.max_restarts,
         backoff_seconds=settings.restart_backoff_seconds,
-        environment=process_environment,
+        environment=dst_environment,
     )
     adoption = {name: _adoption_identity(name) for name in ("DISPLAY", "STEAM", "DST")}
-    if any(adoption.values()):
-        if not all(adoption.values()):
-            raise RuntimeError("agent replacement requires all managed process identities")
+    if adoption["DISPLAY"] or adoption["STEAM"] or adoption["DST"]:
+        if not adoption["DISPLAY"] or not adoption["STEAM"]:
+            raise RuntimeError("agent replacement requires managed display and Steam identities")
         display.adopt(*adoption["DISPLAY"])
         steam.adopt(*adoption["STEAM"])
-        dst.adopt(*adoption["DST"])
+        if adoption["DST"]:
+            dst.adopt(*adoption["DST"])
     assert settings.worker_config is not None
     worker = WorkerBridge(
         settings.account_id,

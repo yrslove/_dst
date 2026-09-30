@@ -96,6 +96,7 @@ def test_runtime_agent_unit_uses_agent_only_reload_and_managed_shutdown() -> Non
     for unit in (SYSTEMD_UNIT, deployed_unit):
         assert "ExecReload=/bin/kill -HUP $MAINPID" in unit
         assert "KillMode=mixed" in unit
+        assert "RuntimeDirectoryPreserve=restart" in unit
 
 
 def test_deploy_probe_rejects_stopped_agent_pid(monkeypatch) -> None:
@@ -121,5 +122,32 @@ def test_deploy_probe_rejects_stopped_agent_pid(monkeypatch) -> None:
 def test_stalled_agent_recovery_preserves_cgroup_children_and_adopts_launchers() -> None:
     assert "KillMode=process" in GUEST_RECOVER_STALLED_AGENT
     assert "TimeoutStopSec=5" in GUEST_RECOVER_STALLED_AGENT
+    assert "RuntimeDirectoryPreserve=restart" in GUEST_RECOVER_STALLED_AGENT
+    assert '"systemctl", "start", service' in GUEST_RECOVER_STALLED_AGENT
+    assert "DST_ADOPT_GAME_PID" in GUEST_RECOVER_STALLED_AGENT
     assert 'f"RUNTIME_ADOPT_{name}={identity}"' in GUEST_RECOVER_STALLED_AGENT
     assert '"systemctl", "unset-environment"' in GUEST_FINISH_STALLED_AGENT_RECOVERY
+
+
+def test_deploy_probe_allows_failed_agent_only_for_verified_live_game_adoption(monkeypatch) -> None:
+    payload = {
+        "active": False,
+        "agent_pid": 0,
+        "runtime_id": "1",
+        "service_core_ok": True,
+        "service_layout_ok": False,
+        "worker_mode": "DISABLED",
+        "worker_autostart": "0",
+        "validation_flow": "0",
+        "validation_movement": "0",
+        "processes": {"Xvfb": 498, "steam": 600, "dontstarve_stea": 1237},
+        "dst_game_pid": 1237,
+        "ready": {"steam": False, "dst": False},
+    }
+    monkeypatch.setattr("scripts.deploy_runtime.run", lambda *_args: json.dumps(payload))
+
+    result = guest_probe("dst-000001-g1", allow_inactive=True)
+
+    assert result["dst_game_pid"] == 1237
+    with pytest.raises(DeployError, match="not active"):
+        guest_probe("dst-000001-g1")

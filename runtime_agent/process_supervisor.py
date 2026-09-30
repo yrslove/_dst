@@ -6,7 +6,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.runtime.display import GRAPHICAL_ENVIRONMENT_KEYS
@@ -123,8 +123,20 @@ class ProcessSupervisor:
         self._started_monotonic = self.clock()
         self.status.pid = pid
         self.status.process_group = pid
-        self.status.started_at = datetime.now(timezone.utc).isoformat()
+        self.status.started_at = self.process_started_at(pid, start_ticks)
         self.status.desired = True
+
+    @staticmethod
+    def process_started_at(pid: int, start_ticks: int) -> str:
+        """Return the original process start time rather than the adoption time."""
+        try:
+            uptime = float(Path("/proc/uptime").read_text().split()[0])
+            ticks_per_second = os.sysconf("SC_CLK_TCK")
+            elapsed = max(0.0, uptime - start_ticks / ticks_per_second)
+            started_at = datetime.now(timezone.utc) - timedelta(seconds=elapsed)
+        except (OSError, ValueError, IndexError):
+            started_at = datetime.now(timezone.utc)
+        return started_at.isoformat()
 
     @staticmethod
     def process_identity(pid: int) -> tuple[int, int, int] | None:

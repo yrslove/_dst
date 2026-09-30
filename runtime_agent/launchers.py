@@ -103,19 +103,27 @@ def dst() -> int:
     binary = game_dir / "bin64/dontstarve_steam_x64"
     if not binary.is_file():
         return 1
-    # Let the authenticated Steam client supply its runtime and API context.
-    # Steam detaches the game; this wrapper keeps the supervisor attached to the
-    # specific game executable and terminates that process on shutdown.
-    subprocess.run(
-        ["/usr/games/steam", "steam://run/322330"],
-        check=True,
-        timeout=20,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    adopted_pid_text = os.getenv("DST_ADOPT_GAME_PID")
+    adopted_pid = None
+    if adopted_pid_text:
+        try:
+            adopted_pid = int(adopted_pid_text)
+        except ValueError:
+            return 1
+        if adopted_pid <= 1 or adopted_pid not in _game_pids(binary):
+            return 1
+    else:
+        # Let the authenticated Steam client supply its runtime and API context.
+        subprocess.run(
+            ["/usr/games/steam", "steam://run/322330"],
+            check=True,
+            timeout=20,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     marker = Path(os.getenv("DST_READY_FILE", "/run/dst-runtime/dst.ready"))
     visible_since: float | None = None
-    game_pid: int | None = None
+    game_pid: int | None = adopted_pid
     deadline = time.monotonic() + 120
 
     def stop_game(*_args: object) -> None:

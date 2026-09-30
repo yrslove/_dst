@@ -24,6 +24,7 @@ User=dst
 Group=dst
 RuntimeDirectory=dst-runtime
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
 EnvironmentFile=/etc/dst-runtime/agent.env
 WorkingDirectory=/opt/dst-orchestrator
 ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main
