@@ -292,6 +292,33 @@ def test_active_gift_retry_is_bounded_and_reacquires_fresh_evidence():
     assert policy.propose(active_observation(6)) is None
 
 
+def test_transition_timeout_allows_the_existing_single_production_gift_retry():
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(active_observation(1)) is None
+    proposal = policy.propose(active_observation(2))
+    assert proposal is not None and proposal.action == ActionName.CLICK_GIFT_ICON
+    verifying = ActionResult(
+        "gift-open", ActionName.CLICK_GIFT_ICON, ActionStatus.VERIFYING, 0.1, 1, 1, 1
+    )
+    timeout = replace(
+        verifying,
+        status=ActionStatus.TIMED_OUT,
+        reason="verified transition deadline elapsed",
+    )
+
+    policy.on_action_result(active_observation(2), verifying)
+    policy.on_action_result(active_observation(3), timeout)
+    assert not policy.intervention_required
+    policy.on_verified(active_observation(3), timeout)
+    retry = policy.propose(active_observation(4))
+    assert retry is not None and retry.action == ActionName.CLICK_GIFT_ICON
+
+    policy.on_action_result(active_observation(4), verifying)
+    policy.on_action_result(active_observation(5), timeout)
+    assert policy.intervention_required
+
+
 def test_opening_gift_ui_does_not_confirm_daily_gift():
     policy = ActivityController()
     opening = ActionResult(

@@ -914,6 +914,17 @@ class ActivityController:
                         observation.source_sequence,
                     )
                     self.daily_gift_state = DailyGiftState.GIFT_INTERACTION_STARTED
+            elif (
+                result.action == ActionName.CLICK_GIFT_ICON
+                and result.status == ActionStatus.TIMED_OUT
+                and self.production_actions_enabled
+                and observation.screen == DSTScreen.IN_WORLD_IDLE
+                and self._gift_icon_click_attempts < 2
+            ):
+                # The verified-transition handler below permits one fresh
+                # production retry when the world stayed in-world and the
+                # actionable gift icon is still independently detected.
+                self._awaiting_reward_transition = False
             elif result.status == ActionStatus.SUPPRESSED:
                 self._dry_run_seen = True
             elif result.status not in {ActionStatus.PREEMPTED} and result.terminal:
