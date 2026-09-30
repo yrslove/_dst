@@ -91,6 +91,23 @@ def test_gray_live_icon_is_pending_until_giftmachine_is_enabled():
     assert policy.daily_gift_confirmation is None
 
 
+def test_gray_gift_banner_after_additional_hud_banner_remains_pending():
+    image = Image.open(
+        ASSETS / "samples/gift_icon_gray_in_world_multibanner_live.png"
+    ).convert("RGB")
+    observation = analyze_image(image, "gift-gray-multibanner-live", 1)
+
+    banner = next(
+        item for item in observation.detections if item.kind == "world_present_banner"
+    )
+    icon = next(item for item in observation.detections if item.kind == "gift_icon")
+
+    assert observation.screen.value == "IN_WORLD_IDLE"
+    assert banner.detected and banner.verified and banner.confidence >= 0.94
+    assert banner.bounds is not None and banner.bounds.left >= 0.27
+    assert icon.detected and dict(icon.metadata)["availability"] == "IN_WORLD_GIFT_PENDING"
+
+
 def test_gray_gift_approaches_station_once_before_any_gift_click():
     _, observation = gray_observation()
     policy = ActivityController()

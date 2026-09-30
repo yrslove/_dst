@@ -6,7 +6,7 @@ import numpy as np
 
 from runtime_agent.gameworker.geometry import Viewport
 
-GIFT_ROI = (0.115, 0.0, 0.2, 0.14)
+GIFT_ROI = (0.115, 0.0, 0.36, 0.14)
 HOVER_ROI = (0.10, 0.10, 0.32, 0.23)
 UNKNOWN = "GIFT_AVAILABILITY_UNKNOWN"
 PENDING = "IN_WORLD_GIFT_PENDING"
