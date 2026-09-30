@@ -251,7 +251,8 @@ pid = int(subprocess.check_output(["systemctl", "show", "-p", "MainPID", "--valu
 ready = {name: pathlib.Path(path).is_file() for name, path in (("steam", values.get("STEAM_READY_FILE", "/run/dst-runtime/steam.ready")), ("dst", values.get("DST_READY_FILE", "/run/dst-runtime/dst.ready")))}
 unit = pathlib.Path("/etc/systemd/system/dst-runtime-agent.service").read_text()
 venv_python = pathlib.Path("/opt/dst-orchestrator/.venv/bin/python")
-print(json.dumps({"active": subprocess.call(["systemctl", "is-active", "--quiet", "dst-runtime-agent.service"]) == 0, "agent_pid": pid, "worker_mode": values.get("WORKER_MODE", "DISABLED").strip('"'), "worker_autostart": values.get("WORKER_AUTOSTART", "0").strip('"'), "validation_flow": values.get("WORKER_VALIDATION_FLOW_ENABLED", "0").strip('"'), "validation_movement": values.get("WORKER_VALIDATION_MOVEMENT_ENABLED", "0").strip('"'), "processes": processes, "ready": ready, "service_layout_ok": venv_python.is_file() and "WorkingDirectory=/opt/dst-orchestrator" in unit and "ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main" in unit}))
+agent_state = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[0] if pid > 1 else "X"
+print(json.dumps({"active": subprocess.call(["systemctl", "is-active", "--quiet", "dst-runtime-agent.service"]) == 0, "agent_pid": pid, "agent_state": agent_state, "runtime_id": values.get("RUNTIME_ID"), "worker_mode": values.get("WORKER_MODE", "DISABLED").strip('"'), "worker_autostart": values.get("WORKER_AUTOSTART", "0").strip('"'), "validation_flow": values.get("WORKER_VALIDATION_FLOW_ENABLED", "0").strip('"'), "validation_movement": values.get("WORKER_VALIDATION_MOVEMENT_ENABLED", "0").strip('"'), "processes": processes, "ready": ready, "service_layout_ok": venv_python.is_file() and "WorkingDirectory=/opt/dst-orchestrator" in unit and "ExecStart=/opt/dst-orchestrator/.venv/bin/python -m runtime_agent.main" in unit and "ExecReload=/bin/kill -HUP $MAINPID" in unit and "KillMode=mixed" in unit}))
 '''
 
 
@@ -263,6 +264,8 @@ def guest_probe(instance: str) -> dict[str, object]:
         raise DeployError("Runtime Agent service is not active with a valid MainPID")
     if not value.get("service_layout_ok"):
         raise DeployError("installed venv or Runtime Agent service layout is incompatible")
+    if value.get("agent_state") in {"T", "t", "Z", "X"}:
+        raise DeployError("Runtime Agent MainPID is stopped or not runnable")
     if value.get("worker_mode") != "DISABLED" or value.get("worker_autostart") != "0":
         raise DeployError("GameWorker must remain DISABLED with autostart off for deployment")
     if value.get("validation_flow") not in {"0", "false", "False"} or value.get(
@@ -276,6 +279,8 @@ def guest_probe(instance: str) -> dict[str, object]:
         raise DeployError("expected DST process was not found")
     if value.get("ready") != {"steam": True, "dst": True}:
         raise DeployError("Steam/DST readiness markers are not both present")
+    if not value.get("runtime_id"):
+        raise DeployError("Runtime Agent runtime identity is missing")
     return value
 
 
@@ -336,7 +341,11 @@ def deploy(instance: str, repo: Path) -> None:
         )
         if not cursor:
             raise DeployError("could not establish a Runtime Agent journal cursor")
-        run(["incus", "exec", instance, "--", "kill", "-HUP", str(installed["agent_pid"])])
+        run(["incus", "exec", instance, "--", "systemctl", "reload", SERVICE])
+        heartbeat = (
+            f"runtime_heartbeat_accepted runtime_id={before['runtime_id']} "
+            "phase=GAME_READY healthy=True"
+        )
         deadline = __import__("time").monotonic() + 60
         while __import__("time").monotonic() < deadline:
             current = run(["incus", "exec", instance, "--", "cat", f"{INSTANCE_ROOT}/DEPLOYMENT.json"])
@@ -348,6 +357,7 @@ def deploy(instance: str, repo: Path) -> None:
             if (
                 f"runtime_agent_started deployed_revision={revision}" in log
                 and "runtime_agent_reload_preserving_managed_processes" in log
+                and heartbeat in log
                 and run(["incus", "exec", instance, "--", "systemctl", "is-active", SERVICE])
                 == "active"
             ):
@@ -360,7 +370,7 @@ def deploy(instance: str, repo: Path) -> None:
             raise DeployError("Runtime Agent did not prove healthy adoption of the deployed revision")
         run(["incus", "exec", instance, "--", "rm", "-rf", installed["backup"], installed["stage"]])
         print(f"guest deployed revision: {revision}")
-        print("Runtime Agent health: active; new revision logged after managed-process adoption")
+        print("Runtime Agent health: fresh GAME_READY heartbeat after managed-process adoption")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

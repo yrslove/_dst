@@ -62,6 +62,12 @@ def send_heartbeat(
         )
         response.raise_for_status()
         value = response.json()
+        logger.info(
+            "runtime_heartbeat_accepted runtime_id=%s phase=%s healthy=%s",
+            settings.runtime_id,
+            phase,
+            healthy,
+        )
         if results:
             logger.info(
                 "worker_ack_control_plane_response runtime_id=%s results=%s "

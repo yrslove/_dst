@@ -221,6 +221,7 @@ def test_control_plane_submission_logs_terminal_ack_response(monkeypatch, caplog
 
     assert response["ok"] is True
     assert sent[0]["worker_command_results"] == [{"id": 60, "result": "OK"}]
+    assert "runtime_heartbeat_accepted runtime_id=2 phase=GAME_READY healthy=True" in caplog.text
     assert "worker_ack_control_plane_submit" in caplog.text
     assert "worker_ack_control_plane_response" in caplog.text
 
