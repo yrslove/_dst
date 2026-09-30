@@ -7,8 +7,10 @@ import pytest
 
 from app.runtime.bootstrap import SYSTEMD_UNIT
 from scripts.deploy_runtime import (
+    GUEST_FINISH_STALLED_AGENT_RECOVERY,
     GUEST_INSTALLER,
     GUEST_PROBE,
+    GUEST_RECOVER_STALLED_AGENT,
     DeployError,
     assert_clean_tree,
     guest_probe,
@@ -78,6 +80,12 @@ def test_guest_metadata_without_a_commit_is_rejected() -> None:
 def test_guest_helpers_are_valid_python() -> None:
     compile(GUEST_INSTALLER, "<guest-installer>", "exec")
     compile(GUEST_PROBE, "<guest-probe>", "exec")
+    compile(GUEST_RECOVER_STALLED_AGENT, "<stalled-agent-recovery>", "exec")
+    compile(
+        GUEST_FINISH_STALLED_AGENT_RECOVERY,
+        "<finish-stalled-agent-recovery>",
+        "exec",
+    )
     assert '"app/runtime/world_profile.py"' in GUEST_INSTALLER
 
 
@@ -108,3 +116,10 @@ def test_deploy_probe_rejects_stopped_agent_pid(monkeypatch) -> None:
 
     with pytest.raises(DeployError, match="MainPID is stopped"):
         guest_probe("dst-000001-g1")
+
+
+def test_stalled_agent_recovery_preserves_cgroup_children_and_adopts_launchers() -> None:
+    assert "KillMode=process" in GUEST_RECOVER_STALLED_AGENT
+    assert "TimeoutStopSec=5" in GUEST_RECOVER_STALLED_AGENT
+    assert 'f"RUNTIME_ADOPT_{name}={identity}"' in GUEST_RECOVER_STALLED_AGENT
+    assert '"systemctl", "unset-environment"' in GUEST_FINISH_STALLED_AGENT_RECOVERY
