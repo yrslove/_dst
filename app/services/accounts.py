@@ -141,7 +141,7 @@ class AccountService:
                     node_id=node.id,
                     provider=node.provider,
                     external_id=f"dst-{account.id:06d}-g1",
-                    network_profile=payload.network_profile,
+                    network_profile=payload.network_profile or self.settings.incus_profile,
                     runtime_generation=1,
                     image_version=self.settings.current_image_version,
                     state=RuntimeState.NEW,

@@ -1,4 +1,4 @@
-from app.models import AccountSecret
+from app.models import AccountSecret, RuntimeInstance
 from tests.helpers import create_account
 
 
@@ -46,6 +46,29 @@ def test_create_duplicate_and_secret_not_exposed(client, app):
         stored = session.get(AccountSecret, account["id"])
         assert stored.steam_password_enc
         assert stored.steam_password_enc != "secret-value"
+
+
+def test_create_with_visible_form_fields_uses_default_network_profile(client, app):
+    response = client.post(
+        "/api/v1/accounts",
+        json={
+            "label": "visible-fields-only",
+            "steam_username": "visible-fields-only",
+            "steam_password": "steam-secret",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    account = response.json()["account"]
+    assert account["email"] is None
+    assert account["klei_email"] is None
+    assert account["notes"] is None
+    assert account["network_profile"] == app.state.settings.incus_profile
+    with app.state.db.session() as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        secrets = session.get(AccountSecret, account["id"])
+        assert runtime.network_profile == app.state.settings.incus_profile
+        assert secrets.email_password_enc is None
 
 
 def test_disable_requires_stopped_runtime(client, app):
