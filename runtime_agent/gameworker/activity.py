@@ -43,6 +43,17 @@ class DailyGiftState(StrEnum):
     GIFT_UI_CLOSED = "GIFT_UI_CLOSED"
 
 
+class InWorldGiftState(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    AVAILABILITY_UNKNOWN = "GIFT_AVAILABILITY_UNKNOWN"
+    NO_GIFT = "NO_REWARD_AVAILABLE"
+    PENDING_STATION = "IN_WORLD_GIFT_PENDING"
+    ACTIONABLE = "IN_WORLD_GIFT_ACTIONABLE"
+    OPENING = "IN_WORLD_GIFT_OPENING"
+    RECEIVED = "IN_WORLD_GIFT_RECEIVED"
+    CLAIMED = "IN_WORLD_GIFT_CLAIMED"
+
+
 @dataclass(frozen=True, slots=True)
 class DailyGiftConfirmation:
     semantic: str
@@ -172,10 +183,12 @@ class ActivityController:
         self._awaiting_reward_transition = False
         self._reward_click_attempts = 0
         self.daily_gift_state = DailyGiftState.UNKNOWN
+        self.inworld_gift_state = InWorldGiftState.UNKNOWN
         self.daily_gift_confirmation: DailyGiftConfirmation | None = None
         self.gift_availability_evidence: dict | None = None
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
+        self._gift_inventory_open_attempted = False
         self._reward_open_source_sequence: int | None = None
         self._last_gift_observation_sequence = 0
         self._last_confirmed_gift_sequence = 0
@@ -238,32 +251,35 @@ class ActivityController:
                 return None
             evidence = dict(icon.metadata) if icon is not None else {}
             availability = evidence.get("availability", "GIFT_AVAILABILITY_UNKNOWN")
-            if self.daily_gift_confirmation is None and self.daily_gift_state not in {
-                DailyGiftState.GIFT_INTERACTION_STARTED,
-                DailyGiftState.GIFT_UI_OPEN,
-                DailyGiftState.GIFT_UI_CLOSED,
-            }:
-                self.daily_gift_state = DailyGiftState(availability)
-                self.gift_availability_evidence = {
-                    **evidence,
-                    "semantic": availability,
-                    "icon_present": bool(icon and icon.detected and icon.verified),
-                    "identity_confidence": icon.confidence if icon else 0.0,
-                    "evidence_frame_id": observation.source_frame_id,
-                    "evidence_sequence": observation.source_sequence,
-                    "observed_at": observation.timestamp,
-                    "calibration_profile": observation.calibration_profile_id,
-                    "icon_bounds": (
-                        [
-                            icon.bounds.left,
-                            icon.bounds.top,
-                            icon.bounds.right,
-                            icon.bounds.bottom,
-                        ]
-                        if icon and icon.bounds
-                        else None
-                    ),
-                }
+            world_states = {
+                "IN_WORLD_GIFT_PENDING": InWorldGiftState.PENDING_STATION,
+                "GIFT_AVAILABLE": InWorldGiftState.ACTIONABLE,
+                "NO_REWARD_AVAILABLE": InWorldGiftState.NO_GIFT,
+                "GIFT_AVAILABILITY_UNKNOWN": InWorldGiftState.AVAILABILITY_UNKNOWN,
+            }
+            self.inworld_gift_state = world_states.get(
+                availability, InWorldGiftState.AVAILABILITY_UNKNOWN
+            )
+            self.gift_availability_evidence = {
+                **evidence,
+                "semantic": self.inworld_gift_state.value,
+                "icon_present": bool(icon and icon.detected and icon.verified),
+                "identity_confidence": icon.confidence if icon else 0.0,
+                "evidence_frame_id": observation.source_frame_id,
+                "evidence_sequence": observation.source_sequence,
+                "observed_at": observation.timestamp,
+                "calibration_profile": observation.calibration_profile_id,
+                "icon_bounds": (
+                    [
+                        icon.bounds.left,
+                        icon.bounds.top,
+                        icon.bounds.right,
+                        icon.bounds.bottom,
+                    ]
+                    if icon and icon.bounds
+                    else None
+                ),
+            }
         if observation.source_sequence > self._last_gift_observation_sequence:
             self._last_gift_observation_sequence = observation.source_sequence
             if observation.screen == DSTScreen.LOGIN_REWARD_AVAILABLE:
@@ -295,6 +311,17 @@ class ActivityController:
         if self.intervention_required:
             self._record(observation, "NONE", "intervention required")
             return None
+        if (
+            self.production_actions_enabled
+            and observation.screen == DSTScreen.IN_WORLD_IDLE
+            and self.inworld_gift_state == InWorldGiftState.PENDING_STATION
+            and not self._gift_inventory_open_attempted
+        ):
+            self._gift_inventory_open_attempted = True
+            return ActionProposal(
+                ActionName.OPEN_INVENTORY,
+                reason="enable the prepared nearby giftmachine for a visible pending gift",
+            )
         if (
             self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_IDLE
@@ -828,6 +855,7 @@ class ActivityController:
             return result
         if result.action in {
             ActionName.CLICK_GIFT_ICON,
+            ActionName.OPEN_INVENTORY,
             ActionName.CLICK_REWARD_OPEN,
             ActionName.CLICK_OPTIONS,
             ActionName.CLICK_REWARD_CLOSE,
@@ -879,6 +907,18 @@ class ActivityController:
         return result
 
     def on_verified(self, observation: GameObservation, result: ActionResult) -> None:
+        if result.action == ActionName.OPEN_INVENTORY:
+            if result.status == ActionStatus.SUCCEEDED:
+                self.counters["verified_actions"] += 1
+            else:
+                self.intervention_required = True
+            self._record(
+                observation,
+                result.action.value,
+                "opened the canonical inventory to enable the prepared giftmachine",
+                result.status.value,
+            )
+            return
         if result.action == ActionName.HOVER_GIFT_ICON:
             if result.status != ActionStatus.SUCCEEDED:
                 self.on_unknown(observation)

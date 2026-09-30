@@ -466,6 +466,39 @@ the 75–90 minute soak remains pending and must not start automatically.
 - No generic behavior-tree/planner framework.
 - No full test suite after every small patch.
 
+## Stage 4B — installed-build reward mechanics audit (2026-09-30)
+
+Build-specific audit: DST `747465` / Steam build `24700692`. The bundled Lua clearly
+separates lobby daily gifts from in-world playtime gifts. Lobby login waits for
+inventory download / `CHECK_DAILY_GIFT` and presents `GetDailyGiftItem()` plus
+unopened entitlements in `ThankYouPopup`. In-world gifts use native
+`TheInventory:GetClientGiftCount`, replicated `hasgift`, and a separate
+`hasgiftmachine` state.
+
+The previous assumption that a gray present means `NO_REWARD_AVAILABLE` is disproven
+by the installed client flow. `GiftItemToast` is displayed when a gift count exists,
+but it is click-disabled until `builder.lua` finds a visible nearby `giftmachine`
+while the player's inventory is open. Science Machine and Alchemy Engine provide
+that tag. The retained live gray-present frame is therefore evidence of a pending
+gift without an enabled machine context; the 48m06s segment does not establish a
+no-gift AFK interval. Native account eligibility/timer logic is not in the scripts
+bundle. The current source/runtime findings and bounded next experiment are in
+[REWARD_MECHANICS_AUDIT_20260930.md](docs/REWARD_MECHANICS_AUDIT_20260930.md).
+
+This checkpoint adds a separate `inworld_gift_state` telemetry field and reports
+gray visible present as `IN_WORLD_GIFT_PENDING`. Production ACTIVE mode proposes one
+canonical `OPEN_INVENTORY` action to enable the fixture station, with bounded fresh
+screen-change verification. The production gift click remains unproven and must not
+be treated as the daily `LOGIN_REWARD_AVAILABLE` modal. Actual `GiftItemPopUp` result,
+claim confirmation, daily-vs-weekly durable progression, account weekly count, AFK
+eligibility, and this account's next-due/reset timestamps remain open.
+
+Runtime health evidence at 2026-09-30 13:50 UTC: DST and Steam running, worker ACTIVE,
+no held inputs, zero gameplay actions in the current worker run, and item-server
+HealthCheck returned `OK`. This is service/process health only; it does not prove
+authenticated item-server eligibility or counted playtime. Worker mechanics fix is
+offline tested but has not yet been deployed or exercised live.
+
 ## Historical documentation
 
 Dated stage, progress, handoff, and validation documents are historical evidence. They

@@ -985,6 +985,7 @@ class DSTGameWorker:
         # ActivityController policies.
         return frozenset(
             {
+                ActionName.OPEN_INVENTORY,
                 ActionName.CLICK_REWARD_OPEN,
                 ActionName.CLICK_REWARD_CLOSE,
                 ActionName.CLICK_OPTIONS,
@@ -1084,6 +1085,7 @@ class DSTGameWorker:
                 "actions_count": self._actions_count,
                 "behavior_counters": dict(self.activity.counters),
                 "daily_gift_state": self.activity.daily_gift_state.value,
+                "inworld_gift_state": self.activity.inworld_gift_state.value,
                 "gift_availability_evidence": self.activity.gift_availability_evidence,
                 "daily_gift_confirmation": (
                     self.activity.daily_gift_confirmation.as_dict()

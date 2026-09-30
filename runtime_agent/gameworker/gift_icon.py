@@ -9,6 +9,7 @@ from runtime_agent.gameworker.geometry import Viewport
 GIFT_ROI = (0.115, 0.0, 0.2, 0.14)
 HOVER_ROI = (0.10, 0.10, 0.32, 0.23)
 UNKNOWN = "GIFT_AVAILABILITY_UNKNOWN"
+PENDING = "IN_WORLD_GIFT_PENDING"
 
 
 def classify_icon(image, detection, template, *, active=None, hover_verified=False):
@@ -43,7 +44,10 @@ def classify_icon(image, detection, template, *, active=None, hover_verified=Fal
         active and active.detected and active.verified and active.confidence >= 0.94
     )
     if identity and not active_verified and p95 <= 18 and colored_fraction <= 0.02:
-        evidence.update(icon_state="INACTIVE", availability="NO_REWARD_AVAILABLE")
+        # DST renders the toast for a pending gift before its nearby giftmachine
+        # is enabled. A gray visible toast means a gift exists but is not yet
+        # actionable; it is not evidence that the account has no reward.
+        evidence.update(icon_state="PENDING", availability=PENDING)
     elif (
         identity
         and active is not None

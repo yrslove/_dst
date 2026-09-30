@@ -11,7 +11,11 @@ from runtime_agent.gameworker.actions import (
     ActionResult,
     ActionStatus,
 )
-from runtime_agent.gameworker.activity import ActivityController, DailyGiftState
+from runtime_agent.gameworker.activity import (
+    ActivityController,
+    DailyGiftState,
+    InWorldGiftState,
+)
 from runtime_agent.gameworker.geometry import CalibrationProfile
 from runtime_agent.gameworker.gift_icon import UNKNOWN, classify_icon, hover_response
 from runtime_agent.gameworker.transitions import (
@@ -75,27 +79,30 @@ def active_observation(sequence=1, *, fresh_until=None):
     )
 
 
-def test_gray_live_icon_is_unavailable():
+def test_gray_live_icon_is_pending_until_giftmachine_is_enabled():
     _, observation = gray_observation()
     icon = next(d for d in observation.detections if d.kind == "gift_icon")
     assert icon.detected and icon.verified and icon.confidence >= 0.94
-    assert dict(icon.metadata)["availability"] == "NO_REWARD_AVAILABLE"
+    assert dict(icon.metadata)["availability"] == "IN_WORLD_GIFT_PENDING"
     policy = ActivityController()
     policy.propose(observation)
-    assert policy.daily_gift_state == DailyGiftState.NO_REWARD_AVAILABLE
+    assert policy.inworld_gift_state == InWorldGiftState.PENDING_STATION
+    assert policy.daily_gift_state == DailyGiftState.UNKNOWN
     assert policy.daily_gift_confirmation is None
 
 
-def test_gray_gift_never_proposes_gift_or_reward_click():
+def test_gray_gift_opens_inventory_before_any_gift_click():
     _, observation = gray_observation()
     policy = ActivityController()
     policy.set_production_actions_enabled(True)
-    assert policy.propose(observation) is None
+    assert policy.propose(observation) is None  # two-frame hysteresis
     next_frame = replace(
         observation, source_frame_id="gray-live-next", source_sequence=2
     )
-    assert policy.propose(next_frame) is None
-    assert policy.daily_gift_state == DailyGiftState.NO_REWARD_AVAILABLE
+    proposal = policy.propose(next_frame)
+    assert proposal is not None and proposal.action == ActionName.OPEN_INVENTORY
+    assert policy.inworld_gift_state == InWorldGiftState.PENDING_STATION
+    assert policy.daily_gift_state == DailyGiftState.UNKNOWN
     assert policy.daily_gift_confirmation is None
     assert policy.counters["gift_claimed"] == 0
     assert action_precondition_error(ActionName.CLICK_GIFT_ICON, next_frame)
@@ -261,7 +268,7 @@ def test_uncertain_identity_hovers_once_without_claim_semantics():
     second = replace(observation, source_sequence=2, source_frame_id="gift-hover-2")
     assert policy.propose(second).action == ActionName.HOVER_GIFT_ICON
     assert policy.propose(replace(second, source_sequence=3)) is None
-    assert policy.daily_gift_state == DailyGiftState.GIFT_AVAILABILITY_UNKNOWN
+    assert policy.inworld_gift_state == InWorldGiftState.AVAILABILITY_UNKNOWN
     assert policy.daily_gift_confirmation is None
 
 

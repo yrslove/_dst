@@ -31,6 +31,14 @@ class ActionContract:
 
 
 CONTRACTS = {
+    ActionName.OPEN_INVENTORY: ActionContract(
+        (),
+        frozenset({DSTScreen.IN_WORLD_IDLE}),
+        frozenset({DSTScreen.IN_WORLD_IDLE}),
+        timeout=8.0,
+        stable_observations=1,
+        min_screen_change=0.01,
+    ),
     ActionName.HOVER_GIFT_ICON: ActionContract(
         ("gift_icon",),
         frozenset({DSTScreen.IN_WORLD_IDLE}),
