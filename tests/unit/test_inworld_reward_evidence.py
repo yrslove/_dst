@@ -4,7 +4,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from runtime_agent.gameworker.reward_evidence import InWorldClaimEvidence
+from runtime_agent.gameworker.reward_evidence import (
+    InWorldClaimEvidence,
+    SessionClaimEvidence,
+)
 
 
 def evidence(tmp_path, *, modified=150, error=False, item_id=7, status=200):
@@ -51,6 +54,44 @@ def test_backend_ack_without_fresh_received_then_close_never_confirms(tmp_path):
     result = closed()
     result['received_sequence'] = result['evidence_sequence']
     assert evidence(tmp_path).confirm(result) is None
+
+
+def test_session_claims_require_correct_account_ack_and_independent_runtime(tmp_path):
+    providers = []
+    for account, runtime in ((1, 1), (2, 4)):
+        root = tmp_path / f"guest-{account}"
+        cache = root / "steam-account/client_save/inventory_cache_prod"
+        cache.parent.mkdir(parents=True)
+        cache.write_text(json.dumps({"Error": False, "UserID": f"KU_{account}", "Items": []}))
+        provider = SessionClaimEvidence(root, root / "session", {
+            "account_id": account, "runtime_id": runtime, "experiment_session_id": f"session-{account}"
+        })
+        provider.before_tick()
+        assert not provider.ready
+        cache.write_text(json.dumps({"Error": False, "UserID": f"KU_{account}", "Items": [
+            {"ItemID": 7, "ItemType": "TEST_ITEM", "Context": 3}
+        ]}))
+        provider.before_tick()
+        assert provider.ready
+        providers.append(provider)
+    a, b = providers
+    started = a.provider.started_at
+    result = {**closed(), "runtime_id": 1,
+              "received_at": datetime.fromtimestamp(started + 1, UTC).isoformat(),
+              "observed_at": datetime.fromtimestamp(started + 3, UTC).isoformat()}
+    log = a.user_root / "client_log.txt"
+    ack = {"Error": False, "ItemID": 7, "Modified": started + 2, "UserID": "KU_2"}
+    log.write_text("[SetItemOpened_Complete Success:200] " + json.dumps(ack))
+    assert a.confirm(result) is None
+    ack["UserID"] = "KU_1"
+    log.write_text("[SetItemOpened_Complete Success:200] " + json.dumps(ack))
+    assert b.confirm(result) is None
+    receipt = a.confirm(result)
+    assert receipt["account_id"] == 1
+    assert receipt["experiment_session_id"] == "session-1"
+    assert (a.evidence / "claim.json").exists()
+    assert b.provider.receipt is None
+    assert not (b.evidence / "claim.json").exists()
 
 
 def recording(tmp_path, *, screen='IN_WORLD_GIFT_RECEIVED', mode='ACTIVE', later=False):

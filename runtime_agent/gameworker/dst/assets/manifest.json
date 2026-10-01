@@ -36,12 +36,12 @@
       "expected_region": [
         0.14,
         0.92,
-        0.22,
+        0.9,
         1.0
       ],
       "threshold": 0.94,
       "version": 1,
-      "expected_use": "First empty inventory slot on the live Wilson world HUD",
+      "expected_use": "Any empty inventory slot within the live world HUD",
       "verified": true
     },
     {

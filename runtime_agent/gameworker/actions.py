@@ -863,7 +863,8 @@ class GameActions:
             sequence = self._sequence
         return Action(
             action_id=(
-                f"runtime-{self.runtime_generation}:worker-{self.worker_generation}:"
+                f"runtime-{self.runtime_id}:generation-{self.runtime_generation}:"
+                f"worker-{self.worker_generation}:"
                 f"action-{sequence}"
             ),
             name=name,

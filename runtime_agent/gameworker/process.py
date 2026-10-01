@@ -293,6 +293,13 @@ def _worker_main(
                     elif command == WorkerCommandName.RESUME:
                         report = worker.resume()
                     elif command == WorkerCommandName.SET_MODE:
+                        if message.values.get("locomotion_profile"):
+                            worker.configure_experiment(
+                                message.values["locomotion_profile"],
+                                message.values["experiment_session_id"],
+                                message.values["experiment_seconds"],
+                                message.values.get("experiment_until_gift", False),
+                            )
                         report = worker.set_mode(WorkerMode(message.values["mode"]))
                     elif command == WorkerCommandName.STATUS:
                         report = worker.status()

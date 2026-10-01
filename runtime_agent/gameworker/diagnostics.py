@@ -42,6 +42,17 @@ class WorkerDiagnostics:
                 if isinstance(value, (str, int, float, bool, type(None)))
             }
 
+    def save_frame(self, frame_id: str, destination: Path) -> bool:
+        """Export one identified frame from the existing bounded evidence ring."""
+        with self._lock:
+            record = next((item for item in self._frames
+                           if item.frame.frame_id == frame_id), None)
+            if record is None:
+                return False
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            record.frame.image().save(destination)
+            return True
+
     def observe(self, frame, observation, *, assets, calibration) -> None:
         """Retain a small frame ring and finalize one bundle per unknown episode."""
         if not self.enabled:

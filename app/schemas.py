@@ -103,6 +103,10 @@ class ViewAccessRequest(BaseModel):
 
 class WorkerModeRequest(BaseModel):
     mode: Literal["DISABLED", "OBSERVE", "ACTIVE"]
+    locomotion_profile: Literal["CONTROL", "HIGH_ACTIVITY"] | None = None
+    experiment_session_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    experiment_seconds: float = Field(default=120, ge=1, le=604800)
+    experiment_until_gift: bool = False
 
 
 class RebuildRuntimeRequest(BaseModel):

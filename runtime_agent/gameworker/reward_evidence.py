@@ -6,7 +6,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from runtime_agent.gameworker.vision import DSTScreen, GameObservation
@@ -15,9 +15,82 @@ ACK = re.compile(rb"\[SetItemOpened_Complete Success:200\] (\{[^\r\n]+\})")
 MAX_LOG_BYTES = 8 * 1024 * 1024
 
 
+def durable_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w") as stream:
+        json.dump(value, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+class SessionClaimEvidence:
+    """Arm the proven claim verifier from this guest's native inventory cache."""
+    def __init__(self, user_root: Path, evidence: Path, identity: dict):
+        self.user_root, self.evidence, self.identity = user_root, evidence, identity
+        self.provider = None
+        self.detection = None
+        self.health = {"state": "WAITING_FOR_NATIVE_INVENTORY"}
+
+    @property
+    def ready(self):
+        return self.provider is not None
+
+    def before_tick(self):
+        paths = list(self.user_root.glob("*/client_save/inventory_cache_prod"))
+        if len(paths) != 1:
+            self.health = {"state": "INVENTORY_IDENTITY_UNAVAILABLE"}
+            return
+        try:
+            raw = paths[0].read_bytes()
+            if len(raw) > 4 * 1024 * 1024:
+                raise ValueError("inventory exceeds bound")
+            inventory = json.loads(raw)
+            if inventory.get("Error") is not False or not inventory.get("UserID"):
+                raise ValueError("native inventory is not healthy")
+            pending = [item for item in inventory["Items"] if item.get("Context") == 3]
+            self.health = {"state": "OK", "error": False, "pending_items": len(pending),
+                           "cache_updated_at": datetime.fromtimestamp(paths[0].stat().st_mtime, UTC).isoformat()}
+            if pending and self.provider is None:
+                baseline = self.evidence / "inventory-before.json"
+                durable_json(baseline, inventory)
+                self.provider = InWorldClaimEvidence(
+                    baseline, self.user_root / "client_log.txt", self.evidence / "claim.json"
+                )
+                self.provider.user_id = inventory["UserID"]
+        except (OSError, ValueError, KeyError, TypeError):
+            self.health = {"state": "NATIVE_INVENTORY_UNAVAILABLE"}
+
+    def observe(self, observation):
+        if not self.provider or observation is None:
+            return None
+        if observation.runtime_id != self.identity["runtime_id"]:
+            return None
+        if self.detection is None and observation.production_ready and observation.is_fresh():
+            icon = next((d for d in observation.detections if d.kind == "gift_icon"), None)
+            if icon and dict(icon.metadata).get("availability") in {"GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"}:
+                self.detection = {**self.identity, "detected_at": observation.timestamp,
+                                  "observation": observation.as_dict()}
+                durable_json(self.evidence / "detection.json", self.detection)
+        return self.provider.observe(observation)
+
+    def confirm(self, closed):
+        if not self.provider or closed.get("runtime_id") != self.identity["runtime_id"]:
+            return None
+        return self.provider.confirm({**closed, **self.identity,
+                                      "detection_timestamp": self.detection["detected_at"] if self.detection else None})
+
+
 class InWorldClaimEvidence:
     def __init__(self, inventory_before: Path, client_log: Path, result_path: Path):
         self.client_log = client_log
+        self.user_id = None
         self.result_path = result_path
         raw = inventory_before.read_bytes()
         if len(raw) > 4 * 1024 * 1024:
@@ -155,6 +228,7 @@ class InWorldClaimEvidence:
             modified = ack.get("Modified")
             if not (
                 ack.get("Error") is False
+                and (self.user_id is None or ack.get("UserID") == self.user_id)
                 and isinstance(item_id, int)
                 and item_id in self.pending
                 and isinstance(modified, (int, float))
@@ -173,6 +247,7 @@ class InWorldClaimEvidence:
                     "ack_sha256": hashlib.sha256(match.group()).hexdigest(),
                 },
                 "inventory_before_sha256": self.baseline_sha256,
+                "claim_timestamp": datetime.fromtimestamp(modified, UTC).isoformat(),
             }
             self.result_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.result_path.with_suffix(".tmp")

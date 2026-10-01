@@ -106,6 +106,9 @@ class ActivityController:
             DSTScreen.CHARACTER_SELECTION_HOVERED,
             DSTScreen.CHARACTER_LOADOUT,
             DSTScreen.IN_WORLD_IDLE,
+            DSTScreen.LOADING,
+            DSTScreen.DEAD,
+            DSTScreen.WORLD_RESET_PENDING,
         }
     )
     RECOVERABLE_WORLD_ENTRY_ACTIONS = frozenset(
@@ -151,6 +154,16 @@ class ActivityController:
             {DSTScreen.CHARACTER_LOADOUT, DSTScreen.IN_WORLD_IDLE}
         ),
         ActionName.START_SURVIVOR: frozenset({DSTScreen.IN_WORLD_IDLE}),
+        ActionName.MOVE_FORWARD: frozenset({
+            DSTScreen.IN_WORLD_IDLE, DSTScreen.LOADING, DSTScreen.DEAD,
+            DSTScreen.WORLD_RESET_PENDING, DSTScreen.MAIN_MENU,
+            DSTScreen.CHARACTER_SELECTION, DSTScreen.CHARACTER_LOADOUT,
+        }),
+        ActionName.MOVE_BACKWARD: frozenset({
+            DSTScreen.IN_WORLD_IDLE, DSTScreen.LOADING, DSTScreen.DEAD,
+            DSTScreen.WORLD_RESET_PENDING, DSTScreen.MAIN_MENU,
+            DSTScreen.CHARACTER_SELECTION, DSTScreen.CHARACTER_LOADOUT,
+        }),
     }
 
     def __init__(
@@ -158,10 +171,14 @@ class ActivityController:
         *,
         validation_flow_enabled: bool = False,
         validation_movement_enabled: bool = False,
+        locomotion=None,
     ) -> None:
         self.validation_flow_enabled = validation_flow_enabled
         self.validation_movement_enabled = validation_movement_enabled
         self.production_actions_enabled = False
+        self.gift_claim_ready = True
+        self._production_world_entry_action_id = None
+        self.locomotion = locomotion
         self._reward_next_attempts = 0
         self.validation_complete = False
         self._validation_step = 0
@@ -220,6 +237,12 @@ class ActivityController:
 
     def set_production_actions_enabled(self, enabled: bool) -> None:
         self.production_actions_enabled = bool(enabled)
+
+    def _recoverable_action(self, action):
+        return action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS or (
+            self.locomotion is not None and self.locomotion.profile
+            and action in {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD}
+        )
 
     @property
     def recoverable_intervention_pending(self) -> bool:
@@ -292,6 +315,9 @@ class ActivityController:
         elif observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED:
             self.inworld_gift_state = InWorldGiftState.RECEIVED
             self._inworld_received_evidence = {
+                "runtime_id": observation.runtime_id,
+                "runtime_generation": observation.runtime_generation,
+                "received_worker_generation": observation.worker_generation,
                 "received_frame_id": observation.source_frame_id,
                 "received_sequence": observation.source_sequence,
                 "received_at": observation.timestamp,
@@ -358,6 +384,7 @@ class ActivityController:
             and icon.bounds is not None
             and icon.confidence >= 0.94
             and dict(icon.metadata).get("availability") == "GIFT_AVAILABLE"
+            and self.gift_claim_ready
             and self._gift_icon_click_attempts < 2
         ):
             self._gift_icon_click_attempts += 1
@@ -544,6 +571,11 @@ class ActivityController:
                 if proposal.action == ActionName.CLICK_HOST_GAME:
                     self._production_host_source_sequence = observation.source_sequence
                 return proposal
+        if self.production_actions_enabled and self.locomotion:
+            movement = self.locomotion.proposal(observation)
+            if movement is not None:
+                return ActionProposal(movement[0], duration=movement[1],
+                                      reason=f"{self.locomotion.profile} locomotion")
         if self.validation_flow_enabled:
             if self.state in {DSTScreen.DEAD, DSTScreen.WORLD_RESET_PENDING}:
                 self._validation_step = 3
@@ -882,6 +914,8 @@ class ActivityController:
     def on_action_result(
         self, observation: GameObservation, result: ActionResult
     ) -> ActionResult:
+        if self.locomotion:
+            self.locomotion.sent(result)
         if result.action == ActionName.HOVER_GIFT_ICON:
             # Verification failure leaves availability unknown; never retry or click.
             self._record(
@@ -918,6 +952,9 @@ class ActivityController:
             ActionName.INTERACT,
         }:
             if result.status == ActionStatus.VERIFYING:
+                if (self.production_actions_enabled and not self.validation_flow_enabled
+                        and self._recoverable_action(result.action)):
+                    self._production_world_entry_action_id = result.action_id
                 self.counters["active_actions"] += 1
                 self._awaiting_reward_transition = True
                 if result.action == ActionName.CLICK_REWARD_OPEN:
@@ -948,7 +985,7 @@ class ActivityController:
                         not self.validation_flow_enabled
                         and self.production_actions_enabled
                         and result.status == ActionStatus.TIMED_OUT
-                        and result.action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS
+                        and self._recoverable_action(result.action)
                     )
                     else None
                 )
@@ -959,12 +996,15 @@ class ActivityController:
         return result
 
     def on_verified(self, observation: GameObservation, result: ActionResult) -> None:
+        if self.locomotion:
+            self.locomotion.verified(result)
         if result.action == ActionName.CLICK_INWORLD_USE_LATER:
             self._awaiting_reward_transition = False
             if result.status == ActionStatus.SUCCEEDED and self._inworld_received_evidence:
                 self.inworld_gift_state = InWorldGiftState.UI_CLOSED
                 self.inworld_close_evidence = {
                     **self._inworld_received_evidence,
+                    "worker_generation": observation.worker_generation,
                     "evidence_frame_id": observation.source_frame_id,
                     "evidence_sequence": observation.source_sequence,
                     "observed_at": observation.timestamp,
@@ -1167,6 +1207,8 @@ class ActivityController:
             self.on_action_failure(result)
 
     def on_action_failure(self, result: ActionResult) -> None:
+        if self.locomotion:
+            self.locomotion.verified(result)
         self._awaiting_reward_transition = False
         if (
             not self.validation_flow_enabled
@@ -1213,9 +1255,10 @@ class ActivityController:
             result.action
             if (
                 not self.validation_flow_enabled
-                and self.production_actions_enabled
+                and (self.production_actions_enabled
+                     or result.action_id == self._production_world_entry_action_id)
                 and result.status == ActionStatus.TIMED_OUT
-                and result.action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS
+                and self._recoverable_action(result.action)
             )
             else None
         )

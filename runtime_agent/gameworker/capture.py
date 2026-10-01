@@ -447,7 +447,7 @@ class X11ScreenCapture:
             try:
                 frame = Frame(
                     frame_id=(
-                        f"r{self.runtime_generation}-w{self.worker_generation}"
+                        f"r{self.runtime_id}-g{self.runtime_generation}-w{self.worker_generation}"
                         f"-f{sequence}"
                     ),
                     sequence=sequence,

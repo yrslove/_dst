@@ -8,17 +8,25 @@ Do not launch the full weekly-gift experiment automatically. This overrides olde
 single-account-only priorities and the historical "no multi-worker" restriction below.
 Do not redo completed preparation on resume.
 
-Current stopping point: **STEAM_GUARD_REQUIRED** for Account 2 (`forge_6`). Steam
-visibly requests a five-character email code from its `list.ru` address. Keep the
-existing login challenge; resume with that code, not a new installation/login.
-
-Guard follow-up at 2026-10-01 01:17 UTC: the submitted email code was rejected.
-The old challenge first returned Steam e29; canonical Retry and sign-in created a
-current email challenge. Its fresh screen explicitly says "Incorrect code, please
-try again" after the supplied code was accurately entered. Request the code from
-the newest Steam email for forge_6. Keep this challenge and both runtimes intact.
-No disk/provisioning/install/claim work was repeated; no gameplay input was sent.
-Evidence is `.data/dual-ab-preparation/account2-guard-result.png` (ignored).
+Current active point: Account 2 Steam Guard **accepted** at 2026-10-01 01:26 UTC.
+Remembered authentication survives managed client restarts; no new code is needed.
+DST is installed from an isolated game-only cache, with separate account data.
+Account 2 entered its own online Farm 01 / Wilson world. A first-login promotional
+reward required a verified Next-arrow primitive, now implemented and live proven.
+Its subsequent daily gift has durable SUCCEEDED GameplayTask 14, T0_A2
+`2026-10-01T01:46:26.925098Z`; export is in ignored preparation evidence.
+Native inventory reports Error=false and zero unopened Context 3 items.
+Account 1 is temporarily STOPPED through canonical job 115 for the requested A2
+single-client measurement; restore it for dual smoke, not for a repeated baseline.
+A2 alone: cgroup RAM 5.37 GiB, working set 5.21 GiB, runtime CPU 1.91 cores,
+DST CPU 1.75 cores; host CPU 50.05%, RAM available 9.55 GiB, swap IO zero,
+no OOM. Its old 5-GiB cgroup cap caused loading reclaim stalls; matching A1's
+8-GiB cap resolved them. Both CPU cpusets initially targeted the same CPUs 0-1;
+both now may use all four host CPUs for the forthcoming real parallel validation.
+CONTROL/HIGH_ACTIVITY, independent native claim monitoring and a bounded launcher
+are being finalized in the existing worker/API path. Not yet live proven: both
+profiles concurrently, input isolation, or final dual capacity. Do not run the
+full experiment during preparation.
 
 Completed in this turn:
 - Guest storage already expanded: `/dev/sda` 128 GiB, `/dev/sda1` 127 GiB, ext4 root
@@ -47,14 +55,12 @@ Completed in this turn:
   apparmor and dbus-x11. Reused Account 1's `/etc/apparmor.d/dst-steam-bwrap`
   profile without weakening host/Incus isolation. Steam installed and updated.
   Credentials were decrypted in memory and entered through canonical xpra input;
-  no credentials were recorded in files or Git. Steam is waiting on its email Guard
-  screen, GameWorker DISABLED, DST not started. The readiness-aware launcher now
+  no credentials were recorded in files or Git. Steam Guard has since been accepted; see the active checkpoint above. The readiness-aware launcher now
   preserves a running unauthenticated client instead of killing it after 90 seconds.
 
-Not yet established: Account 2 authentication completion, installed DST/world,
-GAME_READY, item-service/gift state, T0_A2; A2-alone measurements, simultaneous
-GAME_READY, input isolation, dual capacity, locomotion profiles/counters, independent
-future claim provider wiring, and experiment entrypoint. None is claimed proven.
+Remaining live validation: updated HUD perception in Account 2, simultaneous
+GAME_READY, input isolation, dual capacity, and locomotion profile intensity.
+Launcher/claim wiring has focused tests; full dual live proof remains pending.
 
 Changes: scripts/deploy_runtime.py adds fail-closed --cold deployment into an idle
 existing guest and installs modules missing from old base images; launchers.py
@@ -63,9 +69,9 @@ same canonical input channel. Focused deployment/launcher/xpra tests passed (33
 combined), Ruff passed, git diff --check passed. Commits 83f926b, 110168a, ca5677e,
 696f765; source push completed below / in the final report.
 
-Resume: receive Guard email code, inject through the same canonical input, finish
-Account 2 alone, then continue the requested dual preparation without repeating
-storage, provisioning, Steam installation, or the Account 1 claim.
+Resume: finish source deployment, restore Account 1, and perform dual isolation
+and bounded locomotion smoke. Do not repeat storage, provisioning, authentication,
+installation, or already-confirmed claims.
 
 ## Current business goal
 

@@ -60,6 +60,11 @@ class WorkerControlService:
                     raise WorkerControlError(
                         "runtime must be verified before ACTIVE worker mode"
                     )
+                if values.get("locomotion_profile") and (
+                    mode != "ACTIVE" or values["locomotion_profile"] not in {"CONTROL", "HIGH_ACTIVITY"}
+                    or not values.get("experiment_session_id")
+                ):
+                    raise WorkerControlError("experiment requires ACTIVE mode and independent session identity")
             record = WorkerCommand(
                 runtime_id=runtime.id,
                 command=command,
@@ -126,3 +131,16 @@ class WorkerControlService:
                 "worker_restart_count": worker.restart_count,
                 "details": worker.details,
             }
+
+    def command_status(self, account_id: int, command_id: int) -> dict:
+        with self.db.session() as session:
+            command = session.scalar(
+                select(WorkerCommand).join(RuntimeInstance).where(
+                    WorkerCommand.id == command_id,
+                    RuntimeInstance.account_id == account_id,
+                )
+            )
+            if command is None:
+                raise WorkerControlError("worker command not found for this account")
+            return {"id": command.id, "runtime_id": command.runtime_id,
+                    "status": command.status, "result": command.result}

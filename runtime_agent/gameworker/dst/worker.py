@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Lock
 
 from runtime_agent.gameworker.actions import (
@@ -25,6 +26,7 @@ from runtime_agent.gameworker.input import (
     InputError,
     InputLease,
 )
+from runtime_agent.gameworker.locomotion import Locomotion
 from runtime_agent.gameworker.navigation import (
     NavigationController,
     RecoveryController,
@@ -41,6 +43,7 @@ from runtime_agent.gameworker.replay import (
     ReplayRunner,
     ReplayTimingMode,
 )
+from runtime_agent.gameworker.reward_evidence import SessionClaimEvidence
 from runtime_agent.gameworker.state import WorkerState, WorkerStateMachine
 from runtime_agent.gameworker.vision import AssetRegistry, VisionDetector
 
@@ -57,6 +60,7 @@ class DSTGameWorker:
     def __init__(self, config: WorkerConfig, *, worker_generation: int = 0, claim_evidence=None):
         self.config = config
         self.claim_evidence = claim_evidence
+        self.locomotion = Locomotion()
         self.worker_generation = max(1, worker_generation)
         self.machine = WorkerStateMachine(
             WorkerState.DISABLED
@@ -72,6 +76,7 @@ class DSTGameWorker:
         self.activity = ActivityController(
             validation_flow_enabled=config.validation_flow_enabled,
             validation_movement_enabled=config.validation_movement_enabled,
+            locomotion=self.locomotion,
         )
         self.navigation: NavigationController | None = None
         self.recovery: RecoveryController | None = None
@@ -109,6 +114,7 @@ class DSTGameWorker:
         self._perception_errors = 0
         self._cleanup_failed = False
         self._recording_error: str | None = None
+        self._auto_resume_pending = False
         self._replay_exhausted = False
 
     @staticmethod
@@ -431,7 +437,7 @@ class DSTGameWorker:
                 elif self.input:
                     self.input.release_all()
             else:
-                self.pause()
+                self.pause(runtime_loss=True)
             self._error_code = "WORKER_DISABLED"
         if (
             verified
@@ -444,9 +450,29 @@ class DSTGameWorker:
                 self.machine.transition(
                     WorkerState.OBSERVING, "runtime verification confirmed"
                 )
+        if verified and self._game_ready and self._auto_resume_pending:
+            self.resume()
         self._sync_action_mode()
 
+    def configure_experiment(self, profile, session_id, seconds, until_gift=False):
+        if self.mode != WorkerMode.DISABLED:
+            raise ValueError("disable the worker before configuring an experiment")
+        self.locomotion.configure(profile, session_id, seconds, until_gift)
+        self.activity = ActivityController(locomotion=self.locomotion)
+        if not self.context:
+            raise ValueError("experiment requires a prepared runtime context")
+        identity = {"account_id": self.context.account_id, "runtime_id": self.context.runtime_id,
+                    "experiment_session_id": session_id}
+        evidence = self.config.diagnostic_directory.parent / "experiments" / session_id
+        self.claim_evidence = SessionClaimEvidence(
+            Path.home() / ".klei/DoNotStarveTogether", evidence, identity
+        )
+        self.diagnostics.directory = evidence / "diagnostics"
+
     def set_mode(self, mode: WorkerMode) -> WorkerReport:
+        if mode != WorkerMode.ACTIVE:
+            self._auto_resume_pending = False
+            self.locomotion.suspend()
         previous = self.mode
         if mode != previous and {mode, previous} == {
             WorkerMode.ACTIVE,
@@ -461,6 +487,7 @@ class DSTGameWorker:
             self.activity = ActivityController(
                 validation_flow_enabled=self.config.validation_flow_enabled,
                 validation_movement_enabled=self.config.validation_movement_enabled,
+                locomotion=self.locomotion,
             )
             if self.context:
                 self.prepare(self.context)
@@ -510,6 +537,7 @@ class DSTGameWorker:
             self.activity = ActivityController(
                 validation_flow_enabled=self.config.validation_flow_enabled,
                 validation_movement_enabled=self.config.validation_movement_enabled,
+                locomotion=self.locomotion,
             )
             if self.machine.state == WorkerState.DISABLED:
                 self.machine.transition(WorkerState.INITIALIZING, "worker mode enabled")
@@ -539,6 +567,8 @@ class DSTGameWorker:
             self.machine.transition(WorkerState.OBSERVING, "DST readiness reported")
         if self.pipeline and pipeline_was_prepared:
             self.pipeline.on_game_ready()
+        if self._auto_resume_pending:
+            self.resume()
         self._sync_action_mode()
         return self.status()
 
@@ -550,7 +580,7 @@ class DSTGameWorker:
             self.recorder.record_event(RecordingEventType.GAME_LOST)
         if self.pipeline:
             self.pipeline.on_game_lost()
-        report = self.pause()
+        report = self.pause(runtime_loss=True)
         self._sync_action_mode()
         return report
 
@@ -581,6 +611,12 @@ class DSTGameWorker:
     def tick(self, context: WorkerContext) -> WorkerReport:
         self.context = context
         self._last_tick_at = datetime.now(timezone.utc).isoformat()
+        if (self.locomotion.profile and self.mode == WorkerMode.ACTIVE
+                and time.monotonic() >= self.locomotion.deadline):
+            return self.set_mode(WorkerMode.DISABLED)
+        if self.mode == WorkerMode.ACTIVE and self.locomotion.failures >= 3:
+            self._fail("WORKER_LOCOMOTION_STALLED")
+            return self.status()
         if self._shutting_down or self.mode == WorkerMode.DISABLED:
             return self.status()
         if self.mode == WorkerMode.REPLAY:
@@ -617,9 +653,13 @@ class DSTGameWorker:
                 gift_state=self.activity.daily_gift_state.value,
                 held_inputs=bool(self.input is not None and self.input.has_held_inputs),
             )
+            if isinstance(self.claim_evidence, SessionClaimEvidence):
+                self.claim_evidence.before_tick()
+                self.activity.gift_claim_ready = self.claim_evidence.ready
             outcome = self.pipeline.tick()
             observation = outcome.observation
             if observation is not None:
+                self.locomotion.observe(observation, self._effective_mode() == WorkerMode.ACTIVE)
                 self._last_observation = observation.as_dict()
                 self._last_observation_at = observation.timestamp
                 if observation.production_ready:
@@ -633,15 +673,29 @@ class DSTGameWorker:
                         self.actions.release_all()
                 self._sync_action_mode()
             if self.claim_evidence:
+                if isinstance(self.claim_evidence, SessionClaimEvidence):
+                    self.claim_evidence.observe(observation)
+                    if self.claim_evidence.detection:
+                        path = self.claim_evidence.evidence / "detection.png"
+                        if not path.exists():
+                            self.diagnostics.save_frame(
+                                self.claim_evidence.detection["observation"]["source_frame_id"], path
+                            )
                 receipt = (
                     self.claim_evidence.confirm(self.activity.inworld_close_evidence)
                     if self.activity.inworld_close_evidence
                     else self.claim_evidence.observe(observation) if observation else None
                 )
                 if receipt:
+                    if isinstance(self.claim_evidence, SessionClaimEvidence):
+                        self.diagnostics.save_frame(
+                            receipt["evidence_frame_id"], self.claim_evidence.evidence / "completion.png"
+                        )
                     from runtime_agent.gameworker.activity import InWorldGiftState
                     self.activity.inworld_gift_confirmation = receipt
                     self.activity.inworld_gift_state = InWorldGiftState.CONFIRMED
+                    if self.locomotion.until_gift:
+                        return self.set_mode(WorkerMode.DISABLED)
             self._would_execute = (
                 outcome.proposal.action if outcome.proposal is not None else None
             )
@@ -847,6 +901,8 @@ class DSTGameWorker:
     def _observation_interval(self) -> float:
         if self.pipeline is not None and self.pipeline.verification_pending:
             return self.VERIFY_OBSERVATION_INTERVAL_SECONDS
+        if self.locomotion.profile:
+            return 2.0
         if self._last_observation and self._last_observation.get("screen") == "IN_WORLD_IDLE":
             configured = min(15.0, max(2.0, self.config.observation_interval))
         else:
@@ -894,7 +950,17 @@ class DSTGameWorker:
             self._sequence,
         )
 
-    def pause(self) -> WorkerReport:
+    def pause(self, *, runtime_loss=False) -> WorkerReport:
+        if runtime_loss:
+            self._auto_resume_pending = self._auto_resume_pending or (
+                self.mode == WorkerMode.ACTIVE and self.machine.state not in {
+                    WorkerState.PAUSED, WorkerState.NEEDS_ATTENTION, WorkerState.ERROR,
+                    WorkerState.DISABLED, WorkerState.SHUTTING_DOWN, WorkerState.STOPPED,
+                }
+            )
+        else:
+            self._auto_resume_pending = False
+        self.locomotion.suspend()
         if self.mode == WorkerMode.DISABLED:
             # DISABLED is already the safest state: the worker owns no capture
             # or input resources, and an autostart-off pause must not relabel it.
@@ -930,6 +996,7 @@ class DSTGameWorker:
         return self.status()
 
     def resume(self) -> WorkerReport:
+        self._auto_resume_pending = False
         if self.mode == WorkerMode.DISABLED:
             self._error_code = "WORKER_DISABLED"
             return self.status()
@@ -950,7 +1017,10 @@ class DSTGameWorker:
                 self.machine.transition(WorkerState.OBSERVING, "DST is already ready")
             if self.machine.state == WorkerState.ERROR:
                 return self.status()
-        recovering_intervention = self.machine.state == WorkerState.NEEDS_ATTENTION
+        recovering_intervention = (
+            self.machine.state == WorkerState.NEEDS_ATTENTION
+            or self.activity.intervention_required
+        )
         if self.machine.state in {WorkerState.PAUSED, WorkerState.NEEDS_ATTENTION}:
             self.machine.transition(WorkerState.OBSERVING, "explicit operator resume")
         if recovering_intervention:
@@ -1099,6 +1169,9 @@ class DSTGameWorker:
                 "actions_count": self._actions_count,
                 "behavior_counters": dict(self.activity.counters),
                 "daily_gift_state": self.activity.daily_gift_state.value,
+                "locomotion": self.locomotion.telemetry(),
+                "item_service": self.claim_evidence.health
+                if isinstance(self.claim_evidence, SessionClaimEvidence) else None,
                 "inworld_gift_state": self.activity.inworld_gift_state.value,
                 "gift_availability_evidence": self.activity.gift_availability_evidence,
                 "inworld_gift_confirmation": self.activity.inworld_gift_confirmation,

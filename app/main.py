@@ -944,7 +944,18 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
 
     @app.post("/api/v1/accounts/{account_id}/worker/mode", status_code=202)
     def set_worker_mode(account_id: int, payload: WorkerModeRequest, request: Request):
-        return worker_command(account_id, "SET_MODE", request, {"mode": payload.mode})
+        values = {"mode": payload.mode}
+        if payload.locomotion_profile:
+            values.update(payload.model_dump(exclude={"mode"}))
+        return worker_command(account_id, "SET_MODE", request, values)
+
+    @app.get("/api/v1/accounts/{account_id}/worker/commands/{command_id}")
+    def worker_command_status(account_id: int, command_id: int, request: Request):
+        require_admin(request)
+        try:
+            return worker_controls.command_status(account_id, command_id)
+        except WorkerControlError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/v1/events")
     def list_events(

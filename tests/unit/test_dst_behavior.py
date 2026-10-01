@@ -70,6 +70,14 @@ def test_promotional_reward_next_uses_verified_anchor_and_bounded_policy():
     assert policy.propose(replace(fresh, source_sequence=4)) is None
 
 
+def test_world_hud_allows_occupied_starting_inventory_slots():
+    image = Image.open(ASSETS / "samples/in_world_wilson_live.png").convert("RGB")
+    image.paste("black", (179, 662, 335, 720))
+    observation = analyze_image(image, "occupied-starting-slots", 1)
+    assert observation.production_ready
+    assert observation.screen == DSTScreen.IN_WORLD_IDLE
+
+
 def test_real_perception_corpus_replays_ground_truth():
     corpus_path = ASSETS / "samples/perception_corpus.json"
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
