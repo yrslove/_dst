@@ -1000,6 +1000,7 @@ class DSTGameWorker:
                 ActionName.OPEN_INVENTORY,
                 ActionName.CLICK_REWARD_OPEN,
                 ActionName.CLICK_REWARD_CLOSE,
+                ActionName.CLICK_REWARD_NEXT,
                 ActionName.CLICK_OPTIONS,
                 ActionName.CLICK_BACK,
                 ActionName.DISCARD_OPTIONS,

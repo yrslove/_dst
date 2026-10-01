@@ -52,6 +52,24 @@ from runtime_agent.gameworker.vision import (
 ASSETS = Path(__file__).resolve().parents[2] / "runtime_agent/gameworker/dst/assets"
 
 
+def test_promotional_reward_next_uses_verified_anchor_and_bounded_policy():
+    image = Image.open(ASSETS / "samples/login_reward_result_live.png").convert("RGB")
+    image.paste("black", (448, 540, 832, 700))
+    image.paste(Image.open(ASSETS / "login_reward_next_button.png"), (875, 367))
+    observation = analyze_image(image, "promo-1", 1)
+    assert observation.screen == DSTScreen.REWARD_RESULT
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(observation) is None
+    fresh = replace(observation, source_frame_id="promo-2", source_sequence=2)
+    proposal = policy.propose(fresh)
+    assert proposal.action == ActionName.CLICK_REWARD_NEXT
+    point, _ = click_request(proposal.action, fresh)
+    assert .675 < point.x < .75
+    assert policy.propose(replace(fresh, source_sequence=3)).action == ActionName.CLICK_REWARD_NEXT
+    assert policy.propose(replace(fresh, source_sequence=4)) is None
+
+
 def test_real_perception_corpus_replays_ground_truth():
     corpus_path = ASSETS / "samples/perception_corpus.json"
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))

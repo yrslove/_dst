@@ -547,7 +547,10 @@ class VisionDetector:
         confidence = 0.0
         reward_buttons = ("login_reward_open_button", "login_reward_open_hover")
         matched_buttons = [detected[name] for name in reward_buttons if found(name)]
-        reward_close = "login_reward_close_button"
+        reward_close = (
+            "login_reward_close_button" if found("login_reward_close_button")
+            else "login_reward_next_button"
+        )
         discard_anchors = (
             "options_discard_title",
             "options_discard_body",

@@ -162,6 +162,7 @@ class ActivityController:
         self.validation_flow_enabled = validation_flow_enabled
         self.validation_movement_enabled = validation_movement_enabled
         self.production_actions_enabled = False
+        self._reward_next_attempts = 0
         self.validation_complete = False
         self._validation_step = 0
         self._validation_host_retry_count = 0
@@ -470,6 +471,17 @@ class ActivityController:
             self._record(observation, proposal.action.value, proposal.reason or "")
             return proposal
         if self.state == DSTScreen.REWARD_RESULT and not self.intervention_required:
+            next_button = next((
+                item for item in observation.detections
+                if item.kind == "login_reward_next_button" and item.detected
+                and item.verified and item.bounds is not None and item.confidence >= .94
+            ), None)
+            if next_button is not None and self._reward_next_attempts < 2:
+                self._reward_next_attempts += 1
+                return ActionProposal(
+                    ActionName.CLICK_REWARD_NEXT,
+                    reason="advance the verified first-login promotional reward",
+                )
             close_button = next(
                 (
                     item
@@ -887,6 +899,7 @@ class ActivityController:
             ActionName.CLICK_REWARD_OPEN,
             ActionName.CLICK_OPTIONS,
             ActionName.CLICK_REWARD_CLOSE,
+            ActionName.CLICK_REWARD_NEXT,
             ActionName.CLICK_BACK,
             ActionName.DISCARD_OPTIONS,
             ActionName.CLICK_HOST_GAME,
@@ -1026,7 +1039,7 @@ class ActivityController:
                         for item in observation.detections
                     )
                     close_anchor = any(
-                        item.kind == "login_reward_close_button"
+                        item.kind in {"login_reward_close_button", "login_reward_next_button"}
                         and item.detected
                         and item.verified
                         for item in observation.detections

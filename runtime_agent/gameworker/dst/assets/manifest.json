@@ -663,6 +663,20 @@
       "version": 1,
       "verified": true,
       "expected_use": "Independent visible inventory frame when the gift toast is consumed"
+    },
+    {
+      "id": "login_reward_next_button",
+      "filename": "login_reward_next_button.png",
+      "expected_region": [
+        0.675,
+        0.49,
+        0.75,
+        0.66
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Next arrow on the first-login promotional reward result",
+      "verified": true
     }
   ]
 }

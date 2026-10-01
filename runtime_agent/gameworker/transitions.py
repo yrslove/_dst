@@ -124,6 +124,11 @@ CONTRACTS = {
         frozenset({DSTScreen.REWARD_RESULT}),
         frozenset({DSTScreen.MAIN_MENU}),
     ),
+    ActionName.CLICK_REWARD_NEXT: ActionContract(
+        ("login_reward_next_button",),
+        frozenset({DSTScreen.REWARD_RESULT}),
+        frozenset({DSTScreen.LOGIN_REWARD_AVAILABLE, DSTScreen.MAIN_MENU}),
+    ),
     ActionName.CLICK_OPTIONS: ActionContract(
         ("main_menu_options",), frozenset({DSTScreen.MAIN_MENU}),
         frozenset({DSTScreen.OPTIONS}),
