@@ -48,3 +48,17 @@ def test_schedule_pause_preserves_enabled_runtime_and_is_durable(client, app):
         assert session.get(AccountScheduleState, account['id']).paused
         assert session.get(Account, account['id']).enabled
         assert session.get(RuntimeInstance, account['runtime_id']).active
+
+
+def test_observation_session_can_replace_expired_experiment_without_active_input(client, app):
+    account = create_account(client, 'dual-fresh-observation')
+    with app.state.db.transaction(immediate=True) as session:
+        runtime = session.get(RuntimeInstance, account['runtime_id'])
+        runtime.state = RuntimeState.RUNNING
+    payload = {'mode': 'OBSERVE', 'locomotion_profile': 'CONTROL',
+               'experiment_session_id': 'read-only-baseline', 'experiment_seconds': 1200}
+    result = client.post(f"/api/v1/accounts/{account['id']}/worker/mode", json=payload)
+    assert result.status_code == 202
+    assert result.json()['payload']['mode'] == 'OBSERVE'
+    payload['mode'] = 'ACTIVE'
+    assert client.post(f"/api/v1/accounts/{account['id']}/worker/mode", json=payload).status_code == 409

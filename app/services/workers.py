@@ -61,10 +61,10 @@ class WorkerControlService:
                         "runtime must be verified before ACTIVE worker mode"
                     )
                 if values.get("locomotion_profile") and (
-                    mode != "ACTIVE" or values["locomotion_profile"] not in {"CONTROL", "HIGH_ACTIVITY"}
+                    mode not in {"ACTIVE", "OBSERVE"} or values["locomotion_profile"] not in {"CONTROL", "HIGH_ACTIVITY"}
                     or not values.get("experiment_session_id")
                 ):
-                    raise WorkerControlError("experiment requires ACTIVE mode and independent session identity")
+                    raise WorkerControlError("experiment requires ACTIVE/OBSERVE mode and independent session identity")
             record = WorkerCommand(
                 runtime_id=runtime.id,
                 command=command,
