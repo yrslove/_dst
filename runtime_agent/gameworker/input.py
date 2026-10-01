@@ -246,6 +246,16 @@ class InputController:
             self.key_up(key)
         self._require_active()
 
+    def focus_at(self, point: NormalizedPoint, viewport: Viewport) -> None:
+        """Focus DST through the canonical pointer path before a key action."""
+        x, y = viewport.point(point)
+        with self._io_lock:
+            self._require_active()
+            self.driver.mouse_move(x, y)
+            self.driver.focus_game_at_pointer()
+            self._revocation.wait(getattr(self.driver, "settle_seconds", 0.0))
+            self._require_active()
+
     def mouse_move(self, point: NormalizedPoint, viewport: Viewport) -> None:
         x, y = viewport.point(point)
         with self._io_lock:

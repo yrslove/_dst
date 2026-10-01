@@ -122,8 +122,13 @@ def test_open_crafting_menu_uses_the_canonical_build_key():
     assert [
         (event.operation, event.value)
         for event in driver.events
-        if event.operation in {"key_down", "key_up"}
-    ] == [("key_down", "b"), ("key_up", "b")]
+        if event.operation in {"mouse_move", "focus_game", "key_down", "key_up"}
+    ] == [
+        ("mouse_move", (959, 360)),
+        ("focus_game", "DST"),
+        ("key_down", "b"),
+        ("key_up", "b"),
+    ]
     assert not controller.has_held_inputs
 
 

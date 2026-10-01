@@ -696,6 +696,13 @@ class ActionExecutor:
                     )
                 else:
                     key = getattr(self.bindings, _PRESS_KEYS[action.name])
+                    if action.name == ActionName.OPEN_CRAFTING_MENU:
+                        # A persistent X11 notice can cover the center of the
+                        # world and own keyboard focus. Move to exposed game
+                        # space, verify DST owns focus, then send the key.
+                        self.controller.focus_at(
+                            NormalizedPoint(0.75, 0.5), Viewport(1280, 720)
+                        )
                     self.controller.key_press(key)
             if ticket.cancel_status is not None:
                 return self._result(action, ticket.cancel_status, started=started,
