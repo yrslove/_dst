@@ -652,7 +652,7 @@
     },
     {
       "id": "world_inventory_frame",
-      "filename": "samples/world_inventory_frame_live.png",
+      "filename": "world_inventory_border.png",
       "expected_region": [
         0.13,
         0.9,
@@ -660,9 +660,9 @@
         1.0
       ],
       "threshold": 0.94,
-      "version": 1,
+      "version": 2,
       "verified": true,
-      "expected_use": "Independent visible inventory frame when the gift toast is consumed"
+      "expected_use": "Independent invariant inventory border, excluding occupied slot contents, when the gift toast is consumed"
     },
     {
       "id": "login_reward_next_button",

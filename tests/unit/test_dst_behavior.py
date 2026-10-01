@@ -2069,3 +2069,15 @@ def test_received_gift_with_disabled_use_now_still_closes_through_use_later():
     assert observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
     assert observation.production_ready
     assert action_precondition_error(ActionName.CLICK_INWORLD_USE_LATER, observation) is None
+
+
+def test_post_claim_world_remains_ready_with_occupied_first_inventory_slots():
+    image = Image.open(ASSETS / 'samples/inworld_gift_after_live.png').convert('RGB')
+    image.paste('black', (140, 0, 245, 100))
+    for left in (205, 250, 295):
+        image.paste('green', (left, 684, left + 30, 714))
+    observation = analyze_image(image, 'occupied-slots-no-gift', 1,
+                                profile_id='dst-1280x720-linux-v1')
+    assert observation.production_ready
+    assert observation.screen == DSTScreen.IN_WORLD_IDLE
+    assert next(d for d in observation.detections if d.kind == 'world_inventory_frame').detected

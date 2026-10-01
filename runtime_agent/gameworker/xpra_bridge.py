@@ -180,6 +180,8 @@ def _server_argv(display, directory):
         f"--log-file={directory}/xpra.log", "--debug=mouse", "--readonly=no",
         "--pulseaudio=no", "--speaker=off", "--microphone=off",
         "--clipboard=no", "--notifications=no", "--dbus-control=no",
+        # Distribution defaults can start Xsession and an error dialog over DST.
+        "--start=", "--start-child=",
         "--dbus-launch=", "--tray=no", "--exit-with-client=yes",
         # The worker owns this server's lifetime and closes it when input
         # ownership ends. A short idle timer can kill the bridge during an

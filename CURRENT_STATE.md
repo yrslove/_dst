@@ -8,25 +8,44 @@ Do not launch the full weekly-gift experiment automatically. This overrides olde
 single-account-only priorities and the historical "no multi-worker" restriction below.
 Do not redo completed preparation on resume.
 
-Current active point: Account 2 Steam Guard **accepted** at 2026-10-01 01:26 UTC.
-Remembered authentication survives managed client restarts; no new code is needed.
-DST is installed from an isolated game-only cache, with separate account data.
-Account 2 entered its own online Farm 01 / Wilson world. A first-login promotional
-reward required a verified Next-arrow primitive, now implemented and live proven.
-Its subsequent daily gift has durable SUCCEEDED GameplayTask 14, T0_A2
-`2026-10-01T01:46:26.925098Z`; export is in ignored preparation evidence.
-Native inventory reports Error=false and zero unopened Context 3 items.
-Account 1 is temporarily STOPPED through canonical job 115 for the requested A2
-single-client measurement; restore it for dual smoke, not for a repeated baseline.
-A2 alone: cgroup RAM 5.37 GiB, working set 5.21 GiB, runtime CPU 1.91 cores,
-DST CPU 1.75 cores; host CPU 50.05%, RAM available 9.55 GiB, swap IO zero,
-no OOM. Its old 5-GiB cgroup cap caused loading reclaim stalls; matching A1's
-8-GiB cap resolved them. Both CPU cpusets initially targeted the same CPUs 0-1;
-both now may use all four host CPUs for the forthcoming real parallel validation.
-CONTROL/HIGH_ACTIVITY, independent native claim monitoring and a bounded launcher
-are being finalized in the existing worker/API path. Not yet live proven: both
-profiles concurrently, input isolation, or final dual capacity. Do not run the
-full experiment during preparation.
+Current active point (2026-10-01 04:00 UTC): both isolated runtimes are running,
+Steam is authenticated and Account 2 has resumed its own online world. No Guard
+code is pending. Do not repeat storage, provisioning, auth, single-client
+measurements or the already proven reciprocal input isolation.
+
+LIVE_PROVEN: reciprocal input isolation and a 120-second concurrent CONTROL /
+HIGH_ACTIVITY smoke. Evidence: `.data/dual-ab-preparation/isolation/result.json`
+and `.data/dual-ab/20261001T025004Z-d14086c3/`. CONTROL: 2.663 commands/min,
+1.065 moving seconds/min; HIGH_ACTIVITY: 14.222 commands/min, 21.807 moving
+seconds/min. Both clients remained GAME_READY; no OOM or client process restart.
+
+Automatic AccountScheduler LONG_SESSION jobs were subsequently found competing
+for Account 2 input. Both account schedules are now durably paused. Migration
+0012 and the existing scheduler pause endpoint let the launcher cancel queued
+automatic work and drain running jobs before manual profiles; it leaves schedules
+paused on exit. Control Plane restart caused NODE_OFFLINE/STALE bookkeeping;
+canonical VERIFY jobs 208/209 reconciled this without restarting clients.
+
+A2's new actual in-world native claim is item 399365579731404687,
+SetItemOpened_Complete Success:200 at `2026-10-01T02:57:55.223013Z`. Its real
+received-screen image and original journal ACK are preserved. Do not open it
+again. Its partial session `a2-preparation-claim-20261001` must still finish the
+existing native verifier's recovered receipt from two fresh world observations.
+The earlier daily receipt remains durable with T0 `2026-10-01T01:46:26.925098Z`.
+
+Two concrete recovery defects were isolated: synchronous optimized diagnostic
+PNG compression stalled the worker lock; and the post-gift world detector assumed
+an empty first inventory slot. Fast lossless compression is deployed. The existing
+inventory detector now uses its invariant border, passing real A2 replay with
+occupied slots and no gift banner; install that revision, finish the partial
+receipt, and run the final short dual smoke. Xpra's distribution default Xsession
+launch is disabled so it cannot create a desktop error dialog over DST.
+
+Latest bounded capacity: host 11.07 GiB used / 4.49 available, CPU 93.25%, CPU PSI
+some 64.64 / full 0, memory PSI some .17 / full 0. Swap 35.83 MiB, no swap-in and
+only 4.9 MiB swap-out over ten seconds, no thrashing/OOM. A: 6.13 GiB RAM / 1.77
+cores, B: 5.57 GiB / 1.86 cores. High CPU alone is not a capacity blocker.
+Do not launch the full weekly experiment during preparation.
 
 Completed in this turn:
 - Guest storage already expanded: `/dev/sda` 128 GiB, `/dev/sda1` 127 GiB, ext4 root
