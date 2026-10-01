@@ -53,3 +53,25 @@ def test_dst_launcher_rejects_missing_adopted_game_without_launching(monkeypatch
 
     assert launchers.dst() == 1
     assert launched == []
+
+
+def test_steam_preserves_client_awaiting_login_then_clears_marker(monkeypatch, tmp_path):
+    ready = tmp_path / "steam.ready"
+    login = tmp_path / "steam.needs-login"
+    monkeypatch.setenv("STEAM_READY_FILE", str(ready))
+    monkeypatch.setenv("STEAM_NEEDS_LOGIN_FILE", str(login))
+    monkeypatch.setattr(launchers.subprocess, "Popen", lambda *_args: None)
+    monkeypatch.setattr(launchers.time, "monotonic", lambda: 1000.0)
+    logins = iter((False, False, True, False))
+    monkeypatch.setattr(launchers, "_new_logon", lambda *_args: (next(logins), 0))
+    alive = iter((True, True, True, True, False))
+    monkeypatch.setattr(launchers, "_steam_running", lambda: next(alive))
+    checkpoints = []
+    monkeypatch.setattr(launchers.time, "sleep", lambda _seconds: checkpoints.append((login.exists(), ready.exists())))
+    # Expire startup after the first clock read.
+    clock = iter((0.0, 1000.0, 1001.0))
+    monkeypatch.setattr(launchers.time, "monotonic", lambda: next(clock))
+    assert launchers.steam() == 1
+    assert checkpoints == [(True, False), (True, False), (False, True)]
+    assert not login.exists()
+    assert not ready.exists()

@@ -78,6 +78,7 @@ def steam() -> int:
         offset = 0
     subprocess.Popen(["/usr/games/steam", "-silent"])
     marker = Path(os.getenv("STEAM_READY_FILE", "/run/dst-runtime/steam.ready"))
+    login_marker = Path(os.getenv("STEAM_NEEDS_LOGIN_FILE", "/run/dst-runtime/steam.needs-login"))
     ready = False
     deadline = time.monotonic() + 90
     while True:
@@ -85,11 +86,17 @@ def steam() -> int:
         if logged_on and _steam_running():
             _mark_ready(marker)
             ready = True
+            login_marker.unlink(missing_ok=True)
         if ready and not _steam_running():
             marker.unlink(missing_ok=True)
             return 1
         if not ready and time.monotonic() > deadline:
-            return 1
+            if not _steam_running():
+                return 1
+            # First install and interactive authentication can outlast startup.
+            # Preserve the client while awaiting login/Guard; never mark READY.
+            if not login_marker.exists():
+                _mark_ready(login_marker)
         time.sleep(1)
 
 

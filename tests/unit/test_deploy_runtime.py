@@ -193,3 +193,24 @@ def test_cold_deployment_accepts_idle_guest(monkeypatch):
     payload = {"active": False, "agent_pid": 0, "processes": {}, "runtime_id": "4", "worker_mode": "DISABLED", "worker_autostart": "0"}
     monkeypatch.setattr("scripts.deploy_runtime.run", lambda *_args: json.dumps(payload))
     assert cold_probe("dst-000002-g2") == payload
+
+
+def test_cold_installer_upgrades_base_with_missing_world_module(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+
+    from scripts.deploy_runtime import write_archive
+    repo = Path(__file__).resolve().parents[2]
+    root = tmp_path / "guest"
+    (root / "runtime_agent").mkdir(parents=True)
+    (root / "app/runtime").mkdir(parents=True)
+    revision = "a" * 40
+    files = runtime_files(repo)
+    archive = tmp_path / "runtime.tar.gz"
+    write_archive(repo, files, make_metadata(revision, files, repo), archive)
+    monkeypatch.setattr(sys, "argv", ["installer", str(archive), str(root), revision, "cold"])
+    monkeypatch.setattr(subprocess, "check_output", lambda *_args, **_kwargs: "0")
+    monkeypatch.setattr(subprocess, "call", lambda *_args, **_kwargs: 1)
+    exec(compile(GUEST_INSTALLER, "<installer>", "exec"), {"__name__": "__main__"})  # noqa: S102 - trusted installer under mocked systemctl
+    assert (root / "app/runtime/world_profile.py").read_bytes() == (repo / "app/runtime/world_profile.py").read_bytes()
+    assert json.loads((root / "DEPLOYMENT.json").read_text())["commit"] == revision
