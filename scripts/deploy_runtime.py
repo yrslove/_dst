@@ -401,7 +401,17 @@ def recover_stalled_agent(instance: str, probe: dict[str, object]) -> None:
     ])
 
 
-def deploy(instance: str, repo: Path) -> None:
+def cold_probe(instance: str) -> dict[str, object]:
+    """Install into an idle guest without touching an authenticated live session."""
+    value = json.loads(run(["incus", "exec", instance, "--", "python3", "-c", GUEST_PROBE]))
+    if value.get("active") or value.get("agent_pid", 0) or value.get("processes"):
+        raise DeployError("cold deployment requires a stopped agent and no display/Steam/DST processes")
+    if not value.get("runtime_id") or value.get("worker_mode") != "DISABLED" or value.get("worker_autostart") != "0":
+        raise DeployError("cold deployment requires runtime identity and disabled worker")
+    return value
+
+
+def deploy(instance: str, repo: Path, *, cold: bool = False) -> None:
     status = run(
         ["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=repo
     )
@@ -409,7 +419,7 @@ def deploy(instance: str, repo: Path) -> None:
     revision = run(["git", "rev-parse", "HEAD"], cwd=repo)
     files = runtime_files(repo)
     metadata = make_metadata(revision, files, repo)
-    before = guest_probe(instance, allow_inactive=True)
+    before = cold_probe(instance) if cold else guest_probe(instance, allow_inactive=True)
     with tempfile.TemporaryDirectory(prefix="dst-runtime-deploy-") as temporary:
         archive_path = Path(temporary) / f"runtime-{revision}.tar.gz"
         archive_digest = write_archive(repo, files, metadata, archive_path)
@@ -450,6 +460,13 @@ def deploy(instance: str, repo: Path) -> None:
         run(["incus", "exec", instance, "--", "install", "-o", "root", "-g", "root", "-m", "0644", unit_stage, "/etc/systemd/system/dst-runtime-agent.service"])
         run(["incus", "exec", instance, "--", "rm", "-f", unit_stage])
         run(["incus", "exec", instance, "--", "systemctl", "daemon-reload"])
+        if cold:
+            cold_probe(instance)
+            current = run(["incus", "exec", instance, "--", "cat", f"{INSTANCE_ROOT}/DEPLOYMENT.json"])
+            require_revision(str(parse_metadata(current)["commit"]), revision)
+            run(["incus", "exec", instance, "--", "rm", "-rf", installed["backup"], installed["stage"]])
+            print(f"guest deployed revision: {revision}; agent remains stopped")
+            return
         # The agent is paused only for the tree swap. Its HUP path re-execs the
         # new code; an already failed agent is safely started through adoption.
         reload_started = time.time()
@@ -509,9 +526,10 @@ def deploy(instance: str, repo: Path) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("instance", help="existing Incus instance name")
+    parser.add_argument("--cold", action="store_true", help="install only into an idle guest; leave agent stopped")
     args = parser.parse_args(argv)
     try:
-        deploy(args.instance, Path(__file__).resolve().parents[1])
+        deploy(args.instance, Path(__file__).resolve().parents[1], cold=args.cold)
     except (DeployError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
         print(f"deployment failed: {exc}", file=sys.stderr)
         return 1

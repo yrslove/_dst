@@ -175,3 +175,21 @@ def test_deploy_probe_allows_healthy_agent_startup_before_game_ready(monkeypatch
     assert guest_probe("dst-000001-g1", allow_starting=True)["ready"]["dst"] is False
     with pytest.raises(DeployError, match="readiness markers"):
         guest_probe("dst-000001-g1")
+
+
+@pytest.mark.parametrize("payload", [
+    {"active": True, "agent_pid": 10},
+    {"active": False, "agent_pid": 0, "processes": {"steam": 12}},
+])
+def test_cold_deployment_rejects_live_processes(monkeypatch, payload):
+    from scripts.deploy_runtime import cold_probe
+    monkeypatch.setattr("scripts.deploy_runtime.run", lambda *_args: json.dumps(payload))
+    with pytest.raises(DeployError, match="stopped agent"):
+        cold_probe("dst-000002-g2")
+
+
+def test_cold_deployment_accepts_idle_guest(monkeypatch):
+    from scripts.deploy_runtime import cold_probe
+    payload = {"active": False, "agent_pid": 0, "processes": {}, "runtime_id": "4", "worker_mode": "DISABLED", "worker_autostart": "0"}
+    monkeypatch.setattr("scripts.deploy_runtime.run", lambda *_args: json.dumps(payload))
+    assert cold_probe("dst-000002-g2") == payload
