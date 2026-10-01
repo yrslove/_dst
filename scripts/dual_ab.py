@@ -152,7 +152,7 @@ for item in Path('/proc').iterdir():
  if item.name.isdigit():
   try:
    name=(item/'comm').read_text().strip()
-   if name in {'steam','dontstarve','dontstarve_dedicated_server'}: procs.setdefault(name,[]).append(int(item.name))
+   if name == 'steam' or name.startswith('dontstarve'): procs.setdefault(name,[]).append(int(item.name))
   except OSError: pass
 print(json.dumps({'ram_bytes':mem,'working_set_bytes':max(0,mem-stat.get('inactive_file',0)),
  'cpu_usage_usec':cpu.get('usage_usec',0),'cpu_psi':read('cpu.pressure'),
@@ -172,6 +172,26 @@ def percentile(values, q):
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (position - lo)
 
 
+def confirmed_claim_timestamp(receipt, account):
+    """Accept only a native in-world completion for this account."""
+    if not receipt or receipt.get("account_id") != account:
+        return None
+    backend = receipt.get("backend") or {}
+    if (receipt.get("semantic") != "IN_WORLD_GIFT_CONFIRMED"
+            or backend.get("operation") != "SetItemOpened_Complete"
+            or backend.get("http_status") != 200 or backend.get("error") is not False):
+        return None
+    confirmed = receipt.get("claim_timestamp") or backend.get("modified")
+    if isinstance(confirmed, (int, float)):
+        confirmed = datetime.fromtimestamp(confirmed, UTC).isoformat()
+    if not isinstance(confirmed, str):
+        return None
+    parsed = datetime.fromisoformat(confirmed.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return None
+    return parsed.isoformat()
+
+
 def summarize_account(state, target_hours, max_wall_hours):
     base = state.get("measurement_base", {"valid": 0.0, "active": 0.0, "moving": 0.0,
                                           "idle": 0.0, "commands": 0, "direction_changes": 0})
@@ -180,7 +200,9 @@ def summarize_account(state, target_hours, max_wall_hours):
     wall_h = max(0.0, (time.time() - state["started_epoch"]) / 3600)
     gifts = state["gifts"]
     intervals = [g["valid_online_world_seconds_since_previous_claim"] / 3600
-                 for g in gifts if not g.get("preexisting_at_run_start")]
+                 for g in gifts if not g.get("preexisting_at_run_start")
+                 and not g.get("interval_left_censored", False)]
+    measured_gifts = sum(not g.get("preexisting_at_run_start") for g in gifts)
     result = {"account_id": state["identity"]["account_id"], "runtime_id": state["identity"]["runtime_id"],
               "profile": state["identity"]["profile"], "valid_online_hours": round(valid_h, 4),
               "wall_clock_hours": round(wall_h, 4), "confirmed_gifts": len(gifts),
@@ -192,8 +214,8 @@ def summarize_account(state, target_hours, max_wall_hours):
               "interval_max_hours": max(intervals) if intervals else None,
               "interval_p75_hours": percentile(intervals, .75) if len(intervals) >= 4 else None,
               "interval_p90_hours": percentile(intervals, .90) if len(intervals) >= 4 else None,
-              "gifts_per_valid_online_hour": len(intervals) / valid_h if valid_h else None,
-              "valid_hours_per_gift": valid_h / len(intervals) if intervals else None,
+              "gifts_per_valid_online_hour": measured_gifts / valid_h if valid_h else None,
+              "valid_hours_per_gift": valid_h / measured_gifts if measured_gifts else None,
               "movement_commands_per_hour": measured["commands"] / valid_h if valid_h else None,
               "moving_seconds_per_hour": measured["moving"] / valid_h if valid_h else None,
               "disconnect_seconds": state["disconnect_seconds"] + (
@@ -258,7 +280,7 @@ def run_characterization(args, api):
     root.mkdir(parents=True, exist_ok=False)
     (root / "screenshots").mkdir()
     profiles = dict(zip(args.accounts, ("CONTROL", "HIGH_ACTIVITY"), strict=True))
-    known_t0 = {1: "2026-09-30T15:09:18.153670Z", 2: "2026-10-01T02:57:55.223013Z"}
+    known_t0 = dict.fromkeys(args.accounts)
     states, streams = {}, {}
     event_path, gifts_path, samples_path = root / "events.jsonl", root / "gifts.jsonl", root / "samples.jsonl"
     started = time.time()
@@ -272,6 +294,7 @@ def run_characterization(args, api):
               "profiles": {name: list(PROFILES[name]) for name in set(profiles.values())},
               "source_commit": source_commit, "accounts": args.accounts,
               "sample_interval_seconds": 15, "resource_interval_seconds": 300,
+              "preclaim_max_seconds": args.preclaim_max_seconds,
               "resource_stop_thresholds": {"new_runtime_oom_kills": 1, "swap_io_bytes_per_5m": 536870912}}
     config_hash = None
     metadata = {**config, "started_at": utc_now(), "run_root": str(root), "status": "STARTING",
@@ -295,10 +318,13 @@ def run_characterization(args, api):
                         "session_id": f"gift-{run_id}-a{account}-r{runtime['runtime_id']}",
                         "guest_evidence": f"/home/dst/.local/state/dst-runtime/experiments/gift-{run_id}-a{account}-r{runtime['runtime_id']}",
                         "runtime_version": runtime_version}
-            if account not in known_t0:
-                raise RuntimeError(f"No confirmed in-world T0 configured for account {account}")
+            prior_report = worker_report(api.request("GET", f"accounts/{account}/worker"))
+            prior_receipt = (prior_report.get("telemetry") or {}).get("inworld_gift_confirmation")
+            known_t0[account] = confirmed_claim_timestamp(prior_receipt, account)
             state = {"identity": identity, "started_epoch": started, "previous_claim_at": known_t0[account],
-                     "last_claim_epoch": datetime.fromisoformat(known_t0[account].replace("Z", "+00:00")).timestamp(),
+                     "last_claim_epoch": (datetime.fromisoformat(known_t0[account]).timestamp()
+                                          if known_t0[account] else None),
+                     "interval_left_censored": True,
                      "preexisting_pending": False, "gifts": [],
                      "totals": {"valid": 0.0, "active": 0.0, "moving": 0.0, "idle": 0.0,
                                 "commands": 0, "direction_changes": 0},
@@ -310,12 +336,17 @@ def run_characterization(args, api):
                      "max_heartbeat_age_seconds": 0.0,
                      "max_heartbeat_gap_seconds": 0.0, "last_heartbeat_epoch": None,
                      "weekly_cap_reached": False, "technical_failure": None, "stop_reason": None,
-                     "last_observation_frame": None, "last_gift_item_id": None,
+                     "last_observation_frame": None,
+                     "last_gift_item_id": prior_receipt.get("item_id") if known_t0[account] else None,
                      "measurement_base": {"valid": 0.0, "active": 0.0, "moving": 0.0,
                                            "idle": 0.0, "commands": 0, "direction_changes": 0}}
             states[account] = state
             folder = root / f"account-{account}" / identity["session_id"]
             folder.mkdir(parents=True)
+            if known_t0[account]:
+                baseline_receipt = folder / "baseline-receipt.json"
+                durable_json(baseline_receipt, prior_receipt)
+                state["baseline_receipt_path"] = str(baseline_receipt)
             streams[account] = (folder / "telemetry.jsonl").open("a", buffering=1)
             # Refresh both gift HUD and native inventory evidence without gameplay input.
             api.command(account, "OBSERVE")
@@ -347,99 +378,116 @@ def run_characterization(args, api):
             time.sleep(2)
         for account in args.accounts:
             state = states[account]
-            if account not in baseline_done:
-                raise TimeoutError(f"Account {account} did not produce fresh baseline gift evidence")
-            api.command(account, "DISABLED")
-            gift = state["baseline_gift"]
-            claimable = state["preexisting_pending"]
-            if claimable:
-                pre_session = f"gift-{run_id}-a{account}-r{state['identity']['runtime_id']}-preexisting"
-                append_jsonl(event_path, {"event": "PREEXISTING_AT_RUN_START", "at": utc_now(),
-                                          **state["identity"], "visual_state": gift,
-                                          "item_service_state": state.get("baseline_item_service"),
-                                          "preclaim_session_id": pre_session})
-                api.command(account, "ACTIVE", locomotion_profile=profiles[account],
-                            experiment_session_id=pre_session, experiment_seconds=600,
-                            experiment_until_gift=True, experiment_continue_after_claim=False)
-                pre_deadline = time.monotonic() + 600
-                pre_receipt = None
-                while time.monotonic() < pre_deadline:
-                    report = worker_report(api.request("GET", f"accounts/{account}/worker"))
-                    pre_receipt = report.get("telemetry", {}).get("inworld_gift_confirmation")
-                    if pre_receipt:
-                        break
-                    if report.get("state") in {"ERROR", "NEEDS_ATTENTION"}:
-                        raise RuntimeError(f"preexisting gift claim failed for account {account}: {report.get('error_code')}")
-                    time.sleep(2)
-                if not pre_receipt:
-                    raise TimeoutError(f"preexisting gift remained claimable but was not claimed for account {account}")
+            try:
+                if account not in baseline_done:
+                    raise TimeoutError(f"Account {account} did not produce fresh baseline gift evidence")
                 api.command(account, "DISABLED")
-                pre_path = root / f"account-{account}" / state["identity"]["session_id"] / "preexisting-receipt.json"
-                pre_guest = f"{state['identity']['container']}/home/dst/.local/state/dst-runtime/experiments/{pre_session}/gifts/gift-0001/claim.json"
-                pulled = subprocess.run(["incus", "file", "pull", pre_guest, str(pre_path)],
-                                        capture_output=True, timeout=15, check=False)
-                durable_receipt = json.loads(pre_path.read_text()) if not pulled.returncode else pre_receipt
-                pre_screenshots = []
-                for kind in ("detection", "completion"):
-                    guest_png = (f"{state['identity']['container']}/home/dst/.local/state/dst-runtime/experiments/"
-                                 f"{pre_session}/gifts/gift-0001/{kind}.png")
-                    local_png = root / "screenshots" / f"account-{account}-preexisting-{kind}.png"
-                    pulled_png = subprocess.run(["incus", "file", "pull", guest_png, str(local_png)],
-                                                capture_output=True, timeout=15, check=False)
-                    if not pulled_png.returncode:
-                        pre_screenshots.append(str(local_png))
-                confirmed = durable_receipt.get("claim_timestamp") or durable_receipt.get("backend", {}).get("modified")
-                if isinstance(confirmed, (int, float)):
-                    confirmed = datetime.fromtimestamp(confirmed, UTC).isoformat()
-                if not confirmed:
-                    raise RuntimeError("preexisting gift had no confirmed native claim timestamp")
-                state["previous_claim_at"] = confirmed
-                state["last_claim_epoch"] = datetime.fromisoformat(confirmed.replace("Z", "+00:00")).timestamp()
-                state["preexisting_receipt"] = durable_receipt
-                state["preexisting_receipt_path"] = str(pre_path)
-                state["last_gift_item_id"] = durable_receipt.get("item_id")
-                pre_gift = {"run_id": run_id, **state["identity"], "gift_sequence_in_run": 0,
-                            "weekly_gift_index": None, "weekly_gift_count": None,
-                            "previous_claim_confirmed_at": known_t0[account],
-                            "gift_first_detected_at": state["baseline_observed_at"],
-                            "claim_started_at": None, "claim_confirmed_at": confirmed,
-                            "wall_clock_since_previous_claim": max(0, time.time() - state["started_epoch"]),
-                            "valid_online_world_seconds_since_previous_claim": 0,
-                            "active_elapsed_since_previous_claim": 0, "moving_seconds_since_previous_claim": 0,
-                            "idle_seconds_since_previous_claim": 0, "movement_commands": 0,
-                            "direction_changes": 0, "disconnect_seconds": 0, "recovery_seconds": 0,
-                            "death_respawn_events": 0, "game_lost_events": 0, "worker_pauses": 0,
-                            "runtime_restarts": 0, "gift_visual_state": gift,
-                            "item_service_state": state.get("baseline_item_service"),
-                            "receipt_path": str(pre_path), "evidence_paths": [str(pre_path)],
-                            "screenshot_paths": pre_screenshots, "preexisting_at_run_start": True,
-                            "item_id": durable_receipt.get("item_id"), "durable_receipt": durable_receipt}
-                append_jsonl(gifts_path, pre_gift)
-                state["gifts"].append(pre_gift)
-                append_jsonl(event_path, {"event": "CLAIM_CONFIRMED", "at": confirmed,
-                                          **state["identity"], "preexisting_at_run_start": True,
-                                          "item_id": durable_receipt.get("item_id"), "receipt_path": str(pre_path)})
-                append_jsonl(event_path, {"event": "RECEIPT_SAVED", "at": utc_now(),
-                                          **state["identity"], "receipt_path": str(pre_path)})
-            state["started_epoch"] = time.time()
-            state["measurement_base"] = dict(state["totals"])
-            state["measurement_base_valid_set"] = True
-            append_jsonl(event_path, {"event": "BASELINE_GIFT_STATE", "at": utc_now(), **state["identity"],
-                                      "preexisting_at_run_start": state["preexisting_pending"],
-                                      "gift_visual_state": state["baseline_gift"],
-                                      "item_service_state": state.get("baseline_item_service"),
-                                      "previous_claim_confirmed_at": state["previous_claim_at"]})
+                gift = state["baseline_gift"]
+                claimable = state["preexisting_pending"]
+                if claimable:
+                    pre_session = f"gift-{run_id}-a{account}-r{state['identity']['runtime_id']}-preexisting"
+                    append_jsonl(event_path, {"event": "PREEXISTING_AT_RUN_START", "at": utc_now(),
+                                              **state["identity"], "visual_state": gift,
+                                              "item_service_state": state.get("baseline_item_service"),
+                                              "preclaim_session_id": pre_session})
+                    api.command(account, "ACTIVE", locomotion_profile=profiles[account],
+                                experiment_session_id=pre_session, experiment_seconds=args.preclaim_max_seconds,
+                                experiment_until_gift=True, experiment_continue_after_claim=False)
+                    pre_deadline = time.monotonic() + args.preclaim_max_seconds
+                    pre_receipt = None
+                    while time.monotonic() < pre_deadline:
+                        report = worker_report(api.request("GET", f"accounts/{account}/worker"))
+                        pre_receipt = report.get("telemetry", {}).get("inworld_gift_confirmation")
+                        if pre_receipt:
+                            break
+                        if (report.get("state") in {"ERROR", "NEEDS_ATTENTION"}
+                                or report.get("error_code") == "WORKER_INTERVENTION_REQUIRED"):
+                            raise RuntimeError(f"preexisting gift claim failed for account {account}: {report.get('error_code')}")
+                        time.sleep(2)
+                    if not pre_receipt:
+                        raise TimeoutError(f"preexisting gift remained claimable but was not claimed for account {account}")
+                    api.command(account, "DISABLED")
+                    pre_path = root / f"account-{account}" / state["identity"]["session_id"] / "preexisting-receipt.json"
+                    pre_guest = f"{state['identity']['container']}/home/dst/.local/state/dst-runtime/experiments/{pre_session}/gifts/gift-0001/claim.json"
+                    pulled = subprocess.run(["incus", "file", "pull", pre_guest, str(pre_path)],
+                                            capture_output=True, timeout=15, check=False)
+                    if pulled.returncode:
+                        durable_json(pre_path, pre_receipt)
+                    durable_receipt = json.loads(pre_path.read_text())
+                    pre_screenshots = []
+                    for kind in ("detection", "completion"):
+                        guest_png = (f"{state['identity']['container']}/home/dst/.local/state/dst-runtime/experiments/"
+                                     f"{pre_session}/gifts/gift-0001/{kind}.png")
+                        local_png = root / "screenshots" / f"account-{account}-preexisting-{kind}.png"
+                        pulled_png = subprocess.run(["incus", "file", "pull", guest_png, str(local_png)],
+                                                    capture_output=True, timeout=15, check=False)
+                        if not pulled_png.returncode:
+                            pre_screenshots.append(str(local_png))
+                    confirmed = confirmed_claim_timestamp(durable_receipt, account)
+                    if not confirmed:
+                        raise RuntimeError("preexisting gift had no confirmed native claim timestamp")
+                    state["previous_claim_at"] = confirmed
+                    state["last_claim_epoch"] = datetime.fromisoformat(confirmed.replace("Z", "+00:00")).timestamp()
+                    state["preexisting_receipt"] = durable_receipt
+                    state["preexisting_receipt_path"] = str(pre_path)
+                    state["last_gift_item_id"] = durable_receipt.get("item_id")
+                    pre_gift = {"run_id": run_id, **state["identity"], "gift_sequence_in_run": 0,
+                                "weekly_gift_index": None, "weekly_gift_count": None,
+                                "previous_claim_confirmed_at": known_t0[account],
+                                "gift_first_detected_at": state["baseline_observed_at"],
+                                "claim_started_at": None, "claim_confirmed_at": confirmed,
+                                "wall_clock_since_previous_claim": max(0, time.time() - state["started_epoch"]),
+                                "valid_online_world_seconds_since_previous_claim": 0,
+                                "active_elapsed_since_previous_claim": 0, "moving_seconds_since_previous_claim": 0,
+                                "idle_seconds_since_previous_claim": 0, "movement_commands": 0,
+                                "direction_changes": 0, "disconnect_seconds": 0, "recovery_seconds": 0,
+                                "death_respawn_events": 0, "game_lost_events": 0, "worker_pauses": 0,
+                                "runtime_restarts": 0, "gift_visual_state": gift,
+                                "item_service_state": state.get("baseline_item_service"),
+                                "receipt_path": str(pre_path), "evidence_paths": [str(pre_path)],
+                                "screenshot_paths": pre_screenshots, "preexisting_at_run_start": True,
+                                "item_id": durable_receipt.get("item_id"), "durable_receipt": durable_receipt}
+                    append_jsonl(gifts_path, pre_gift)
+                    state["gifts"].append(pre_gift)
+                    append_jsonl(event_path, {"event": "CLAIM_CONFIRMED", "at": confirmed,
+                                              **state["identity"], "preexisting_at_run_start": True,
+                                              "item_id": durable_receipt.get("item_id"), "receipt_path": str(pre_path)})
+                    append_jsonl(event_path, {"event": "RECEIPT_SAVED", "at": utc_now(),
+                                              **state["identity"], "receipt_path": str(pre_path)})
+                state["started_epoch"] = time.time()
+                state["measurement_base"] = dict(state["totals"])
+                state["measurement_base_valid_set"] = True
+                append_jsonl(event_path, {"event": "BASELINE_GIFT_STATE", "at": utc_now(), **state["identity"],
+                                          "preexisting_at_run_start": state["preexisting_pending"],
+                                          "gift_visual_state": state["baseline_gift"],
+                                          "item_service_state": state.get("baseline_item_service"),
+                                          "previous_claim_confirmed_at": state["previous_claim_at"]})
+            except (httpx.HTTPError, RuntimeError, TimeoutError, ValueError, OSError) as exc:
+                state["technical_failure"] = f"baseline preparation: {type(exc).__name__}: {str(exc)[:200]}"
+                state["stop_reason"] = "TECHNICAL_FAILURE"
+                append_jsonl(event_path, {"event": "TECHNICAL_FAILURE", "at": utc_now(),
+                                          **state["identity"], "phase": "BASELINE_PREPARATION",
+                                          "reason": state["technical_failure"]})
+                try:
+                    api.command(account, "DISABLED")
+                except (httpx.HTTPError, RuntimeError, TimeoutError):
+                    pass
+        if not any(state["stop_reason"] is None for state in states.values()):
+            raise RuntimeError("no account completed authoritative baseline preparation")
         config["runtimes"] = {str(a): states[a]["identity"]["runtime_version"] for a in args.accounts}
         config["worker_versions"] = {str(a): states[a].get("baseline_worker_version") for a in args.accounts}
         config["baseline_gift_states"] = {str(a): {
-            "availability": states[a]["baseline_gift"].get("availability"),
+            "availability": states[a].get("baseline_gift", {}).get("availability"),
             "item_service_state": (states[a].get("baseline_item_service") or {}).get("state"),
             "pending_items": (states[a].get("baseline_item_service") or {}).get("pending_items"),
             "preexisting_at_run_start": states[a]["preexisting_pending"],
-            "previous_claim_confirmed_at": states[a]["previous_claim_at"]} for a in args.accounts}
+            "previous_claim_confirmed_at": states[a]["previous_claim_at"],
+            "baseline_receipt_path": states[a].get("baseline_receipt_path"),
+            "technical_failure": states[a]["technical_failure"]} for a in args.accounts}
         config_hash = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        metadata.update(config, configuration_sha256=config_hash, baseline_observed_at={
-            str(a): states[a]["baseline_observed_at"] for a in args.accounts},
+        metadata.update(config, baseline_t0={str(a): states[a]["previous_claim_at"] for a in args.accounts},
+                        configuration_sha256=config_hash, baseline_observed_at={
+            str(a): states[a].get("baseline_observed_at") for a in args.accounts},
             accounts={str(a): states[a]["identity"] for a in args.accounts}, status="BASELINE_READY")
         durable_json(root / "metadata.json", metadata)
         # Arm both workers only after the baseline snapshot is durable.
@@ -448,6 +496,8 @@ def run_characterization(args, api):
                                   "source_commit": source_commit, "configuration_sha256": config_hash})
         for account in args.accounts:
             state = states[account]
+            if state["technical_failure"]:
+                continue
             api.command(account, "ACTIVE", locomotion_profile=profiles[account],
                         experiment_session_id=state["identity"]["session_id"],
                         experiment_seconds=wall_limit, experiment_until_gift=False,
@@ -650,9 +700,10 @@ def run_characterization(args, api):
                             if not pulled.returncode:
                                 cycle_screens.append(str(local_file))
                         preexisting = bool(state["preexisting_pending"] and not state["gifts"])
-                        confirmed_at = receipt.get("claim_timestamp") or receipt.get("backend", {}).get("modified")
-                        if isinstance(confirmed_at, (float, int)):
-                            confirmed_at = datetime.fromtimestamp(confirmed_at, UTC).isoformat()
+                        confirmed_at = confirmed_claim_timestamp(receipt, account)
+                        if (not confirmed_at or receipt.get("runtime_id") != state["identity"]["runtime_id"]
+                                or receipt.get("experiment_session_id") != state["identity"]["session_id"]):
+                            raise RuntimeError("native claim confirmation identity mismatch")
                         gift_first = (receipt.get("detection_timestamp") or state.get("baseline_observed_at"))
                         valid_since = state["totals"]["valid"]
                         weekly_count = receipt.get("weekly_gift_count") or (telemetry.get("item_service") or {}).get("weekly_gift_count")
@@ -663,16 +714,22 @@ def run_characterization(args, api):
                                     "gift_first_detected_at": gift_first,
                                     "claim_started_at": state.pop("claim_started", None),
                                     "claim_confirmed_at": confirmed_at,
-                                    "wall_clock_since_previous_claim": max(0.0, time.time() - state["last_claim_epoch"]),
+                                    "wall_clock_since_previous_claim": (max(0.0, datetime.fromisoformat(confirmed_at).timestamp()
+                                        - state["last_claim_epoch"]) if state["last_claim_epoch"] else None),
+                                    "interval_left_censored": state["interval_left_censored"],
                                     "valid_online_world_seconds_since_previous_claim": valid_since - state.get("last_claim_valid", 0.0),
                                     "active_elapsed_since_previous_claim": state["totals"]["active"] - state.get("last_claim_active", 0.0),
                                     "moving_seconds_since_previous_claim": state["totals"]["moving"] - state.get("last_claim_moving", 0.0),
                                     "idle_seconds_since_previous_claim": state["totals"]["idle"] - state.get("last_claim_idle", 0.0),
                                     "movement_commands": state["totals"]["commands"] - state.get("last_claim_commands", 0),
                                     "direction_changes": state["totals"]["direction_changes"] - state.get("last_claim_directions", 0),
-                                    "disconnect_seconds": state["disconnect_seconds"], "recovery_seconds": state["recovery_seconds"],
-                                    "death_respawn_events": state.get("death_events", 0), "game_lost_events": state.get("game_lost_events", 0),
-                                    "worker_pauses": state.get("worker_pauses", 0), "runtime_restarts": state["runtime_restarts"],
+                                    **{out: state.get(key, 0) - state.get("last_claim_events", {}).get(key, 0)
+                                       for out, key in (("disconnect_seconds", "disconnect_seconds"),
+                                                        ("recovery_seconds", "recovery_seconds"),
+                                                        ("death_respawn_events", "death_events"),
+                                                        ("game_lost_events", "game_lost_events"),
+                                                        ("worker_pauses", "worker_pauses"),
+                                                        ("runtime_restarts", "runtime_restarts"))},
                                     "gift_visual_state": telemetry.get("gift_availability_evidence"),
                                     "item_service_state": telemetry.get("item_service"),
                                     "receipt_path": str(local_receipt),
@@ -688,13 +745,17 @@ def run_characterization(args, api):
                         state["gifts"].append(interval)
                         state["last_gift_item_id"] = receipt.get("item_id")
                         state["previous_claim_at"] = confirmed_at
-                        state["last_claim_epoch"] = time.time()
+                        state["last_claim_epoch"] = datetime.fromisoformat(confirmed_at).timestamp()
+                        state["interval_left_censored"] = False
                         state["last_claim_valid"] = valid_since
                         state["last_claim_active"] = state["totals"]["active"]
                         state["last_claim_moving"] = state["totals"]["moving"]
                         state["last_claim_idle"] = state["totals"]["idle"]
                         state["last_claim_commands"] = state["totals"]["commands"]
                         state["last_claim_directions"] = state["totals"]["direction_changes"]
+                        state["last_claim_events"] = {key: state.get(key, 0) for key in
+                            ("disconnect_seconds", "recovery_seconds", "death_events",
+                             "game_lost_events", "worker_pauses", "runtime_restarts")}
                         weekly_cap = receipt.get("weekly_gift_cap") or (telemetry.get("item_service") or {}).get("weekly_gift_cap")
                         if (receipt.get("weekly_cap_reached") is True or
                                 isinstance(weekly_count, int) and isinstance(weekly_cap, int) and weekly_count >= weekly_cap):
@@ -778,7 +839,7 @@ def run_characterization(args, api):
                                           "technical_failure": state.get("technical_failure")})
                 state["finish_event_written"] = True
         summaries = {str(a): summarize_account(s, args.target_valid_hours, args.max_wall_hours) for a, s in states.items()}
-        counts = sum(x["clean_measured_intervals"] for x in summaries.values())
+        counts = sum(x["confirmed_gifts"] - x["preexisting_gifts"] for x in summaries.values())
         valid_total = sum(x["valid_online_hours"] for x in summaries.values())
         pooled_rate = counts / valid_total if valid_total else None
         account_by_profile = {v["profile"]: v for v in summaries.values()}
@@ -853,6 +914,8 @@ def main(argv=None):
     parser.add_argument("--target-valid-hours", type=float, default=14)
     parser.add_argument("--max-wall-hours", type=float, default=16)
     parser.add_argument("--continue-after-claim", action="store_true")
+    parser.add_argument("--preclaim-max-seconds", type=float, default=600,
+                        help="bounded preexisting claim preparation per account")
     parser.add_argument("--run-id")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--status", metavar="RUN_ID", help="show current durable run status")
@@ -865,6 +928,8 @@ def main(argv=None):
         if (not 1 <= args.target_valid_hours <= 16 or
                 not args.target_valid_hours <= args.max_wall_hours <= 16):
             parser.error("valid target and wall limit must be ordered and no more than 16 hours")
+        if not 30 <= args.preclaim_max_seconds <= 600:
+            parser.error("preclaim preparation must be bounded to 30–600 seconds")
         if len(set(args.accounts)) != 2:
             parser.error("two distinct accounts are required")
         load_dotenv(args.env_file, override=True)

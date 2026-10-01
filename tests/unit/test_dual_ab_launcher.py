@@ -70,3 +70,69 @@ def test_append_only_event_log_and_summary_ignore_preexisting_interval(tmp_path)
     assert summary["clean_measured_intervals"] == 1
     assert summary["intervals_valid_hours"] == [2.0]
     assert summary["valid_online_hours"] == round(6900 / 3600, 4)
+
+
+def test_native_baseline_rejects_daily_or_other_account_receipts():
+    native = {"account_id": 2, "semantic": "IN_WORLD_GIFT_CONFIRMED",
+              "claim_timestamp": "2026-10-01T05:41:52.227272Z",
+              "backend": {"operation": "SetItemOpened_Complete", "http_status": 200, "error": False}}
+    assert dual_ab.confirmed_claim_timestamp(native, 2) == "2026-10-01T05:41:52.227272+00:00"
+    assert dual_ab.confirmed_claim_timestamp(native, 1) is None
+    assert dual_ab.confirmed_claim_timestamp({**native, "semantic": "DAILY_GIFT_CONFIRMED"}, 2) is None
+    assert dual_ab.confirmed_claim_timestamp(None, 2) is None
+
+
+def test_failed_preexisting_claim_preserves_other_account_run(monkeypatch, tmp_path):
+    import json
+    from datetime import UTC, datetime
+    calls, sessions, modes = [], {}, {}
+    prior = {"account_id": 2, "semantic": "IN_WORLD_GIFT_CONFIRMED",
+             "claim_timestamp": "2026-10-01T05:41:52.227272Z",
+             "backend": {"operation": "SetItemOpened_Complete", "http_status": 200, "error": False}}
+
+    class FakeAPI:
+        client = SimpleNamespace(close=lambda: None)
+        def reserve(self, accounts):
+            pass
+        def start(self, account):
+            return {"runtime_id": account, "external_id": f"container-{account}"}
+        def command(self, account, mode, **values):
+            calls.append((account, mode, values))
+            modes[account] = mode
+            if values:
+                sessions[account] = values["experiment_session_id"]
+        def request(self, method, path):
+            account = int(path.split('/')[1])
+            preparing = account == 1 and modes.get(account) == 'ACTIVE'
+            running = account == 2 and modes.get(account) == 'ACTIVE'
+            report = {"mode": modes.get(account, "DISABLED"), "state": "WAITING",
+                      "last_tick_at": datetime.now(UTC).isoformat(),
+                      "error_code": "WORKER_INTERVENTION_REQUIRED" if preparing else None,
+                      "details": {"observation": {"screen": "IN_WORLD_IDLE", "validity": "VALID"}},
+                      "telemetry": {"gift_availability_evidence": {
+                          "observed_at": datetime.now(UTC).isoformat(), "icon_present": account == 1,
+                          "availability": "IN_WORLD_GIFT_PENDING" if account == 1 else "NO_REWARD_AVAILABLE",
+                          "identity_confidence": 1}, "inworld_gift_confirmation": prior if account == 2 and not running else None,
+                          "locomotion": {"session_id": sessions.get(account), "valid_online_world_elapsed": 3601 if running else 0}}}
+            return {"details": {"diagnostics": {"worker": report}}}
+
+    def run(command, **kwargs):
+        stdout = ("test-commit" if command[:2] == ["git", "rev-parse"] else
+                  "" if command[:2] == ["git", "status"] else '{}')
+        return SimpleNamespace(stdout=stdout, returncode=0)
+    monkeypatch.setattr(dual_ab.subprocess, 'run', run)
+    monkeypatch.setattr(dual_ab.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(dual_ab, 'host_resources', lambda: {"cpu_ticks": [0,0,0,0,0]})
+    monkeypatch.setattr(dual_ab, 'runtime_resources', lambda container: {"memory_events": {}, "cpu_usage_usec": 0})
+    args = SimpleNamespace(accounts=[1,2], run_id='failure-isolated', output=tmp_path,
+                           target_valid_hours=1, max_wall_hours=1, preclaim_max_seconds=30)
+    assert dual_ab.run_characterization(args, FakeAPI()) == 0
+    root = tmp_path / args.run_id
+    result = json.loads((root/'final_summary.json').read_text())
+    assert result['accounts']['1']['stop_reason'] == 'TECHNICAL_FAILURE'
+    assert result['accounts']['2']['stop_reason'] == 'TARGET_VALID_ONLINE_REACHED'
+    metadata = json.loads((root/'metadata.json').read_text())
+    assert metadata['baseline_t0']['2'] == prior['claim_timestamp'].replace('Z', '+00:00')
+    assert metadata['baseline_t0']['1'] is None
+    assert not any(a == 1 and v.get('experiment_continue_after_claim') for a, _, v in calls)
+    assert any(a == 2 and v.get('experiment_continue_after_claim') for a, _, v in calls)
