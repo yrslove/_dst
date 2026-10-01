@@ -192,6 +192,41 @@ def confirmed_claim_timestamp(receipt, account):
     return parsed.isoformat()
 
 
+
+def latest_native_receipt(container, account, reported=None):
+    """Recover baseline from durable native receipts when worker memory was reset."""
+    script = r'''import json
+from pathlib import Path
+root=Path('/home/dst/.local/state/dst-runtime/experiments')
+paths=sorted(root.glob('*/gifts/*/claim.json'),key=lambda p:p.stat().st_mtime,reverse=True)[:64]
+receipts=[]
+for path in paths:
+ try:
+  if path.stat().st_size <= 262144: receipts.append(json.loads(path.read_text()))
+ except (OSError,ValueError): pass
+print(json.dumps(receipts))'''
+    candidates = [reported] if reported else []
+    try:
+        result = subprocess.run(["incus", "exec", container, "--", "python3", "-c", script],
+                                capture_output=True, text=True, timeout=15, check=True)
+        stored = json.loads(result.stdout)
+        if isinstance(stored, list):
+            candidates.extend(r for r in stored if isinstance(r, dict))
+    except (subprocess.SubprocessError, ValueError):
+        pass
+    valid = []
+    for receipt in candidates:
+        try:
+            timestamp = confirmed_claim_timestamp(receipt, account)
+        except (ValueError, TypeError, OverflowError):
+            continue
+        if timestamp:
+            epoch = datetime.fromisoformat(timestamp).timestamp()
+            if epoch <= time.time():
+                valid.append((epoch, receipt))
+    return max(valid, key=lambda value: value[0])[1] if valid else None
+
+
 def summarize_account(state, target_hours, max_wall_hours):
     base = state.get("measurement_base", {"valid": 0.0, "active": 0.0, "moving": 0.0,
                                           "idle": 0.0, "commands": 0, "direction_changes": 0})
@@ -310,6 +345,7 @@ def run_characterization(args, api):
               "preclaim_max_seconds": args.preclaim_max_seconds,
               "resource_stop_thresholds": {"new_runtime_oom_kills": 1, "swap_io_bytes_per_5m": 536870912}}
     config_hash = None
+    (root / "gifts.jsonl").touch(mode=0o600, exist_ok=True)
     metadata = {**config, "started_at": utc_now(), "run_root": str(root), "status": "STARTING",
                 "baseline_t0": {str(k): known_t0[k] for k in args.accounts}}
     durable_json(root / "metadata.json", metadata)
@@ -333,6 +369,7 @@ def run_characterization(args, api):
                         "runtime_version": runtime_version}
             prior_report = worker_report(api.request("GET", f"accounts/{account}/worker"))
             prior_receipt = (prior_report.get("telemetry") or {}).get("inworld_gift_confirmation")
+            prior_receipt = latest_native_receipt(identity["container"], account, prior_receipt)
             known_t0[account] = confirmed_claim_timestamp(prior_receipt, account)
             state = {"identity": identity, "started_epoch": started, "previous_claim_at": known_t0[account],
                      "last_claim_epoch": (datetime.fromisoformat(known_t0[account]).timestamp()

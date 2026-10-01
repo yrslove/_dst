@@ -146,3 +146,17 @@ def test_baseline_rejects_stale_gift_even_when_cached_observation_is_valid(monke
     report['telemetry']['gift_availability_evidence']['observed_at'] = '1970-01-01T00:01:35Z'
     assert dual_ab.fresh_baseline_gift(report, 90)
     assert dual_ab.fresh_baseline_gift(report, 99) is None
+
+
+def test_latest_baseline_recovers_native_receipt_without_ephemeral_worker_state(monkeypatch):
+    import json
+    native = {'account_id': 2, 'semantic': 'IN_WORLD_GIFT_CONFIRMED',
+              'claim_timestamp': '2026-10-01T05:41:52.227272Z',
+              'backend': {'operation': 'SetItemOpened_Complete', 'http_status': 200, 'error': False}}
+    older = {**native, 'claim_timestamp': '2026-10-01T02:57:55Z'}
+    other = {**native, 'account_id': 1, 'claim_timestamp': '2026-10-01T06:15:31Z'}
+    monkeypatch.setattr(dual_ab.subprocess, 'run', lambda *args, **kwargs:
+                        SimpleNamespace(stdout=json.dumps([older, other, native])))
+    assert dual_ab.latest_native_receipt('container-2', 2) == native
+    assert dual_ab.latest_native_receipt('container-2', 2, older) == native
+    assert dual_ab.latest_native_receipt('container-3', 3) is None

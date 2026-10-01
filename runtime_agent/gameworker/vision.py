@@ -245,6 +245,7 @@ class TemplateAsset:
     version: int
     expected_use: str
     verified: bool = False
+    matching_region: NormalizedRegion | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -324,6 +325,8 @@ class AssetRegistry:
                     version=int(item["version"]),
                     expected_use=str(item.get("expected_use") or template_id),
                     verified=verified,
+                    matching_region=(NormalizedRegion(*item["matching_region"])
+                                     if "matching_region" in item else None),
                 )
                 if not path.is_file():
                     self.error_code = "WORKER_ASSET_MISSING"
@@ -473,6 +476,12 @@ class VisionDetector:
                         template_id=template_id,
                         metadata=(("detector_error", "INVALID_TEMPLATE_IMAGE"),),
                     )
+                if asset.matching_region is not None:
+                    # Match the stable label rather than hover-dependent button borders.
+                    left, top, right, bottom = Viewport(
+                        template.shape[1], template.shape[0]
+                    ).region(asset.matching_region)
+                    template = template[top:bottom, left:right]
                 self._templates[template_id] = template
             region = Viewport(*image.size).region(asset.expected_region)
             sample = np.asarray(image.crop(region).convert("L"))

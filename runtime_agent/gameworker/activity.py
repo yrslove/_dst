@@ -210,7 +210,7 @@ class ActivityController:
         self.inworld_gift_confirmation: dict | None = None
         self.inworld_close_evidence: dict | None = None
         self._inworld_received_evidence: dict | None = None
-        self._inworld_close_attempted = False
+        self._inworld_close_attempts = 0
         self.gift_availability_evidence: dict | None = None
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
@@ -248,7 +248,7 @@ class ActivityController:
         self.inworld_gift_state = InWorldGiftState.UNKNOWN
         self.inworld_close_evidence = None
         self._inworld_received_evidence = None
-        self._inworld_close_attempted = False
+        self._inworld_close_attempts = 0
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
         self._gift_station_approach_attempted = False
@@ -380,9 +380,9 @@ class ActivityController:
         if (
             self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
-            and not self._inworld_close_attempted
+            and self._inworld_close_attempts < 2
         ):
-            self._inworld_close_attempted = True
+            self._inworld_close_attempts += 1
             return ActionProposal(
                 ActionName.CLICK_INWORLD_USE_LATER,
                 reason="finish the verified in-world item receipt with Use Later",
@@ -1046,7 +1046,11 @@ class ActivityController:
                 }
                 self.counters["verified_actions"] += 1
             else:
-                self.intervention_required = True
+                # Retry only closing the already received popup, from fresh perception.
+                self.intervention_required = not (
+                    result.status == ActionStatus.TIMED_OUT
+                    and self._inworld_close_attempts < 2
+                )
             self._record(observation, result.action.value, "in-world receipt close", result.status.value)
             return
         if result.action == ActionName.OPEN_CRAFTING_MENU:

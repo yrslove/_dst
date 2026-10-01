@@ -632,9 +632,10 @@
         0.9
       ],
       "threshold": 0.94,
-      "version": 1,
+      "version": 2,
       "verified": true,
-      "expected_use": "Live in-world GiftItemPopUp structural anchor"
+      "expected_use": "Live in-world GiftItemPopUp structural anchor",
+      "matching_region": [0.25, 0.24242424242424243, 0.75, 0.7878787878787878]
     },
     {
       "id": "inworld_gift_use_now",

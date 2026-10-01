@@ -2105,3 +2105,26 @@ def test_post_claim_world_remains_ready_with_occupied_first_inventory_slots():
     assert observation.production_ready
     assert observation.screen == DSTScreen.IN_WORLD_IDLE
     assert next(d for d in observation.detections if d.kind == 'world_inventory_frame').detected
+
+
+def test_use_later_label_survives_button_border_changes_and_close_retry_is_bounded():
+    image = Image.open(ASSETS / 'samples/inworld_gift_received_live.png').convert('RGB')
+    label = image.crop((502, 597, 582, 615))
+    image.paste('gray', (462, 589, 622, 622))
+    image.paste(label, (502, 597))
+    received = analyze_image(image, 'received-hover', 1, profile_id='dst-1280x720-linux-v1')
+    assert received.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    assert policy.propose(received) is None
+    first = replace(received, source_sequence=2, source_frame_id='received-hover-2')
+    assert policy.propose(first).action == ActionName.CLICK_INWORLD_USE_LATER
+    timeout = ActionResult('close-1', ActionName.CLICK_INWORLD_USE_LATER,
+                           ActionStatus.TIMED_OUT, .5, 1, 1, 1, 'popup remains')
+    policy.on_verified(first, timeout)
+    assert not policy.intervention_required
+    second = replace(received, source_sequence=3, source_frame_id='received-hover-3')
+    assert policy.propose(second).action == ActionName.CLICK_INWORLD_USE_LATER
+    policy.on_verified(second, replace(timeout, action_id='close-2'))
+    assert policy.intervention_required
+    assert policy.propose(replace(second, source_sequence=4)) is None
