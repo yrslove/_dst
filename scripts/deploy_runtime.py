@@ -148,7 +148,8 @@ def write_archive(repo: Path, files: Sequence[Path], metadata: dict[str, object]
 
 
 GUEST_INSTALLER = r'''import hashlib, json, os, pathlib, shutil, signal, subprocess, sys, tarfile, tempfile
-archive, root, expected = sys.argv[1:]
+archive, root, expected, *options = sys.argv[1:]
+cold = options == ["cold"]
 root = pathlib.Path(root)
 stage = root / (".deploy-stage-" + expected)
 backup = root / (".deploy-backup-" + expected)
@@ -206,10 +207,11 @@ try:
             "app/runtime/world_profile.py",
         ):
             target, staged_file = root / name, stage / name
-            if not target.is_file() or not staged_file.is_file(): raise RuntimeError("runtime module missing: " + name)
+            if not staged_file.is_file() or (not cold and not target.is_file()): raise RuntimeError("runtime module missing: " + name)
             old = backup / name
             old.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target, old)
+            if target.is_file(): shutil.copy2(target, old)
+            target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged_file, target)
             moved.append((target, old, True))
         deployment = stage / "DEPLOYMENT.json"
@@ -439,7 +441,7 @@ def deploy(instance: str, repo: Path, *, cold: bool = False) -> None:
         try:
             result = run([
                 "incus", "exec", instance, "--", "python3", "-c", GUEST_INSTALLER,
-                remote_archive, INSTANCE_ROOT, revision,
+                remote_archive, INSTANCE_ROOT, revision, *(["cold"] if cold else []),
             ])
         except DeployError:
             run(["incus", "exec", instance, "--", "rm", "-f", remote_archive])
