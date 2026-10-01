@@ -12,6 +12,14 @@ Current stopping point: **STEAM_GUARD_REQUIRED** for Account 2 (`forge_6`). Stea
 visibly requests a five-character email code from its `list.ru` address. Keep the
 existing login challenge; resume with that code, not a new installation/login.
 
+Guard follow-up at 2026-10-01 01:17 UTC: the submitted email code was rejected.
+The old challenge first returned Steam e29; canonical Retry and sign-in created a
+current email challenge. Its fresh screen explicitly says "Incorrect code, please
+try again" after the supplied code was accurately entered. Request the code from
+the newest Steam email for forge_6. Keep this challenge and both runtimes intact.
+No disk/provisioning/install/claim work was repeated; no gameplay input was sent.
+Evidence is `.data/dual-ab-preparation/account2-guard-result.png` (ignored).
+
 Completed in this turn:
 - Guest storage already expanded: `/dev/sda` 128 GiB, `/dev/sda1` 127 GiB, ext4 root
   123 GiB; 66 GiB available at confirmation. Incus `default` dir pool CREATED.
