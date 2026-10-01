@@ -391,33 +391,6 @@ class ActivityController:
         if (
             self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_IDLE
-            and self.inworld_gift_state == InWorldGiftState.PENDING_STATION
-            and self._gift_station_approach_step < 4
-        ):
-            self._gift_station_approach_attempted = True
-            route = (ActionName.TURN_RIGHT, ActionName.MOVE_BACKWARD) * 2
-            action = route[self._gift_station_approach_step]
-            return ActionProposal(
-                action,
-                duration=1.0,
-                reason="take a bounded canonical step along the prepared Science Machine approach",
-            )
-        if (
-            self.production_actions_enabled
-            and observation.screen == DSTScreen.IN_WORLD_IDLE
-            and self.inworld_gift_state == InWorldGiftState.PENDING_STATION
-            and self._gift_station_approach_step >= 4
-            and not self._gift_station_crafting_opened
-            and self.gift_claim_ready
-        ):
-            self._gift_station_crafting_opened = True
-            return ActionProposal(
-                ActionName.OPEN_CRAFTING_MENU,
-                reason="open the existing crafting menu once to enable the prepared gift station",
-            )
-        if (
-            self.production_actions_enabled
-            and observation.screen == DSTScreen.IN_WORLD_IDLE
             and icon is not None
             and icon.detected
             and icon.verified
@@ -425,18 +398,14 @@ class ActivityController:
             and icon.confidence >= 0.94
             and (
                 dict(icon.metadata).get("availability") == "GIFT_AVAILABLE"
-                or (
-                    dict(icon.metadata).get("availability") == "IN_WORLD_GIFT_PENDING"
-                    and self._gift_station_approach_step >= 4
-                    and self._gift_station_crafting_opened
-                )
+                or dict(icon.metadata).get("availability") == "IN_WORLD_GIFT_PENDING"
             )
             and self.gift_claim_ready
             and self._gift_icon_click_attempts < 2
         ):
             self._gift_icon_click_attempts += 1
             reason = (
-                "open the verified pending in-world gift after the bounded station approach"
+                "open the fresh, verified pending in-world gift"
                 if dict(icon.metadata).get("availability") == "IN_WORLD_GIFT_PENDING"
                 else "open the reward UI from the fresh active gift icon"
             )

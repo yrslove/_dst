@@ -2130,7 +2130,7 @@ def test_use_later_label_survives_button_border_changes_and_close_retry_is_bound
     assert policy.propose(replace(second, source_sequence=4)) is None
 
 
-def test_pending_station_gift_clicks_only_after_bounded_approach():
+def test_verified_pending_gift_is_clicked_without_unrelated_station_actions():
     from runtime_agent.gameworker.transitions import action_precondition_error
     observation = analyze_image(
         Image.open(ASSETS / "samples/gift_icon_active_in_world_live.png").convert("RGB"),
@@ -2145,29 +2145,9 @@ def test_pending_station_gift_clicks_only_after_bounded_approach():
     observation = replace(observation, detections=detections)
     policy = ActivityController()
     policy.set_production_actions_enabled(True)
-    policy._gift_station_approach_step = 0
     policy.propose(observation)
-    approach = policy.propose(replace(observation, source_sequence=2,
-                                      source_frame_id="pending-station-approach"))
-    assert approach.action in {ActionName.TURN_RIGHT, ActionName.MOVE_BACKWARD}
-    policy._gift_station_approach_step = 4
-    before_click = replace(observation, source_sequence=3,
+    before_click = replace(observation, source_sequence=2,
                            source_frame_id="pending-station-claim-click")
-    # Re-arm hysteresis for the next distinct, fresh observation after approach.
-    policy.state = DSTScreen.IN_WORLD_IDLE
-    policy._candidate = DSTScreen.IN_WORLD_IDLE
-    policy._candidate_frames = 1
-    menu = policy.propose(before_click)
-    assert menu.action == ActionName.OPEN_CRAFTING_MENU
-    policy.on_verified(before_click, ActionResult(
-        "crafting-open", ActionName.OPEN_CRAFTING_MENU, ActionStatus.SUCCEEDED,
-        .2, 1, 1, 1, "fresh verified in-world UI change",
-    ))
-    policy.state = DSTScreen.IN_WORLD_IDLE
-    policy._candidate = DSTScreen.IN_WORLD_IDLE
-    policy._candidate_frames = 1
-    before_click = replace(observation, source_sequence=4,
-                           source_frame_id="pending-station-claim-click-2")
     proposal = policy.propose(before_click)
     assert proposal.action == ActionName.CLICK_GIFT_ICON
     assert action_precondition_error(proposal.action, before_click) is None
