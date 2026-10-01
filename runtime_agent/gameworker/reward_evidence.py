@@ -38,6 +38,23 @@ class SessionClaimEvidence:
         self.detection = None
         self.inventory = None
         self.health = {"state": "WAITING_FOR_NATIVE_INVENTORY"}
+        detection = self.evidence / "detection.json"
+        baseline = self.evidence / "inventory-before.json"
+        if detection.exists() and baseline.exists():
+            raw = detection.read_bytes()
+            if len(raw) > 128 * 1024:
+                raise ValueError("saved detection exceeds bound")
+            saved = json.loads(raw)
+            if any(saved.get(key) != value for key, value in identity.items()):
+                raise ValueError("saved claim session identity mismatch")
+            if (self.evidence / "claim.json").exists():
+                raise ValueError("claim session already completed; do not repeat it")
+            self.detection = saved
+            self.provider = InWorldClaimEvidence(
+                baseline, self.user_root / "client_log.txt", self.evidence / "claim.json"
+            )
+            self.provider.user_id = json.loads(baseline.read_bytes())["UserID"]
+            self.provider.allow_uncached_gift = True
 
     @property
     def ready(self):

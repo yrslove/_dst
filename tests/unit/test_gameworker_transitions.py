@@ -596,7 +596,9 @@ def test_canonical_pause_and_resume_require_fresh_perceived_states():
 
     assert lifecycle.begin(sent(ActionName.RESUME_WORLD), paused_again).status == ActionStatus.VERIFYING
     resumed = frame("in_world_wilson_live.png", 4)
-    resumed = replace(resumed, observed_monotonic=paused_again.observed_monotonic + 0.1)
+    resumed = replace(resumed, observed_monotonic=max(
+        resumed.observed_monotonic, paused_again.observed_monotonic + 0.1
+    ))
     clock[0] = resumed.observed_monotonic + 0.001
     assert lifecycle.observe(resumed) is None
     resumed_again = replace(

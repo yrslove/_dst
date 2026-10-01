@@ -575,11 +575,11 @@ class VisionDetector:
                 detected["mods_disabled_continue"].confidence,
             )
         elif all(found(key) for key in (
-            "inworld_gift_received_title", "inworld_gift_use_later", "inworld_gift_use_now",
+            "inworld_gift_received_title", "inworld_gift_use_later",
         )):
             screen = DSTScreen.IN_WORLD_GIFT_RECEIVED
             confidence = min(detected[key].confidence for key in (
-                "inworld_gift_received_title", "inworld_gift_use_later", "inworld_gift_use_now",
+                "inworld_gift_received_title", "inworld_gift_use_later",
             ))
         elif found("inworld_gift_opening_title") and found("inworld_gift_popup_ribbon"):
             screen = DSTScreen.IN_WORLD_GIFT_OPENING

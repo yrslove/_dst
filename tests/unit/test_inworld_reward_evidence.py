@@ -177,6 +177,12 @@ def test_live_gift_can_precede_cache_but_cannot_reclaim_known_item(tmp_path):
     assert provider.ready
     assert (provider.evidence / 'detection.json').exists()
     started = provider.provider.started_at
+    provider = SessionClaimEvidence(tmp_path, tmp_path / 'evidence', {
+        'account_id': 2, 'runtime_id': 4, 'experiment_session_id': 'uncached-live-gift',
+    })
+    provider.before_tick()
+    assert provider.provider.started_at == started
+    assert provider.ready
     result = {**closed(), 'runtime_id': 4,
         'received_at': datetime.fromtimestamp(started + 1, UTC).isoformat(),
         'observed_at': datetime.fromtimestamp(started + 3, UTC).isoformat()}

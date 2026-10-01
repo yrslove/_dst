@@ -73,7 +73,7 @@ CONTRACTS = {
         frozenset({DSTScreen.IN_WORLD_GIFT_RECEIVED}),
         frozenset({DSTScreen.IN_WORLD_IDLE}),
         timeout=45.0,
-        required_detections=("inworld_gift_received_title", "inworld_gift_use_now"),
+        required_detections=("inworld_gift_received_title",),
         postcondition_hidden_detections=("inworld_gift_received_title", "inworld_gift_use_later"),
     ),
     ActionName.MOVE_FORWARD: ActionContract(

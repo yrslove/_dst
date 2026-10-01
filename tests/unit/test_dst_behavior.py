@@ -2059,3 +2059,13 @@ def test_managed_gift_detection_is_saved_before_a_claim_proposal():
     proposal = policy.propose(next_frame)
     assert proposal.action == ActionName.CLICK_GIFT_ICON
     assert saved[-1] == next_frame.source_frame_id
+
+
+def test_received_gift_with_disabled_use_now_still_closes_through_use_later():
+    from runtime_agent.gameworker.transitions import action_precondition_error
+    image = Image.open(ASSETS / 'samples/inworld_gift_received_live.png').convert('RGB')
+    image.paste('gray', (650, 580, 820, 640))
+    observation = analyze_image(image, 'unequippable-gift', 1, profile_id='dst-1280x720-linux-v1')
+    assert observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
+    assert observation.production_ready
+    assert action_precondition_error(ActionName.CLICK_INWORLD_USE_LATER, observation) is None
