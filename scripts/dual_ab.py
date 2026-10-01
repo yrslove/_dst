@@ -272,6 +272,19 @@ def status_characterization(run_id, output):
     return 0
 
 
+def fresh_baseline_gift(report, requested_at):
+    observation = report.get("details", {}).get("observation", {})
+    gift = (report.get("telemetry") or {}).get("gift_availability_evidence") or {}
+    try:
+        observed_at = datetime.fromisoformat(gift["observed_at"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, ValueError, AttributeError):
+        return None
+    if (observation.get("screen") != "IN_WORLD_IDLE" or observation.get("validity") != "VALID"
+            or observed_at < requested_at or not 0 <= time.time() - observed_at <= 20):
+        return None
+    return gift
+
+
 def run_characterization(args, api):
     target = args.target_valid_hours * 3600
     wall_limit = args.max_wall_hours * 3600
@@ -349,7 +362,11 @@ def run_characterization(args, api):
                 state["baseline_receipt_path"] = str(baseline_receipt)
             streams[account] = (folder / "telemetry.jsonl").open("a", buffering=1)
             # Refresh both gift HUD and native inventory evidence without gameplay input.
-            api.command(account, "OBSERVE")
+            api.command(account, "DISABLED")
+            state["baseline_requested_epoch"] = time.time()
+            api.command(account, "OBSERVE", locomotion_profile=profiles[account],
+                        experiment_session_id=identity["session_id"] + "-baseline",
+                        experiment_seconds=1200)
         baseline_deadline = time.monotonic() + 45
         baseline_done = set()
         while len(baseline_done) != len(args.accounts) and time.monotonic() < baseline_deadline:
@@ -358,13 +375,10 @@ def run_characterization(args, api):
                     continue
                 state = states[account]
                 report = worker_report(api.request("GET", f"accounts/{account}/worker"))
-                telemetry = report.get("telemetry", {})
-                observation = report.get("details", {}).get("observation", {})
-                gift = telemetry.get("gift_availability_evidence") or {}
-                observed = gift.get("observed_at")
-                if (observed and observed != state.get("baseline_observed_at")
-                        and observation.get("screen") == "IN_WORLD_IDLE"
-                        and observation.get("validity") == "VALID"):
+                telemetry = report.get("telemetry") or {}
+                gift = fresh_baseline_gift(report, state["baseline_requested_epoch"])
+                if gift:
+                    observed = gift["observed_at"]
                     state["baseline_observed_at"] = observed
                     state["preexisting_pending"] = (
                         gift.get("availability") in {"GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"}
@@ -381,6 +395,17 @@ def run_characterization(args, api):
             try:
                 if account not in baseline_done:
                     raise TimeoutError(f"Account {account} did not produce fresh baseline gift evidence")
+                current_report = worker_report(api.request("GET", f"accounts/{account}/worker"))
+                current_gift = fresh_baseline_gift(current_report, state["baseline_requested_epoch"])
+                if not current_gift:
+                    raise RuntimeError("baseline gift evidence stopped being fresh before account preparation")
+                state["baseline_gift"] = current_gift
+                state["baseline_observed_at"] = current_gift["observed_at"]
+                state["baseline_item_service"] = (current_report.get("telemetry") or {}).get("item_service")
+                state["preexisting_pending"] = (
+                    current_gift.get("availability") in {"GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"}
+                    and current_gift.get("icon_present") is True
+                    and current_gift.get("identity_confidence", 0) >= .94)
                 api.command(account, "DISABLED")
                 gift = state["baseline_gift"]
                 claimable = state["preexisting_pending"]

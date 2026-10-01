@@ -136,3 +136,13 @@ def test_failed_preexisting_claim_preserves_other_account_run(monkeypatch, tmp_p
     assert metadata['baseline_t0']['1'] is None
     assert not any(a == 1 and v.get('experiment_continue_after_claim') for a, _, v in calls)
     assert any(a == 2 and v.get('experiment_continue_after_claim') for a, _, v in calls)
+
+
+def test_baseline_rejects_stale_gift_even_when_cached_observation_is_valid(monkeypatch):
+    monkeypatch.setattr(dual_ab.time, 'time', lambda: 100)
+    report = {"details": {"observation": {"screen": "IN_WORLD_IDLE", "validity": "VALID"}},
+              "telemetry": {"gift_availability_evidence": {"observed_at": "1970-01-01T00:01:10Z"}}}
+    assert dual_ab.fresh_baseline_gift(report, 60) is None
+    report['telemetry']['gift_availability_evidence']['observed_at'] = '1970-01-01T00:01:35Z'
+    assert dual_ab.fresh_baseline_gift(report, 90)
+    assert dual_ab.fresh_baseline_gift(report, 99) is None
