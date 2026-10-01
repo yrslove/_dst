@@ -342,7 +342,8 @@ class DSTGameWorker:
                 )
             self._error_code = None
             self._sync_action_mode()
-        except Exception:  # noqa: BLE001 - plugin boundary converts crashes to canonical state
+        except Exception:
+            logger.exception("worker display or input preparation failed")
             self._release_partial(
                 capture,
                 input_controller,
