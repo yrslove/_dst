@@ -205,7 +205,7 @@ def test_validation_disabled_does_not_propose_validation_actions_in_world():
     assert policy._validation_step == 0
 
 
-def test_pending_inworld_gift_causes_only_one_short_step_toward_prepared_station():
+def test_pending_inworld_gift_uses_bounded_canonical_prepared_station_route():
     observation = analyze_image(
         Image.open(ASSETS / "samples/gift_icon_gray_in_world_live.png").convert("RGB"),
         "gift-station-approach-1",
@@ -228,15 +228,39 @@ def test_pending_inworld_gift_causes_only_one_short_step_toward_prepared_station
     policy.set_production_actions_enabled(True)
 
     assert policy.propose(observation) is None
-    proposal = policy.propose(
-        replace(observation, source_frame_id="gift-station-approach-2", source_sequence=2)
+    route = (
+        ActionName.TURN_RIGHT,
+        ActionName.MOVE_BACKWARD,
+        ActionName.TURN_RIGHT,
+        ActionName.MOVE_BACKWARD,
     )
-    assert proposal is not None
-    assert proposal.action == ActionName.TURN_LEFT
-    assert proposal.duration == 0.45
+    for index, expected in enumerate(route, start=2):
+        current = replace(
+            observation,
+            source_frame_id=f"gift-station-approach-{index}",
+            source_sequence=index,
+        )
+        proposal = policy.propose(current)
+        assert proposal is not None
+        assert proposal.action == expected
+        assert proposal.duration == 1.0
+        action_id = f"gift-station-approach-action-{index}"
+        verifying = ActionResult(
+            action_id, expected, ActionStatus.VERIFYING, 0.01, 1, 1, 1,
+        )
+        policy.on_action_result(current, verifying)
+        verified = replace(
+            current,
+            source_frame_id=f"gift-station-approach-verified-{index}",
+            source_sequence=index + 10,
+        )
+        policy.on_verified(
+            verified,
+            replace(verifying, status=ActionStatus.SUCCEEDED),
+        )
 
     assert policy.propose(
-        replace(observation, source_frame_id="gift-station-approach-3", source_sequence=3)
+        replace(observation, source_frame_id="gift-station-approach-done", source_sequence=20)
     ) is None
 
 

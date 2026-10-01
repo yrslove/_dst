@@ -215,6 +215,7 @@ class ActivityController:
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
         self._gift_station_approach_attempted = False
+        self._gift_station_approach_step = 0
         self._reward_open_source_sequence: int | None = None
         self._last_gift_observation_sequence = 0
         self._last_confirmed_gift_sequence = 0
@@ -251,12 +252,15 @@ class ActivityController:
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
         self._gift_station_approach_attempted = False
+        self._gift_station_approach_step = 0
         self._awaiting_reward_transition = False
         self.intervention_required = False
         self._recoverable_intervention_action = None
 
     def _recoverable_action(self, action):
-        return (action == ActionName.TURN_LEFT and self._gift_station_approach_attempted) or action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS or (
+        return (action in {ActionName.TURN_RIGHT, ActionName.MOVE_BACKWARD}
+                and self._gift_station_approach_attempted
+                and self._gift_station_approach_step < 4) or action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS or (
             self.locomotion is not None and self.locomotion.profile
             and action in {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD}
         )
@@ -387,13 +391,15 @@ class ActivityController:
             self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_IDLE
             and self.inworld_gift_state == InWorldGiftState.PENDING_STATION
-            and not self._gift_station_approach_attempted
+            and self._gift_station_approach_step < 4
         ):
             self._gift_station_approach_attempted = True
+            route = (ActionName.TURN_RIGHT, ActionName.MOVE_BACKWARD) * 2
+            action = route[self._gift_station_approach_step]
             return ActionProposal(
-                ActionName.TURN_LEFT,
-                duration=0.45,
-                reason="take one bounded leftward step toward the visible prepared Science Machine",
+                action,
+                duration=1.0,
+                reason="take a bounded canonical step along the prepared Science Machine approach",
             )
         if (
             self.production_actions_enabled
@@ -967,6 +973,7 @@ class ActivityController:
             ActionName.MOVE_FORWARD,
             ActionName.MOVE_BACKWARD,
             ActionName.TURN_LEFT,
+            ActionName.TURN_RIGHT,
             ActionName.CANCEL,
             ActionName.RESUME_WORLD,
             ActionName.PAUSE_WORLD,
@@ -1019,6 +1026,12 @@ class ActivityController:
     def on_verified(self, observation: GameObservation, result: ActionResult) -> None:
         if self.locomotion:
             self.locomotion.verified(result)
+        if (result.status == ActionStatus.SUCCEEDED
+                and self._gift_station_approach_step < 4
+                and result.action == (ActionName.TURN_RIGHT, ActionName.MOVE_BACKWARD)[
+                    self._gift_station_approach_step % 2
+                ]):
+            self._gift_station_approach_step += 1
         if result.action == ActionName.CLICK_INWORLD_USE_LATER:
             self._awaiting_reward_transition = False
             if result.status == ActionStatus.SUCCEEDED and self._inworld_received_evidence:
