@@ -16,10 +16,14 @@ MAX_LOG_BYTES = 8 * 1024 * 1024
 
 
 def durable_json(path: Path, value: dict) -> None:
+    durable_bytes(path, json.dumps(value, sort_keys=True).encode())
+
+
+def durable_bytes(path: Path, value: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
-    with temporary.open("w") as stream:
-        json.dump(value, stream, sort_keys=True)
+    with temporary.open("wb") as stream:
+        stream.write(value)
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
@@ -55,6 +59,20 @@ class SessionClaimEvidence:
             )
             self.provider.user_id = json.loads(baseline.read_bytes())["UserID"]
             self.provider.allow_uncached_gift = True
+            archive = self.evidence / "native-ack.log"
+            if archive.exists():
+                self.provider.client_log = archive
+                received = self.evidence / "received.json"
+                if received.exists():
+                    recovered = json.loads(received.read_bytes())
+                    if any(recovered.get(key) != value for key, value in identity.items()):
+                        raise ValueError("received claim identity mismatch")
+                    self.provider.pending_close = {
+                        **recovered, **identity,
+                        "completion_path": "FRESH_WORLD_AFTER_RECEIVED_UI_RECOVERY",
+                        "detection_timestamp": saved["detected_at"],
+                    }
+        self._last_frame = None
 
     @property
     def ready(self):
@@ -111,7 +129,30 @@ class SessionClaimEvidence:
                 self.detection = {**self.identity, "detected_at": observation.timestamp,
                                   "observation": observation.as_dict()}
                 durable_json(self.evidence / "detection.json", self.detection)
-        return self.provider.observe(observation) if self.provider else None
+        if self.provider is not None:
+            archive = self.evidence / "native-ack.log"
+            self.provider.archive_ack(archive)
+            if (observation.production_ready and observation.is_fresh()
+                    and observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
+                    and archive.exists()):
+                match = ACK.search(archive.read_bytes())
+                if match:
+                    item = json.loads(match.group(1))["ItemID"]
+                    received = self.evidence / "received.json"
+                    if not received.exists():
+                        durable_json(received, {
+                            **self.identity, "runtime_generation": observation.runtime_generation,
+                            "received_worker_generation": observation.worker_generation,
+                            "received_sequence": observation.source_sequence,
+                            "received_frame_id": observation.source_frame_id,
+                            "received_at": observation.timestamp,
+                            "action_id": f"native:SetItemOpened_Complete:{item}",
+                        })
+            if observation.source_frame_id == self._last_frame:
+                return self.provider.receipt
+            self._last_frame = observation.source_frame_id
+            return self.provider.observe(observation)
+        return None
 
     def confirm(self, closed):
         if not self.provider or closed.get("runtime_id") != self.identity["runtime_id"]:
@@ -142,6 +183,28 @@ class InWorldClaimEvidence:
         self.receipt: dict | None = None
         self.pending_close: dict | None = None
         self._world_frames = 0
+
+    def archive_ack(self, path: Path) -> None:
+        if path.exists():
+            self.client_log = path
+            return
+        try:
+            with self.client_log.open("rb") as stream:
+                stream.seek(max(0, os.fstat(stream.fileno()).st_size - MAX_LOG_BYTES))
+                tail = stream.read(MAX_LOG_BYTES)
+            for match in reversed(list(ACK.finditer(tail))):
+                ack = json.loads(match.group(1))
+                if (ack.get("Error") is False and ack.get("UserID") == self.user_id
+                        and isinstance(ack.get("ItemID"), int)
+                        and isinstance(ack.get("Modified"), (int, float))
+                        and self.started_at <= ack["Modified"] <= time.time() + 60
+                        and (ack["ItemID"] in self.pending or (self.allow_uncached_gift
+                             and ack["ItemID"] not in self.known_item_ids))):
+                    durable_bytes(path, match.group())
+                    self.client_log = path
+                    return
+        except (OSError, ValueError, TypeError):
+            return
 
     def resume_recording(self, recording: Path) -> None:
         """Recover verification only; recorded inputs are never replayed."""

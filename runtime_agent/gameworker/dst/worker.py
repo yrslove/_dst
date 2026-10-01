@@ -530,6 +530,8 @@ class DSTGameWorker:
                     self.machine.transition(
                         WorkerState.DISABLED, "worker mode disabled"
                     )
+            if not self._cleanup_failed:
+                self._error_code = "WORKER_DISABLED"
         elif previous == WorkerMode.DISABLED and self.machine.state in {
             WorkerState.DISABLED,
             WorkerState.PAUSED,

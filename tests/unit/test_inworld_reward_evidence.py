@@ -159,6 +159,8 @@ def test_armed_claim_stops_new_input_when_native_service_becomes_unhealthy(tmp_p
 
 def test_live_gift_can_precede_cache_but_cannot_reclaim_known_item(tmp_path):
     from types import SimpleNamespace
+
+    from runtime_agent.gameworker.vision import DSTScreen
     cache = tmp_path / 'account/client_save/inventory_cache_prod'
     cache.parent.mkdir(parents=True)
     cache.write_text(json.dumps({'Error': False, 'UserID': 'KU_2', 'Items': [
@@ -170,6 +172,7 @@ def test_live_gift_can_precede_cache_but_cannot_reclaim_known_item(tmp_path):
     provider.before_tick()
     assert not provider.ready
     obs = SimpleNamespace(runtime_id=4, production_ready=True, is_fresh=lambda: True,
+        screen=DSTScreen.IN_WORLD_IDLE, source_frame_id="r4-new",
         timestamp=datetime.now(UTC).isoformat(), as_dict=lambda: {'source_frame_id': 'r4-new'},
         detections=[SimpleNamespace(kind='gift_icon', detected=True, verified=True,
             confidence=.99, metadata=(('availability', 'GIFT_AVAILABLE'),))])
@@ -199,3 +202,43 @@ def test_live_gift_can_precede_cache_but_cannot_reclaim_known_item(tmp_path):
     assert receipt['item_id'] == 8
     assert receipt['experiment_session_id'] == 'uncached-live-gift'
     assert receipt['detection_timestamp'] == obs.timestamp
+
+
+def test_received_claim_recovers_from_archived_ack_after_log_rotation(tmp_path):
+    from types import SimpleNamespace
+
+    from runtime_agent.gameworker.vision import DSTScreen
+    cache = tmp_path / 'account/client_save/inventory_cache_prod'
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({'Error': False, 'UserID': 'KU_2', 'Items': [
+        {'ItemID': 7, 'ItemType': 'TEST_GIFT', 'Context': 3},
+    ]}))
+    identity = {'account_id': 2, 'runtime_id': 4, 'experiment_session_id': 'recover-received'}
+    provider = SessionClaimEvidence(tmp_path, tmp_path / 'evidence', identity)
+    provider.before_tick()
+    started = provider.provider.started_at
+    def observation(screen, sequence):
+        return SimpleNamespace(runtime_id=4, runtime_generation=2, worker_generation=1,
+            source_sequence=sequence, source_frame_id=f'r4-{sequence}', production_ready=True,
+            is_fresh=lambda: True, screen=screen, screen_confidence=.99,
+            timestamp=datetime.fromtimestamp(started + sequence / 10, UTC).isoformat(),
+            as_dict=lambda: {'source_frame_id': f'r4-{sequence}'}, detections=[
+                SimpleNamespace(kind='gift_icon', detected=True, verified=True, confidence=.99,
+                    metadata=(('availability', 'GIFT_AVAILABLE'),))])
+    provider.observe(observation(DSTScreen.IN_WORLD_IDLE, 1))
+    ack = {'Error': False, 'ItemID': 7, 'Modified': started + .1, 'UserID': 'KU_2'}
+    log = tmp_path / 'client_log.txt'
+    log.write_text('[SetItemOpened_Complete Success:200] ' + json.dumps(ack))
+    provider.observe(observation(DSTScreen.IN_WORLD_GIFT_RECEIVED, 2))
+    assert (provider.evidence / 'native-ack.log').exists()
+    assert (provider.evidence / 'received.json').exists()
+    log.write_text('new process log without old ACK')
+    resumed = SessionClaimEvidence(tmp_path, tmp_path / 'evidence', identity)
+    resumed.before_tick()
+    world = observation(DSTScreen.IN_WORLD_IDLE, 3)
+    assert resumed.observe(world) is None
+    assert resumed.observe(world) is None
+    receipt = resumed.observe(observation(DSTScreen.IN_WORLD_IDLE, 4))
+    assert receipt['item_id'] == 7
+    assert receipt['completion_path'] == 'FRESH_WORLD_AFTER_RECEIVED_UI_RECOVERY'
+    assert receipt['experiment_session_id'] == identity['experiment_session_id']

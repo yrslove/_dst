@@ -928,3 +928,13 @@ def test_noop_game_ready_ack_with_autostart_disabled():
         commands.put_nowait(WorkerIPCCommand(9, "STOP", 52))
         thread.join(timeout=2)
     assert not thread.is_alive()
+
+
+def test_clean_shutdown_clears_prior_gameplay_intervention_health():
+    host = WorkerProcessHost(WorkerConfig(plugin='dst', mode=WorkerMode.DISABLED), context())
+    host._last_report.state = 'NEEDS_ATTENTION'
+    host._last_report.healthy = False
+    report = host.shutdown()
+    assert report.state == 'STOPPED'
+    assert report.healthy
+    assert host._process is None

@@ -1237,7 +1237,9 @@ class WorkerProcessHost:
             self._close_queues()
             if forced:
                 self._mark_crashed()
-            elif self._last_report.state not in {"STOPPED", "NEEDS_ATTENTION"}:
+            else:
+                # A joined child and successful input cleanup prove shutdown.
+                # A prior gameplay intervention must not invalidate adoption.
                 self._last_report.state = "STOPPED"
                 self._last_report.healthy = True
             self._state = (
