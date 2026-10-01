@@ -299,6 +299,8 @@ def _worker_main(
                                 message.values["experiment_session_id"],
                                 message.values["experiment_seconds"],
                                 message.values.get("experiment_until_gift", False),
+                                message.values.get("experiment_target_valid_seconds"),
+                                message.values.get("experiment_continue_after_claim", False),
                             )
                         report = worker.set_mode(WorkerMode(message.values["mode"]))
                     elif command == WorkerCommandName.STATUS:

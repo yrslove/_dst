@@ -68,6 +68,21 @@ def test_unverified_action_never_counts_moving_time_or_blocks_next_pulse():
     assert not run.pending
 
 
+def test_characterization_stops_at_valid_target_or_wall_safety(monkeypatch):
+    from runtime_agent.gameworker import locomotion
+
+    now = [100.0]
+    monkeypatch.setattr(locomotion.time, "monotonic", lambda: now[0])
+    run = Locomotion()
+    run.configure("CONTROL", "characterization", 16 * 3600, target_valid_seconds=14 * 3600)
+    assert run.stop_reason is None
+    run.valid_elapsed = 14 * 3600
+    assert run.stop_reason == "TARGET_VALID_ONLINE_REACHED"
+    run.valid_elapsed = 0
+    now[0] += 16 * 3600
+    assert run.stop_reason == "MAX_WALL_CLOCK_REACHED"
+
+
 @pytest.mark.parametrize("session,seconds", [("../other", 120), ("ok", 0), ("ok", float("nan"))])
 def test_session_path_and_duration_are_bounded(session, seconds):
     with pytest.raises(ValueError):

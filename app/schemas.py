@@ -107,6 +107,8 @@ class WorkerModeRequest(BaseModel):
     experiment_session_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,100}$")
     experiment_seconds: float = Field(default=120, ge=1, le=604800)
     experiment_until_gift: bool = False
+    experiment_target_valid_seconds: float | None = Field(default=None, gt=0, le=604800)
+    experiment_continue_after_claim: bool = False
 
 
 class RebuildRuntimeRequest(BaseModel):

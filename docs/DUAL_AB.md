@@ -13,12 +13,45 @@ Bounded technical smoke:
 .venv/bin/python scripts/dual_ab.py --env-file .data/linux-validation.env --seconds 120
 ```
 
-Explicit full experiment, stopping each account independently after its own
-confirmed in-world gift (seven-day safety bound):
+Legacy one-gift smoke, stopping each account independently after its own first
+confirmed in-world gift:
 
 ```bash
 .venv/bin/python scripts/dual_ab.py --env-file .data/linux-validation.env --until-gift
 ```
+
+Fixed-profile sequential gift characterization (14 valid-online hours per account,
+16-hour wall-clock safety limit):
+
+```bash
+.venv/bin/python scripts/dual_ab.py --env-file .data/linux-validation.env \
+  --characterize-gifts --target-valid-hours 14 --max-wall-hours 16 \
+  --continue-after-claim
+```
+
+Run it under the host's systemd supervisor (`systemd-run`) so it survives SSH and
+Codex session closure. It first captures a fresh gift HUD/item-service baseline;
+verified preexisting gifts are claimed through the production worker flow before
+measurement and tagged `PREEXISTING_AT_RUN_START`. Each subsequent confirmed gift
+gets its own guest receipt, evidence directory, gift row and append-only events; the
+same fixed profile continues after every claim. Worker valid time is counted only
+from fresh `IN_WORLD_IDLE` observations. Loading, death, disconnect, stale frames,
+and recovery gaps do not count. Resource samples are taken every five minutes and
+telemetry every fifteen seconds. Source commit and a hash of profiles, limits,
+runtime revisions and baseline state are frozen in run metadata.
+
+Run artifacts are stored under `.data/gift-characterization/<RUN_ID>/`. Inspect a
+live or completed run with:
+
+```bash
+.venv/bin/python scripts/dual_ab.py --status <RUN_ID>
+```
+
+On completion, the launcher writes `final_summary.json` and `final_summary.md`,
+including per-account intervals/rates, A/B movement ratio and observed pooled
+valid-hours projection for eight weekly gifts. High CPU alone does not stop the
+run; a new runtime OOM, sustained worker loss, ten-minute failed recovery, or
+material host swap thrashing stops only the affected account where possible.
 
 Neither importing the module nor running it without a duration flag starts a run.
 The launcher never provisions additional accounts or implements a farm scheduler.

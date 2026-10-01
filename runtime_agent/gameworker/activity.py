@@ -240,6 +240,21 @@ class ActivityController:
     def set_production_actions_enabled(self, enabled: bool) -> None:
         self.production_actions_enabled = bool(enabled)
 
+    def begin_next_gift_cycle(self, evidence) -> None:
+        """Re-arm the existing claim flow after a durable receipt."""
+        self.claim_evidence = evidence
+        self.gift_claim_ready = evidence.ready
+        self.inworld_gift_state = InWorldGiftState.UNKNOWN
+        self.inworld_close_evidence = None
+        self._inworld_received_evidence = None
+        self._inworld_close_attempted = False
+        self._gift_hover_attempted = False
+        self._gift_icon_click_attempts = 0
+        self._gift_station_approach_attempted = False
+        self._awaiting_reward_transition = False
+        self.intervention_required = False
+        self._recoverable_intervention_action = None
+
     def _recoverable_action(self, action):
         return (action == ActionName.TURN_LEFT and self._gift_station_approach_attempted) or action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS or (
             self.locomotion is not None and self.locomotion.profile

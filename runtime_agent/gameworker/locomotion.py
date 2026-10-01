@@ -17,6 +17,7 @@ class Locomotion:
         self.started = 0.0
         self.deadline = 0.0
         self.until_gift = False
+        self.target_valid_seconds = None
         self.next_at = 0.0
         self.direction = ActionName.MOVE_FORWARD
         self.previous_direction = None
@@ -30,7 +31,8 @@ class Locomotion:
         self.direction_changes = 0
         self.failures = 0
 
-    def configure(self, profile, session_id, seconds, until_gift=False):
+    def configure(self, profile, session_id, seconds, until_gift=False,
+                  target_valid_seconds=None):
         if profile not in PROFILES or not isinstance(session_id, str) or not re.fullmatch(
             r"[A-Za-z0-9_-]{1,100}", session_id
         ):
@@ -42,6 +44,18 @@ class Locomotion:
         self.started = time.monotonic()
         self.deadline = self.started + float(seconds)
         self.until_gift = bool(until_gift)
+        if target_valid_seconds is not None and not 1 <= float(target_valid_seconds) <= float(seconds):
+            raise ValueError("valid-time target must be bounded by the wall-clock limit")
+        self.target_valid_seconds = (float(target_valid_seconds)
+                                     if target_valid_seconds is not None else None)
+
+    @property
+    def stop_reason(self):
+        if self.target_valid_seconds is not None and self.valid_elapsed >= self.target_valid_seconds:
+            return "TARGET_VALID_ONLINE_REACHED"
+        if self.profile and time.monotonic() >= self.deadline:
+            return "MAX_WALL_CLOCK_REACHED"
+        return None
 
     def suspend(self):
         self.last_valid = False
@@ -65,7 +79,7 @@ class Locomotion:
 
     def proposal(self, observation):
         if (not self.profile or self.pending or time.monotonic() < self.next_at
-                or time.monotonic() >= self.deadline
+                or self.stop_reason
                 or not observation.production_ready or not observation.is_fresh()
                 or observation.screen != DSTScreen.IN_WORLD_IDLE):
             return None
@@ -103,6 +117,8 @@ class Locomotion:
             "movement_failures": self.failures,
             "active_elapsed": round(self.valid_elapsed, 3),
             "valid_online_world_elapsed": round(self.valid_elapsed, 3),
+            "target_valid_seconds": self.target_valid_seconds,
+            "stop_reason": self.stop_reason,
             "elapsed_seconds": round(max(0.0, time.monotonic() - self.started), 3)
             if self.profile else 0.0,
         }

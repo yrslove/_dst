@@ -132,7 +132,9 @@ class WorkerBridge:
                 elif command == "SET_MODE":
                     payload = item.get("payload", {})
                     values = {"mode": payload.get("mode", "DISABLED")}
-                    for key in ("locomotion_profile", "experiment_session_id", "experiment_seconds", "experiment_until_gift"):
+                    for key in ("locomotion_profile", "experiment_session_id", "experiment_seconds",
+                                "experiment_until_gift", "experiment_target_valid_seconds",
+                                "experiment_continue_after_claim"):
                         if key in payload:
                             values[key] = payload[key]
                     self._host.command(command, command_id=command_id, **values)

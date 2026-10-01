@@ -43,7 +43,7 @@ from runtime_agent.gameworker.replay import (
     ReplayRunner,
     ReplayTimingMode,
 )
-from runtime_agent.gameworker.reward_evidence import SessionClaimEvidence
+from runtime_agent.gameworker.reward_evidence import SessionClaimEvidence, durable_json
 from runtime_agent.gameworker.state import WorkerState, WorkerStateMachine
 from runtime_agent.gameworker.vision import AssetRegistry, VisionDetector
 
@@ -116,6 +116,9 @@ class DSTGameWorker:
         self._recording_error: str | None = None
         self._auto_resume_pending = False
         self._replay_exhausted = False
+        self._experiment_evidence_root = None
+        self._experiment_continue_after_claim = False
+        self._experiment_gift_sequence = 0
 
     @staticmethod
     def _release_partial(
@@ -455,20 +458,29 @@ class DSTGameWorker:
             self.resume()
         self._sync_action_mode()
 
-    def configure_experiment(self, profile, session_id, seconds, until_gift=False):
+    def configure_experiment(self, profile, session_id, seconds, until_gift=False,
+                             target_valid_seconds=None, continue_after_claim=False):
         if self.mode != WorkerMode.DISABLED:
             raise ValueError("disable the worker before configuring an experiment")
-        self.locomotion.configure(profile, session_id, seconds, until_gift)
+        self.locomotion.configure(profile, session_id, seconds, until_gift, target_valid_seconds)
         self.activity = ActivityController(locomotion=self.locomotion)
         if not self.context:
             raise ValueError("experiment requires a prepared runtime context")
+        self._experiment_evidence_root = self.config.diagnostic_directory.parent / "experiments" / session_id
+        self._experiment_continue_after_claim = bool(continue_after_claim)
+        self._experiment_gift_sequence = 1
+        self.claim_evidence = self._new_gift_claim_evidence()
+        self.diagnostics.directory = self._experiment_evidence_root / "diagnostics"
+        frame_id = self._last_observation.get("source_frame_id")
+        if frame_id:
+            self.diagnostics.save_frame(frame_id, self._experiment_evidence_root / "run-start.png")
+
+    def _new_gift_claim_evidence(self):
         identity = {"account_id": self.context.account_id, "runtime_id": self.context.runtime_id,
-                    "experiment_session_id": session_id}
-        evidence = self.config.diagnostic_directory.parent / "experiments" / session_id
-        self.claim_evidence = SessionClaimEvidence(
-            Path.home() / ".klei/DoNotStarveTogether", evidence, identity
-        )
-        self.diagnostics.directory = evidence / "diagnostics"
+                    "experiment_session_id": self.locomotion.session_id,
+                    "gift_sequence_in_run": self._experiment_gift_sequence}
+        evidence = self._experiment_evidence_root / "gifts" / f"gift-{self._experiment_gift_sequence:04d}"
+        return SessionClaimEvidence(Path.home() / ".klei/DoNotStarveTogether", evidence, identity)
 
     def set_mode(self, mode: WorkerMode) -> WorkerReport:
         if mode != WorkerMode.ACTIVE:
@@ -692,14 +704,26 @@ class DSTGameWorker:
                 )
                 if receipt:
                     if isinstance(self.claim_evidence, SessionClaimEvidence):
+                        receipt = {**receipt, "gift_sequence_in_run": self._experiment_gift_sequence,
+                                   "receipt_path": str(self.claim_evidence.provider.result_path)}
+                        durable_json(self.claim_evidence.provider.result_path, receipt)
                         self.diagnostics.save_frame(
                             receipt["evidence_frame_id"], self.claim_evidence.evidence / "completion.png"
                         )
                     from runtime_agent.gameworker.activity import InWorldGiftState
                     self.activity.inworld_gift_confirmation = receipt
                     self.activity.inworld_gift_state = InWorldGiftState.CONFIRMED
+                    self.activity.counters["gift_claimed"] += 1
+                    if self._experiment_continue_after_claim:
+                        self._experiment_gift_sequence += 1
+                        self.claim_evidence = self._new_gift_claim_evidence()
+                        self.activity.begin_next_gift_cycle(self.claim_evidence)
                     if self.locomotion.until_gift:
                         return self.set_mode(WorkerMode.DISABLED)
+            stop_reason = self.locomotion.stop_reason
+            if stop_reason:
+                self._error_code = stop_reason
+                return self.set_mode(WorkerMode.DISABLED)
             self._would_execute = (
                 outcome.proposal.action if outcome.proposal is not None else None
             )
@@ -1176,6 +1200,7 @@ class DSTGameWorker:
                 "behavior_counters": dict(self.activity.counters),
                 "daily_gift_state": self.activity.daily_gift_state.value,
                 "locomotion": self.locomotion.telemetry(),
+                "gift_sequence_in_run": self._experiment_gift_sequence - 1,
                 "item_service": self.claim_evidence.health
                 if isinstance(self.claim_evidence, SessionClaimEvidence) else None,
                 "inworld_gift_state": self.activity.inworld_gift_state.value,
