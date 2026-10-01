@@ -29,7 +29,7 @@ class Channel:
             raise RuntimeError("xpra version requires protocol revalidation")
         self.encode, self.decode = bencode, bdecode
         self.socket = socket.socket(socket.AF_UNIX)
-        self.socket.settimeout(1.5)
+        self.socket.settimeout(5.0)
         self.socket.connect(path)
         self.send(["hello", {
             "version": __version__, "uuid": f"dst-input-{os.getpid()}",
@@ -38,8 +38,10 @@ class Channel:
             "bencode": True, "encodings": ["rgb24"], "network-state": False,
         }])
         self.server_readonly, self.server_pointer = _server_input_capabilities(
-            self.receive_until(b"hello")
+            self.receive_until(b"hello", timeout=5.0)
         )
+        # Keep each input ACK on the existing short bounded deadline.
+        self.socket.settimeout(1.5)
 
     def send(self, packet):
         data = self.encode(packet)
@@ -54,8 +56,8 @@ class Channel:
             chunks.extend(part)
         return bytes(chunks)
 
-    def receive_until(self, kind):
-        deadline = time.monotonic() + 1.5
+    def receive_until(self, kind, *, timeout=1.5):
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             magic, flags, compression, index, size = struct.unpack("!BBBBI", self.read(8))
             if (magic, flags, compression, index) != (80, 0, 0, 0) or size > 1024 * 1024:
