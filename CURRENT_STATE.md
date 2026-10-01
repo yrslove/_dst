@@ -1,5 +1,64 @@
 # Current State
 
+## Active checkpoint — dual A/B preparation (2026-10-01)
+
+User-authorized current goal is two isolated online DST sessions, CONTROL versus
+HIGH_ACTIVITY locomotion, bounded dual smoke, and a future experiment entrypoint.
+Do not launch the full weekly-gift experiment automatically. This overrides older
+single-account-only priorities and the historical "no multi-worker" restriction below.
+Do not redo completed preparation on resume.
+
+Current stopping point: **STEAM_GUARD_REQUIRED** for Account 2 (`forge_6`). Steam
+visibly requests a five-character email code from its `list.ru` address. Keep the
+existing login challenge; resume with that code, not a new installation/login.
+
+Completed in this turn:
+- Guest storage already expanded: `/dev/sda` 128 GiB, `/dev/sda1` 127 GiB, ext4 root
+  123 GiB; 66 GiB available at confirmation. Incus `default` dir pool CREATED.
+  No resize was necessary. Storage audit is complete; do not repeat it this stage.
+- Account 1: `dst-000001-g1`, runtime 1, DISPLAY `:99`; fresh healthy Steam/DST
+  GAME_READY heartbeats. Canonical VERIFY reconciled inherited STALE without restart.
+  A newly available daily login gift was claimed by production GameWorker;
+  durable GameplayTask 7 is SUCCEEDED / DAILY_GIFT_CONFIRMED, timestamp
+  `2026-10-01T00:18:27.798283Z`. Receipt export and screenshot evidence are under
+  `.data/dual-ab-preparation/` (ignored). Current T0_A1 for the newest confirmed
+  claim is that timestamp; its kind is DAILY, not proof of a new weekly/playtime
+  gift. The prior in-world confirmed timestamp `2026-09-30T15:09:18.153670Z` and
+  original receipt remain preserved. Account 1 re-entered its existing prepared
+  online world through production GameWorker and then was returned to DISABLED.
+  Its latest world gift observation is gray IN_WORLD_GIFT_PENDING; a current
+  authoritative zero-count baseline is NOT established. HealthCheck returned OK.
+- Account 2: canonical REBUILD_RUNTIME job 111 created **runtime 4**, generation 2,
+  **dst-000002-g2** from dst-base-v1; SETUP job 114 succeeded. Runtime 2/g1 remains
+  historical. Account 3 / dst-000003-g1 was untouched. Control Plane Node 1 slot
+  limit changed from 1 to 2 for the authorized two-session smoke.
+- Account 2 uses DISPLAY `:100` in its guest agent.env. This generated override must
+  be made durable through canonical per-runtime configuration before final readiness.
+  Cold deployment upgraded the old template code; current guest revision is
+  `696f765595ee78e4b346c62cb2c52de9ddc65832`. Installed missing python3-pil,
+  apparmor and dbus-x11. Reused Account 1's `/etc/apparmor.d/dst-steam-bwrap`
+  profile without weakening host/Incus isolation. Steam installed and updated.
+  Credentials were decrypted in memory and entered through canonical xpra input;
+  no credentials were recorded in files or Git. Steam is waiting on its email Guard
+  screen, GameWorker DISABLED, DST not started. The readiness-aware launcher now
+  preserves a running unauthenticated client instead of killing it after 90 seconds.
+
+Not yet established: Account 2 authentication completion, installed DST/world,
+GAME_READY, item-service/gift state, T0_A2; A2-alone measurements, simultaneous
+GAME_READY, input isolation, dual capacity, locomotion profiles/counters, independent
+future claim provider wiring, and experiment entrypoint. None is claimed proven.
+
+Changes: scripts/deploy_runtime.py adds fail-closed --cold deployment into an idle
+existing guest and installs modules missing from old base images; launchers.py
+preserves interactive login; xpra_bridge.py adds US-layout authentication keys to the
+same canonical input channel. Focused deployment/launcher/xpra tests passed (33
+combined), Ruff passed, git diff --check passed. Commits 83f926b, 110168a, ca5677e,
+696f765; source push completed below / in the final report.
+
+Resume: receive Guard email code, inject through the same canonical input, finish
+Account 2 alone, then continue the requested dual preparation without repeating
+storage, provisioning, Steam installation, or the Account 1 claim.
+
 ## Current business goal
 
 **One-account target:**
