@@ -35,3 +35,16 @@ def test_experiment_requires_session_identity_and_rejects_unsafe_path(client):
         "experiment_session_id": "../../other-account",
     })
     assert response.status_code == 422
+
+
+def test_schedule_pause_preserves_enabled_runtime_and_is_durable(client, app):
+    from app.models import Account, AccountScheduleState
+    account = create_account(client, 'dual-schedule-pause')
+    assert app.state.executor.execute_next()
+    result = client.post(f"/api/v1/accounts/{account['id']}/schedule/pause", json={})
+    assert result.status_code == 200
+    assert result.json()['active_jobs'] == []
+    with app.state.db.session() as session:
+        assert session.get(AccountScheduleState, account['id']).paused
+        assert session.get(Account, account['id']).enabled
+        assert session.get(RuntimeInstance, account['runtime_id']).active

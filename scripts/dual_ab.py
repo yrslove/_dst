@@ -65,6 +65,21 @@ class API:
             raise RuntimeError(f"Account {account} requires canonical runtime readiness/verification")
         return state
 
+    def reserve(self, accounts):
+        # Persistently pause the existing scheduler before claiming worker input.
+        # Do not resume it on exit: that would silently start another long run.
+        remaining = set(accounts)
+        deadline = time.monotonic() + 900
+        while remaining:
+            for account in tuple(remaining):
+                state = self.request("POST", f"accounts/{account}/schedule/pause", {})
+                if not state["active_jobs"]:
+                    remaining.remove(account)
+            if remaining:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("existing account jobs did not drain; no experiment input started")
+                time.sleep(2)
+
 
 def worker_report(status):
     return status.get("details", {}).get("diagnostics", {}).get("worker", {})
@@ -92,6 +107,7 @@ def main(argv=None):
     identities, finished, final = {}, set(), {}
     streams = {}
     try:
+        api.reserve(args.accounts)
         for account in args.accounts:
             runtime = api.start(account)
             api.command(account, "DISABLED")

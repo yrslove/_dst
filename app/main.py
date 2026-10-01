@@ -76,7 +76,7 @@ from app.services.views import ViewService, ViewSessionNotFound, ViewSessionNotR
 from app.services.watchdog import Watchdog
 from app.services.workers import WorkerControlError, WorkerControlService
 
-EXPECTED_SCHEMA_REVISION = "0011_account_schedule_state"
+EXPECTED_SCHEMA_REVISION = "0012_schedule_pause"
 logger = logging.getLogger("control_plane")
 
 
@@ -627,6 +627,14 @@ def create_app(settings: Settings | None = None, *, provider=None) -> FastAPI:
     def list_jobs(request: Request, limit: int = 100, offset: int = 0):
         require_admin(request)
         return jobs.list(min(max(limit, 1), 100), max(offset, 0))
+
+    @app.post("/api/v1/accounts/{account_id}/schedule/pause")
+    def pause_account_schedule(account_id: int, request: Request):
+        require_admin(request, csrf=True)
+        try:
+            return account_scheduler.pause(account_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
 
     @app.get("/api/v1/jobs/{job_id}")
     def get_job(job_id: int, request: Request):

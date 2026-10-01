@@ -474,3 +474,28 @@ def test_unsynced_heartbeat_receipt_only_increases_lower_bound(tmp_path):
         state = session.get(AccountScheduleState, account_id)
         assert state.weekly_collected is None
         assert state.confirmed_claims_current_observation == 2
+
+
+def test_pause_cancels_queued_automatic_job_without_stopping_runtime(tmp_path):
+    db, scheduler, _, _, account_id, runtime_id, _ = _database(tmp_path)
+    _update_state(db, account_id, weekly_state="SYNCED", weekly_collected=6, daily_status="DONE")
+    intent = scheduler.schedule_next(account_id, NOW, SLOT)
+    assert intent is not None
+    assert scheduler.pause(account_id) == {"account_id": account_id, "paused": True, "active_jobs": []}
+    assert _job(db, account_id).status == JobStatus.CANCELLED
+    assert scheduler.schedule_next(account_id, NOW + timedelta(days=1), SLOT) is None
+    with db.session() as session:
+        assert session.get(Account, account_id).enabled
+        assert session.get(RuntimeInstance, runtime_id).active
+
+
+def test_pause_requires_existing_executor_to_drain_before_manual_ownership(tmp_path):
+    db, scheduler, _, _, account_id, _, _ = _database(tmp_path)
+    _update_state(db, account_id, weekly_state="SYNCED", weekly_collected=6, daily_status="DONE")
+    assert scheduler.schedule_next(account_id, NOW, SLOT)
+    job = _job(db, account_id)
+    with db.transaction() as session:
+        session.get(Job, job.id).status = JobStatus.RUNNING
+    assert scheduler.pause(account_id)["active_jobs"] == [job.id]
+    assert scheduler.schedule_next(account_id, NOW, SLOT) is None
+    assert _job(db, account_id).status == JobStatus.RUNNING

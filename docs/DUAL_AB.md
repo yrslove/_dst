@@ -49,3 +49,17 @@ Receipts are flushed/fsynced atomically. A completed account stops its own input
 the other account continues. Evidence lives under each guest's
 `/home/dst/.local/state/dst-runtime/experiments/<session-id>` and host telemetry
 under `.data/dual-ab/<run-id>/account-<id>/<session-id>`; these paths are not committed.
+
+Before starting profiles, the launcher persistently pauses the existing automatic
+account scheduler through `POST /api/v1/accounts/<id>/schedule/pause` and waits for
+existing jobs to drain. Queued automatic jobs are cancelled; running jobs retain
+ownership until completion. The pause does not stop containers or clients and is
+not automatically removed on exit, preventing an unexpected subsequent long run.
+
+Fresh verified gift HUD evidence can arm the native verifier when the inventory
+cache lags behind the server. Native ACKs and received-screen evidence are durable
+before receipt closure. If a managed client reload interrupts that closure, the
+same session can finish from its archived native ACK, prior real received-screen
+evidence, and two distinct fresh world observations, without opening the item again.
+Diagnostic PNGs remain lossless and use fast compression to avoid stalling the
+worker's fresh observations during recovery.

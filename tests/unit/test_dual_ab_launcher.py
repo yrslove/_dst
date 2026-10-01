@@ -10,6 +10,8 @@ def test_one_confirmed_gift_does_not_stop_other_session(monkeypatch, tmp_path):
             self.client = SimpleNamespace(close=lambda: None)
         def start(self, account):
             return {"runtime_id": account, "external_id": f"container-{account}"}
+        def reserve(self, accounts):
+            assert accounts == [1, 2]
         def command(self, account, mode, **values):
             calls.append((account, mode))
             if values:
@@ -32,3 +34,15 @@ def test_one_confirmed_gift_does_not_stop_other_session(monkeypatch, tmp_path):
     # The first post-start disable belongs to A; B reaches its own later receipt.
     assert calls[:5] == [(1, "DISABLED"), (2, "DISABLED"), (1, "ACTIVE"), (2, "ACTIVE"), (1, "DISABLED")]
     assert len(list(tmp_path.rglob("claim.json"))) == 2
+
+
+def test_launcher_drains_both_accounts_before_starting_input(monkeypatch):
+    api = object.__new__(dual_ab.API)
+    calls = []
+    def request(method, path, data):
+        calls.append(path)
+        return {"active_jobs": [42] if path.endswith('1/schedule/pause') and calls.count(path) == 1 else []}
+    api.request = request
+    monkeypatch.setattr(dual_ab.time, 'sleep', lambda _seconds: None)
+    api.reserve([1, 2])
+    assert calls == ['accounts/1/schedule/pause', 'accounts/2/schedule/pause', 'accounts/1/schedule/pause']

@@ -50,7 +50,7 @@ class WorkerDiagnostics:
             if record is None:
                 return False
             destination.parent.mkdir(parents=True, exist_ok=True)
-            record.frame.image().save(destination)
+            record.frame.image().save(destination, compress_level=1)
             return True
 
     def observe(self, frame, observation, *, assets, calibration) -> None:
@@ -141,7 +141,9 @@ class WorkerDiagnostics:
             for index, item in enumerate(records):
                 image = item.frame.image()
                 filename = f"{index:02d}-{item.frame.sequence:08d}.png"
-                image.save(frame_dir / filename, format="PNG", optimize=True)
+                # Evidence is lossless, but encoding must not stall fresh
+                # observations or command ACKs while the worker lock is held.
+                image.save(frame_dir / filename, format="PNG", compress_level=1)
                 entries.append(
                     {
                         "file": f"frames/{filename}",
@@ -162,7 +164,7 @@ class WorkerDiagnostics:
             for detector_id, asset in assets.items():
                 bounds = Viewport(*viewport).region(asset.expected_region)
                 crop = image.crop(bounds)
-                crop.save(crop_dir / f"{detector_id}.png", format="PNG", optimize=True)
+                crop.save(crop_dir / f"{detector_id}.png", format="PNG", compress_level=1)
             detections = failure.observation.get("detections", [])
             thresholds = {
                 detector_id: asset.threshold for detector_id, asset in assets.items()

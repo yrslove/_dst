@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -574,6 +575,7 @@ class AccountScheduleState(Base, TimestampMixin):
     """Durable reward cadence state consumed by the orchestration scheduler."""
 
     __tablename__ = "account_schedule_states"
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     __table_args__ = (
         CheckConstraint(
             "daily_status IN ('UNKNOWN','PENDING','DONE')",

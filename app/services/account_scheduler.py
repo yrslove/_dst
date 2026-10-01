@@ -86,7 +86,7 @@ class AccountScheduler:
             if not self.db.is_sqlite:
                 statement = statement.with_for_update()
             row = session.scalar(statement)
-            if row is None:
+            if row is None or row.paused:
                 return None
             account = session.get(Account, account_id)
             if account is None or not account.enabled or account.status not in {
@@ -230,6 +230,33 @@ class AccountScheduler:
             if intent is not None:
                 scheduled += 1
         return scheduled
+
+    def pause(self, account_id: int) -> dict:
+        """Pause future automatic work; drain existing executors before manual input."""
+        with self.db.transaction(immediate=True) as session:
+            statement = select(AccountScheduleState).where(AccountScheduleState.account_id == account_id)
+            if not self.db.is_sqlite:
+                statement = statement.with_for_update()
+            row = session.scalar(statement)
+            if row is None:
+                raise ValueError("account schedule not found")
+            row.paused = True
+            jobs = list(session.scalars(select(Job).where(
+                Job.account_id == account_id,
+                Job.status.in_(list(ACTIVE_JOB_STATUSES)),
+            )))
+            for job in jobs:
+                if job.status in {JobStatus.PENDING, JobStatus.RETRY} and job.idempotency_key == row.active_job_key:
+                    job.status = JobStatus.CANCELLED
+                    job.completed_at = utcnow()
+                    task_id = job.payload.get("gameplay_task_id")
+                    task = session.get(GameplayTask, task_id) if task_id else None
+                    if task is not None:
+                        task.status = GameplayTaskStatus.CANCELLED
+                        task.completed_at = task.updated_at = job.completed_at
+                    row.active_job_key = row.active_job_type = None
+            return {"account_id": account_id, "paused": True,
+                    "active_jobs": [job.id for job in jobs if job.status in ACTIVE_JOB_STATUSES]}
 
     def complete(
         self,
