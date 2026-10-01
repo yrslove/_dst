@@ -912,3 +912,19 @@ def test_noop_alias_preserves_disabled_wire_value(monkeypatch):
 
     assert config.mode is WorkerMode.DISABLED
     assert config.mode.value == "DISABLED"
+
+
+def test_noop_game_ready_ack_with_autostart_disabled():
+    commands, reports, acknowledgements = FakeQueue(), FakeQueue(), FakeQueue()
+    thread = threading.Thread(target=_worker_main, args=(
+        WorkerConfig(plugin="noop", autostart=False), context(), 9,
+        commands, reports, acknowledgements,
+    ))
+    thread.start()
+    try:
+        commands.put_nowait(WorkerIPCCommand(9, "GAME_READY", 51))
+        assert acknowledgements.get(timeout=2).result == "OK"
+    finally:
+        commands.put_nowait(WorkerIPCCommand(9, "STOP", 52))
+        thread.join(timeout=2)
+    assert not thread.is_alive()

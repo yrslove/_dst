@@ -272,7 +272,7 @@ def _worker_main(
                 with worker_lock:
                     if command == WorkerCommandName.GAME_READY:
                         report = worker.on_game_ready(current_context)
-                        if not config.autostart and worker.mode != WorkerMode.ACTIVE:
+                        if not config.autostart and report.mode != WorkerMode.ACTIVE:
                             report = worker.pause()
                         game_ready.set()
                     elif command == WorkerCommandName.GAME_LOST:
