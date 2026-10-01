@@ -216,6 +216,7 @@ class ActivityController:
         self._gift_icon_click_attempts = 0
         self._gift_station_approach_attempted = False
         self._gift_station_approach_step = 0
+        self._gift_station_crafting_opened = False
         self._reward_open_source_sequence: int | None = None
         self._last_gift_observation_sequence = 0
         self._last_confirmed_gift_sequence = 0
@@ -404,6 +405,19 @@ class ActivityController:
         if (
             self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_IDLE
+            and self.inworld_gift_state == InWorldGiftState.PENDING_STATION
+            and self._gift_station_approach_step >= 4
+            and not self._gift_station_crafting_opened
+            and self.gift_claim_ready
+        ):
+            self._gift_station_crafting_opened = True
+            return ActionProposal(
+                ActionName.OPEN_CRAFTING_MENU,
+                reason="open the existing crafting menu once to enable the prepared gift station",
+            )
+        if (
+            self.production_actions_enabled
+            and observation.screen == DSTScreen.IN_WORLD_IDLE
             and icon is not None
             and icon.detected
             and icon.verified
@@ -414,6 +428,7 @@ class ActivityController:
                 or (
                     dict(icon.metadata).get("availability") == "IN_WORLD_GIFT_PENDING"
                     and self._gift_station_approach_step >= 4
+                    and self._gift_station_crafting_opened
                 )
             )
             and self.gift_claim_ready
@@ -1065,6 +1080,8 @@ class ActivityController:
             self._awaiting_reward_transition = False
             if result.status == ActionStatus.SUCCEEDED:
                 self.counters["verified_actions"] += 1
+                if self.inworld_gift_state == InWorldGiftState.PENDING_STATION:
+                    self._gift_station_crafting_opened = True
             else:
                 self.intervention_required = True
             self._record(

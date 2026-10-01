@@ -2157,6 +2157,17 @@ def test_pending_station_gift_clicks_only_after_bounded_approach():
     policy.state = DSTScreen.IN_WORLD_IDLE
     policy._candidate = DSTScreen.IN_WORLD_IDLE
     policy._candidate_frames = 1
+    menu = policy.propose(before_click)
+    assert menu.action == ActionName.OPEN_CRAFTING_MENU
+    policy.on_verified(before_click, ActionResult(
+        "crafting-open", ActionName.OPEN_CRAFTING_MENU, ActionStatus.SUCCEEDED,
+        .2, 1, 1, 1, "fresh verified in-world UI change",
+    ))
+    policy.state = DSTScreen.IN_WORLD_IDLE
+    policy._candidate = DSTScreen.IN_WORLD_IDLE
+    policy._candidate_frames = 1
+    before_click = replace(observation, source_sequence=4,
+                           source_frame_id="pending-station-claim-click-2")
     proposal = policy.propose(before_click)
     assert proposal.action == ActionName.CLICK_GIFT_ICON
     assert action_precondition_error(proposal.action, before_click) is None
