@@ -2039,3 +2039,22 @@ def test_live_post_claim_world_has_no_gift_popup():
     assert observation.screen_confidence >= .94
     assert not any(d.detected for d in observation.detections
                    if d.kind in {"inworld_gift_received_title", "inworld_gift_use_later"})
+
+
+def test_managed_gift_detection_is_saved_before_a_claim_proposal():
+    observation = analyze_image(
+        Image.open(ASSETS / 'samples/gift_icon_active_in_world_live.png').convert('RGB'),
+        'managed-before-claim', 1, profile_id='dst-1280x720-linux-v1',
+    )
+    saved = []
+    class Evidence:
+        def observe(self, observation):
+            saved.append(observation.source_frame_id)
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    policy.claim_evidence = Evidence()
+    policy.propose(observation)
+    next_frame = replace(observation, source_frame_id='managed-before-claim-2', source_sequence=2)
+    proposal = policy.propose(next_frame)
+    assert proposal.action == ActionName.CLICK_GIFT_ICON
+    assert saved[-1] == next_frame.source_frame_id

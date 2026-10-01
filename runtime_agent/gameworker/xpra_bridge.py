@@ -185,6 +185,9 @@ def _server_argv(display, directory):
         # ownership ends. A short idle timer can kill the bridge during an
         # intentional worker pause, leaving a stale driver for its next action.
         "--server-idle-timeout=0",
+        # This private synchronous client uses an ACK barrier per operation.
+        # It does not run an asynchronous ping loop while CONTROL is idle.
+        "--pings=0",
     ]
 
 

@@ -40,7 +40,7 @@ class SessionClaimEvidence:
 
     @property
     def ready(self):
-        return self.provider is not None
+        return self.provider is not None and self.health.get("state") == "OK"
 
     def before_tick(self):
         paths = list(self.user_root.glob("*/client_save/inventory_cache_prod"))

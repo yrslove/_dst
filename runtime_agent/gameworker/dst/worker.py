@@ -656,6 +656,7 @@ class DSTGameWorker:
             if isinstance(self.claim_evidence, SessionClaimEvidence):
                 self.claim_evidence.before_tick()
                 self.activity.gift_claim_ready = self.claim_evidence.ready
+                self.activity.claim_evidence = self.claim_evidence
             outcome = self.pipeline.tick()
             observation = outcome.observation
             if observation is not None:

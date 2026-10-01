@@ -178,6 +178,7 @@ class ActivityController:
         self.validation_movement_enabled = validation_movement_enabled
         self.production_actions_enabled = False
         self.gift_claim_ready = True
+        self.claim_evidence = None
         self._production_world_entry_action_id = None
         self.locomotion = locomotion
         self._reward_next_attempts = 0
@@ -270,6 +271,8 @@ class ActivityController:
         logger.info("dst_behavior_decision %s", json.dumps(decision, sort_keys=True))
 
     def propose(self, observation: GameObservation) -> ActionProposal | None:
+        if self.claim_evidence is not None:
+            self.claim_evidence.observe(observation)
         if not observation.production_ready:
             self._validation_world_frames = 0
             self._validation_last_world_sequence = None

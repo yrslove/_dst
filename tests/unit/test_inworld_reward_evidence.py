@@ -137,3 +137,21 @@ def test_recorded_close_verification_can_resume_without_replaying_input(tmp_path
 def test_replay_wrong_modal_or_subsequent_input_cannot_resume_receipt(tmp_path, kwargs):
     with pytest.raises(ValueError):
         evidence(tmp_path).resume_recording(recording(tmp_path, **kwargs))
+
+
+def test_armed_claim_stops_new_input_when_native_service_becomes_unhealthy(tmp_path):
+    cache = tmp_path / 'account/client_save/inventory_cache_prod'
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({'Error': False, 'UserID': 'KU_1', 'Items': [
+        {'ItemID': 7, 'ItemType': 'TEST_ITEM', 'Context': 3},
+    ]}))
+    provider = SessionClaimEvidence(tmp_path, tmp_path / 'evidence', {
+        'account_id': 1, 'runtime_id': 1, 'experiment_session_id': 'native-service-loss',
+    })
+    provider.before_tick()
+    assert provider.ready
+    original = provider.provider
+    cache.write_text(json.dumps({'Error': True}))
+    provider.before_tick()
+    assert not provider.ready
+    assert provider.provider is original

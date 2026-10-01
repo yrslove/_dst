@@ -83,6 +83,7 @@ def test_console_key_packets_propagate_modifier_state():
 def test_private_server_does_not_expire_during_a_paused_worker():
     argv = _server_argv(":99", "/tmp/dst-input-test")
     assert "--server-idle-timeout=0" in argv
+    assert "--pings=0" in argv
     assert "--debug=mouse" in argv
     assert "--log-file=/tmp/dst-input-test/xpra.log" in argv
     assert "--readonly=no" in argv
