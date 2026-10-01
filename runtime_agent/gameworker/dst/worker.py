@@ -806,7 +806,9 @@ class DSTGameWorker:
                     f"perception {outcome.status.lower()}",
                 )
             return self.status()
-        except CaptureError:
+        except CaptureError as exc:
+            logger.warning("worker capture failed runtime_id=%s failure=%s",
+                           context.runtime_id, exc.failure, exc_info=True)
             self._fail("WORKER_CAPTURE_FAILED")
         except InputError:
             self._fail("WORKER_INPUT_FAILED")
