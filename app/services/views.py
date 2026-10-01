@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -16,7 +17,7 @@ from app.models import (
 )
 from app.providers.base import RuntimeDescriptor
 from app.providers.view import RuntimeViewProvider, ViewStatus, ViewUnavailable
-from app.runtime.display import DisplayEnvironment
+from app.runtime.display import DisplayEnvironment, account_display
 from app.services.execution_lock import execution_lock
 from app.services.records import add_audit
 from app.services.security import ensure_utc, generate_token, hash_token, token_matches
@@ -118,7 +119,10 @@ class ViewService:
     ) -> dict:
         access_token = generate_token()
         expires_at = utcnow() + timedelta(seconds=self.ttl_seconds)
-        reserved_backend_id = self.provider.reserve_session(descriptor, self.display)
+        display = replace(
+            self.display, display=account_display(self.display.display, account_id)
+        )
+        reserved_backend_id = self.provider.reserve_session(descriptor, display)
         superseded: list[tuple[int, str | None]] = []
         with self.db.transaction(immediate=True) as session:
             previous = list(
@@ -210,10 +214,10 @@ class ViewService:
                     "worker pause command could not be queued"
                 ) from exc
         try:
-            self.provider.prepare_runtime(descriptor, self.display)
+            self.provider.prepare_runtime(descriptor, display)
             provider_status = self.provider.create_session(
                 descriptor,
-                self.display,
+                display,
                 backend_session_id=reserved_backend_id,
             )
         except Exception as exc:

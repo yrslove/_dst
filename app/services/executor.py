@@ -44,6 +44,7 @@ from app.providers.base import (
 )
 from app.runtime.bootstrap import RuntimeBootstrapService
 from app.runtime.bootstrap_models import RuntimeAgentConfig
+from app.runtime.display import account_display
 from app.services.account_scheduler import AccountScheduler, VerifiedOutcome
 from app.services.execution_lock import execution_lock
 from app.services.jobs import JobQueue
@@ -329,7 +330,7 @@ class JobExecutor(LongSessionMixin):
             orchestrator_url=self.settings.orchestrator_public_url,
             protocol_version=self.settings.agent_protocol_version,
             heartbeat_interval=5,
-            display=self.settings.runtime_display,
+            display=account_display(self.settings.runtime_display, descriptor.account_id),
             xauthority=self.settings.runtime_xauthority,
             worker_plugin=self.settings.runtime_worker_plugin,
             safe_idle_world=self.settings.runtime_safe_idle_world,

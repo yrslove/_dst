@@ -12,6 +12,17 @@ GRAPHICAL_ENVIRONMENT_KEYS = (
 )
 
 
+def account_display(base: str, account_id: int) -> str:
+    """Stable account display, shared by bootstrap and remote views."""
+    if account_id < 1 or not re.fullmatch(r":[0-9]{1,4}(?:\.[0-9]+)?", base):
+        raise ValueError("invalid account display identity")
+    number, separator, screen = base[1:].partition(".")
+    value = int(number) + account_id - 1
+    if value > 9999:
+        raise ValueError("account display exceeds supported range")
+    return f":{value}" + (separator + screen if separator else "")
+
+
 @dataclass(frozen=True, slots=True)
 class DisplayEnvironment:
     """Canonical graphical-session environment shared by runtime components."""
