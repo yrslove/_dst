@@ -215,8 +215,6 @@ def main() -> int:
                                 if not worker_initialized:
                                     worker.on_game_ready()
                                     worker_initialized = True
-                                    if not settings.worker_config.autostart:
-                                        worker.pause()
                                 worker_report = worker.tick()
                     else:
                         # A Steam restart invalidates the downstream game launch.
