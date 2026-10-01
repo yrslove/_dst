@@ -124,6 +124,22 @@ def key_packet(key, pressed, held_keys=()):
         "p": 33, "n": 57, "r": 27, "e": 26, "h": 43,
         "l": 46, "b": 56,
     }
+    # US-layout keys used for interactive Steam authentication. Characters are
+    # sent through the same private input channel, never clipboard or shell text.
+    codes.update(dict(zip("qwertyuiop", range(24, 34), strict=True)))
+    codes.update(dict(zip("asdfghjkl", range(38, 47), strict=True)))
+    codes.update(dict(zip("zxcvbnm", range(52, 59), strict=True)))
+    codes.update(dict(zip("1234567890", range(10, 20), strict=True)))
+    codes.update({
+        "minus": 20, "equal": 21, "bracketleft": 34, "bracketright": 35,
+        "semicolon": 47, "apostrophe": 48, "backslash": 51,
+        "comma": 59, "period": 60, "slash": 61,
+        "exclam": 10, "at": 11, "numbersign": 12, "dollar": 13,
+        "percent": 14, "asciicircum": 15, "ampersand": 16, "asterisk": 17,
+        "plus": 21, "braceleft": 34, "braceright": 35, "colon": 47,
+        "bar": 51, "less": 59, "greater": 60, "question": 61,
+        "asciitilde": 49,
+    })
     names = {
         "space": "space", "tab": "Tab", "Escape": "Escape",
         "Control_L": "Control_L", "Shift_L": "Shift_L",

@@ -40,7 +40,7 @@ def test_channel_disconnect_is_transport_failure_without_button_retry():
         driver._read(0.1)
 
 
-def test_console_key_packets_cover_only_validation_command_keys():
+def test_key_packets_cover_validation_keys_and_reject_unknown_keys():
     expected = {
         "grave": 49, "Return": 36, "Control_L": 37, "Shift_L": 50,
         "underscore": 20, "parenleft": 18, "parenright": 19,
@@ -52,11 +52,11 @@ def test_console_key_packets_cover_only_validation_command_keys():
         assert key_packet(key, True)[7] == keycode
 
     try:
-        key_packet("q", True)
+        key_packet("F99", True)
     except ValueError as exc:
         assert str(exc) == "unsupported key input"
     else:
-        raise AssertionError("unneeded arbitrary key was accepted")
+        raise AssertionError("unknown key was accepted")
 
 
 def test_console_key_packets_propagate_modifier_state():
@@ -254,3 +254,8 @@ def test_broken_xpra_channel_does_not_retry_ambiguous_button_press(monkeypatch):
         for process in processes:
             os.close(process.stdin_read)
             os.close(process.stdout_write)
+
+
+@pytest.mark.parametrize("key,code", [("q", 24), ("z", 52), ("0", 19), ("at", 11), ("minus", 20)])
+def test_authentication_keys_use_us_layout(key, code):
+    assert key_packet(key, True)[7] == code
