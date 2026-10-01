@@ -2128,3 +2128,39 @@ def test_use_later_label_survives_button_border_changes_and_close_retry_is_bound
     policy.on_verified(second, replace(timeout, action_id='close-2'))
     assert policy.intervention_required
     assert policy.propose(replace(second, source_sequence=4)) is None
+
+
+def test_pending_station_gift_clicks_only_after_bounded_approach():
+    from runtime_agent.gameworker.transitions import action_precondition_error
+    observation = analyze_image(
+        Image.open(ASSETS / "samples/gift_icon_active_in_world_live.png").convert("RGB"),
+        "pending-station-claim", 1, profile_id="dst-1280x720-linux-v1",
+    )
+    detections = tuple(
+        replace(item, metadata=tuple((k, v) for k, v in item.metadata if k != "availability")
+                + (("availability", "IN_WORLD_GIFT_PENDING"),))
+        if item.kind == "gift_icon" else item
+        for item in observation.detections
+    )
+    observation = replace(observation, detections=detections)
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    policy._gift_station_approach_step = 0
+    policy.propose(observation)
+    approach = policy.propose(replace(observation, source_sequence=2,
+                                      source_frame_id="pending-station-approach"))
+    assert approach.action in {ActionName.TURN_RIGHT, ActionName.MOVE_BACKWARD}
+    policy._gift_station_approach_step = 4
+    before_click = replace(observation, source_sequence=3,
+                           source_frame_id="pending-station-claim-click")
+    # Re-arm hysteresis for the next distinct, fresh observation after approach.
+    policy.state = DSTScreen.IN_WORLD_IDLE
+    policy._candidate = DSTScreen.IN_WORLD_IDLE
+    policy._candidate_frames = 1
+    proposal = policy.propose(before_click)
+    assert proposal.action == ActionName.CLICK_GIFT_ICON
+    assert action_precondition_error(proposal.action, before_click) is None
+    point, _ = click_request(proposal.action, before_click)
+    icon = next(item for item in detections if item.kind == "gift_icon")
+    assert icon.bounds.left < point.x < icon.bounds.right
+    assert icon.bounds.top < point.y < icon.bounds.bottom

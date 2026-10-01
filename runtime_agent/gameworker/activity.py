@@ -409,15 +409,23 @@ class ActivityController:
             and icon.verified
             and icon.bounds is not None
             and icon.confidence >= 0.94
-            and dict(icon.metadata).get("availability") == "GIFT_AVAILABLE"
+            and (
+                dict(icon.metadata).get("availability") == "GIFT_AVAILABLE"
+                or (
+                    dict(icon.metadata).get("availability") == "IN_WORLD_GIFT_PENDING"
+                    and self._gift_station_approach_step >= 4
+                )
+            )
             and self.gift_claim_ready
             and self._gift_icon_click_attempts < 2
         ):
             self._gift_icon_click_attempts += 1
-            return ActionProposal(
-                ActionName.CLICK_GIFT_ICON,
-                reason="open the reward UI from the fresh active gift icon",
+            reason = (
+                "open the verified pending in-world gift after the bounded station approach"
+                if dict(icon.metadata).get("availability") == "IN_WORLD_GIFT_PENDING"
+                else "open the reward UI from the fresh active gift icon"
             )
+            return ActionProposal(ActionName.CLICK_GIFT_ICON, reason=reason)
         if (
             self.production_actions_enabled
             and observation.screen == DSTScreen.IN_WORLD_IDLE

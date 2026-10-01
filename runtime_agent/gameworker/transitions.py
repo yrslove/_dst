@@ -227,9 +227,11 @@ def action_precondition_error(
             or not icon.verified
             or icon.bounds is None
             or icon.confidence < contract.confidence
-            or dict(icon.metadata).get("availability") != "GIFT_AVAILABLE"
+            or dict(icon.metadata).get("availability") not in {
+                "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"
+            }
         ):
-            return "fresh active gift detection is unavailable"
+            return "fresh claimable gift detection is unavailable"
     if (
         observation.screen not in contract.source
         or not observation.production_ready
@@ -491,12 +493,14 @@ def click_request(action: ActionName, observation: GameObservation):
                 and item.verified
                 and item.bounds is not None
                 and item.confidence >= contract.confidence
-                and dict(item.metadata).get("availability") == "GIFT_AVAILABLE"
+                and dict(item.metadata).get("availability") in {
+                    "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"
+                }
             ),
             None,
         )
         if detection is None:
-            raise ValueError("fresh active gift detection is unavailable")
+            raise ValueError("fresh claimable gift detection is unavailable")
         bounds = detection.bounds
         assert bounds is not None
         return NormalizedPoint(
