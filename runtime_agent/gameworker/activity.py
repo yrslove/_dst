@@ -154,6 +154,7 @@ class ActivityController:
             {DSTScreen.CHARACTER_LOADOUT, DSTScreen.IN_WORLD_IDLE}
         ),
         ActionName.START_SURVIVOR: frozenset({DSTScreen.IN_WORLD_IDLE}),
+        ActionName.TURN_LEFT: frozenset({DSTScreen.IN_WORLD_IDLE}),
         ActionName.MOVE_FORWARD: frozenset({
             DSTScreen.IN_WORLD_IDLE, DSTScreen.LOADING, DSTScreen.DEAD,
             DSTScreen.WORLD_RESET_PENDING, DSTScreen.MAIN_MENU,
@@ -239,7 +240,7 @@ class ActivityController:
         self.production_actions_enabled = bool(enabled)
 
     def _recoverable_action(self, action):
-        return action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS or (
+        return (action == ActionName.TURN_LEFT and self._gift_station_approach_attempted) or action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS or (
             self.locomotion is not None and self.locomotion.profile
             and action in {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD}
         )
@@ -946,6 +947,7 @@ class ActivityController:
             ActionName.START_SURVIVOR,
             ActionName.MOVE_FORWARD,
             ActionName.MOVE_BACKWARD,
+            ActionName.TURN_LEFT,
             ActionName.CANCEL,
             ActionName.RESUME_WORLD,
             ActionName.PAUSE_WORLD,
