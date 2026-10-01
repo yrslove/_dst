@@ -36,6 +36,7 @@ class SessionClaimEvidence:
         self.user_root, self.evidence, self.identity = user_root, evidence, identity
         self.provider = None
         self.detection = None
+        self.inventory = None
         self.health = {"state": "WAITING_FOR_NATIVE_INVENTORY"}
 
     @property
@@ -54,6 +55,7 @@ class SessionClaimEvidence:
             inventory = json.loads(raw)
             if inventory.get("Error") is not False or not inventory.get("UserID"):
                 raise ValueError("native inventory is not healthy")
+            self.inventory = inventory
             pending = [item for item in inventory["Items"] if item.get("Context") == 3]
             self.health = {"state": "OK", "error": False, "pending_items": len(pending),
                            "cache_updated_at": datetime.fromtimestamp(paths[0].stat().st_mtime, UTC).isoformat()}
@@ -68,17 +70,31 @@ class SessionClaimEvidence:
             self.health = {"state": "NATIVE_INVENTORY_UNAVAILABLE"}
 
     def observe(self, observation):
-        if not self.provider or observation is None:
+        if observation is None:
             return None
         if observation.runtime_id != self.identity["runtime_id"]:
             return None
         if self.detection is None and observation.production_ready and observation.is_fresh():
             icon = next((d for d in observation.detections if d.kind == "gift_icon"), None)
-            if icon and dict(icon.metadata).get("availability") in {"GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"}:
+            if (icon and icon.detected and icon.verified and icon.confidence >= .94
+                    and dict(icon.metadata).get("availability") in {"GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"}
+                    and self.health.get("state") == "OK"):
+                if self.provider is None and self.inventory is not None:
+                    baseline = self.evidence / "inventory-before.json"
+                    durable_json(baseline, self.inventory)
+                    self.provider = InWorldClaimEvidence(
+                        baseline, self.user_root / "client_log.txt", self.evidence / "claim.json"
+                    )
+                    self.provider.user_id = self.inventory["UserID"]
+                if self.provider is not None:
+                    # Live server gift replication can precede the on-disk cache.
+                    # An uncached item still requires a fresh received/closed UI,
+                    # this user's native ACK, and a new item ID after detection.
+                    self.provider.allow_uncached_gift = True
                 self.detection = {**self.identity, "detected_at": observation.timestamp,
                                   "observation": observation.as_dict()}
                 durable_json(self.evidence / "detection.json", self.detection)
-        return self.provider.observe(observation)
+        return self.provider.observe(observation) if self.provider else None
 
     def confirm(self, closed):
         if not self.provider or closed.get("runtime_id") != self.identity["runtime_id"]:
@@ -91,6 +107,7 @@ class InWorldClaimEvidence:
     def __init__(self, inventory_before: Path, client_log: Path, result_path: Path):
         self.client_log = client_log
         self.user_id = None
+        self.allow_uncached_gift = False
         self.result_path = result_path
         raw = inventory_before.read_bytes()
         if len(raw) > 4 * 1024 * 1024:
@@ -102,6 +119,7 @@ class InWorldClaimEvidence:
             item["ItemID"]: item["ItemType"]
             for item in baseline["Items"] if item.get("Context") == 3
         }
+        self.known_item_ids = {item["ItemID"] for item in baseline["Items"]}
         self.started_at = inventory_before.stat().st_mtime
         self.baseline_sha256 = hashlib.sha256(raw).hexdigest()
         self.receipt: dict | None = None
@@ -230,7 +248,8 @@ class InWorldClaimEvidence:
                 ack.get("Error") is False
                 and (self.user_id is None or ack.get("UserID") == self.user_id)
                 and isinstance(item_id, int)
-                and item_id in self.pending
+                and (item_id in self.pending or (self.allow_uncached_gift
+                     and self.user_id is not None and item_id not in self.known_item_ids))
                 and isinstance(modified, (int, float))
                 and self.started_at <= modified <= observed + 60
             ):
@@ -239,7 +258,7 @@ class InWorldClaimEvidence:
                 **closed,
                 "semantic": "IN_WORLD_GIFT_CONFIRMED",
                 "item_id": item_id,
-                "item_type": self.pending[item_id],
+                "item_type": self.pending.get(item_id, ack.get("ItemType")),
                 "backend": {
                     "operation": "SetItemOpened_Complete",
                     "http_status": 200, "error": False, "modified": modified,

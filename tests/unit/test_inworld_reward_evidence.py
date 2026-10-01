@@ -155,3 +155,41 @@ def test_armed_claim_stops_new_input_when_native_service_becomes_unhealthy(tmp_p
     provider.before_tick()
     assert not provider.ready
     assert provider.provider is original
+
+
+def test_live_gift_can_precede_cache_but_cannot_reclaim_known_item(tmp_path):
+    from types import SimpleNamespace
+    cache = tmp_path / 'account/client_save/inventory_cache_prod'
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({'Error': False, 'UserID': 'KU_2', 'Items': [
+        {'ItemID': 7, 'ItemType': 'ALREADY_OPENED', 'Context': 0},
+    ]}))
+    provider = SessionClaimEvidence(tmp_path, tmp_path / 'evidence', {
+        'account_id': 2, 'runtime_id': 4, 'experiment_session_id': 'uncached-live-gift',
+    })
+    provider.before_tick()
+    assert not provider.ready
+    obs = SimpleNamespace(runtime_id=4, production_ready=True, is_fresh=lambda: True,
+        timestamp=datetime.now(UTC).isoformat(), as_dict=lambda: {'source_frame_id': 'r4-new'},
+        detections=[SimpleNamespace(kind='gift_icon', detected=True, verified=True,
+            confidence=.99, metadata=(('availability', 'GIFT_AVAILABLE'),))])
+    provider.observe(obs)
+    assert provider.ready
+    assert (provider.evidence / 'detection.json').exists()
+    started = provider.provider.started_at
+    result = {**closed(), 'runtime_id': 4,
+        'received_at': datetime.fromtimestamp(started + 1, UTC).isoformat(),
+        'observed_at': datetime.fromtimestamp(started + 3, UTC).isoformat()}
+    log = tmp_path / 'client_log.txt'
+    ack = {'Error': False, 'ItemID': 7, 'Modified': started + 2, 'UserID': 'KU_2'}
+    log.write_text('[SetItemOpened_Complete Success:200] ' + json.dumps(ack))
+    assert provider.confirm(result) is None
+    ack.update(ItemID=8, UserID='KU_1')
+    log.write_text('[SetItemOpened_Complete Success:200] ' + json.dumps(ack))
+    assert provider.confirm(result) is None
+    ack['UserID'] = 'KU_2'
+    log.write_text('[SetItemOpened_Complete Success:200] ' + json.dumps(ack))
+    receipt = provider.confirm(result)
+    assert receipt['item_id'] == 8
+    assert receipt['experiment_session_id'] == 'uncached-live-gift'
+    assert receipt['detection_timestamp'] == obs.timestamp

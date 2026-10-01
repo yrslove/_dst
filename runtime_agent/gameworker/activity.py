@@ -273,6 +273,7 @@ class ActivityController:
     def propose(self, observation: GameObservation) -> ActionProposal | None:
         if self.claim_evidence is not None:
             self.claim_evidence.observe(observation)
+            self.gift_claim_ready = self.claim_evidence.ready
         if not observation.production_ready:
             self._validation_world_frames = 0
             self._validation_last_world_sequence = None

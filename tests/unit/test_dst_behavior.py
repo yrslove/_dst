@@ -2048,6 +2048,7 @@ def test_managed_gift_detection_is_saved_before_a_claim_proposal():
     )
     saved = []
     class Evidence:
+        ready = True
         def observe(self, observation):
             saved.append(observation.source_frame_id)
     policy = ActivityController()
