@@ -2,95 +2,79 @@
 
 ## Active checkpoint — dual A/B preparation (2026-10-01)
 
-User-authorized current goal is two isolated online DST sessions, CONTROL versus
-HIGH_ACTIVITY locomotion, bounded dual smoke, and a future experiment entrypoint.
-Do not launch the full weekly-gift experiment automatically. This overrides older
-single-account-only priorities and the historical "no multi-worker" restriction below.
-Do not redo completed preparation on resume.
+Current user-authorized goal: prepare two isolated online DST sessions for a bounded
+CONTROL / HIGH_ACTIVITY locomotion smoke and a future weekly-gift experiment.
+Do not launch the multi-hour experiment during preparation. Do not repeat completed
+storage, provisioning, authentication, single-client measurement or input-isolation
+work without regression evidence.
 
-Current active point (2026-10-01 04:00 UTC): both isolated runtimes are running,
-Steam is authenticated and Account 2 has resumed its own online world. No Guard
-code is pending. Do not repeat storage, provisioning, auth, single-client
-measurements or the already proven reciprocal input isolation.
+**LIVE_PROVEN: READY_FOR_DUAL_AB.** Final concurrent 120-second profile run:
+`.data/dual-ab/20261001T041729Z-a12d5bd0/`; final 130-second health monitor:
+`.data/dual-ab-preparation/dual-health-f5fbcba.jsonl`. Both independent sessions
+stayed ONLINE and `GAME_READY` in all 54 samples per account, with no Steam/DST
+process or worker restarts. Maximum heartbeat gap was 10.6 sec. Both returned to
+`DISABLED` and `IN_WORLD_IDLE` when the bounded run ended. The only recovery-failure
+counter was two on A1; actual recoveries/reconnects and movement failures were zero,
+so there was no recovery loop. Each worker had one perception timeout, with no
+perception failure total or persistent loss of GAME_READY.
 
-LIVE_PROVEN: reciprocal input isolation and a 120-second concurrent CONTROL /
-HIGH_ACTIVITY smoke. Evidence: `.data/dual-ab-preparation/isolation/result.json`
-and `.data/dual-ab/20261001T025004Z-d14086c3/`. CONTROL: 2.663 commands/min,
-1.065 moving seconds/min; HIGH_ACTIVITY: 14.222 commands/min, 21.807 moving
-seconds/min. Both clients remained GAME_READY; no OOM or client process restart.
+- A1: runtime 1 `dst-000001-g1`, DISPLAY `:99`, session
+  `a1-r1-7ce9f5c5fd524530bc20f2dfde729fb3`, CONTROL. 3 commands / 82.743 valid
+  world seconds = 2.175 commands/min; 0.8 moving seconds = 0.580 moving sec/min.
+  Current gift HUD is gray `IN_WORLD_GIFT_PENDING`; item service healthy with one
+  pending item. Do not claim it unless fresh authoritative state marks it claimable.
+  Latest durable confirmed claim T0_A1: `2026-10-01T00:18:27.798283Z`.
+- A2: runtime 4 `dst-000002-g2`, DISPLAY `:100`, session
+  `a2-r4-b1fc6e3c91f54109a40f1f1d5da3d19b`, HIGH_ACTIVITY. 13 commands / 90.817
+  valid world seconds = 8.586 commands/min; 19.2 moving seconds = 12.685 moving
+  sec/min (21.9x CONTROL movement time). Item service healthy, cache has zero
+  pending items, in-world gift visual is `GIFT_AVAILABILITY_UNKNOWN`. Its actual
+  claim is complete and must not be repeated: item `399365579731404687`, native
+  `SetItemOpened_Complete` HTTP 200 at T0_A2
+  `2026-10-01T02:57:55.223013Z`. Durable recovery receipt:
+  `.data/dual-ab-preparation/account2-inworld-receipt.json`.
+- Reciprocal canonical GameWorker input-isolation test LIVE_PASS: one bounded
+  movement command per account changed only its own display; the other display
+  stayed unchanged. Evidence/screens are in ignored `.data/dual-ab-preparation/isolation/`.
+- Per-account session IDs, guest evidence folders, screenshots, telemetry streams,
+  item-service state and receipts are separate. Gift detection/claim completion
+  paths operate independently per account; a completed gift for one does not finish
+  the other. No gift was claimed during the final profile smoke.
 
-Automatic AccountScheduler LONG_SESSION jobs were subsequently found competing
-for Account 2 input. Both account schedules are now durably paused. Migration
-0012 and the existing scheduler pause endpoint let the launcher cancel queued
-automatic work and drain running jobs before manual profiles; it leaves schedules
-paused on exit. Control Plane restart caused NODE_OFFLINE/STALE bookkeeping;
-canonical VERIFY jobs 208/209 reconciled this without restarting clients.
+Bounded dual capacity sample (`.data/dual-ab-preparation/dual-capacity-f5fbcba.json`):
+host 11.30 GiB used / 4.26 GiB available, aggregate CPU 77.7%, load 16.82 / 15.75 /
+15.48, CPU PSI some avg10 87.25% / full 0%, memory PSI some 0.41% / full 0.21%,
+swap 67.5 MiB with no swap I/O during the sample. A1 used 6.24 GiB cgroup RAM and
+1.50 CPU cores; A2 5.78 GiB and 1.56 cores. No OOM count changed, no swap thrashing,
+no client stall/restart, and both locomotion profiles worked. CPU PSI is elevated but
+was not a functional capacity blocker in this live run.
 
-A2's new actual in-world native claim is item 399365579731404687,
-SetItemOpened_Complete Success:200 at `2026-10-01T02:57:55.223013Z`. Its real
-received-screen image and original journal ACK are preserved. Do not open it
-again. Its partial session `a2-preparation-claim-20261001` must still finish the
-existing native verifier's recovered receipt from two fresh world observations.
-The earlier daily receipt remains durable with T0 `2026-10-01T01:46:26.925098Z`.
+Guest storage resize was already confirmed after the Azure change: 128 GiB block
+device, about 123 GiB ext4 root, approximately 56 GiB free; Incus `default` pool
+available. Storage work is complete; do not audit again in this stage.
 
-Two concrete recovery defects were isolated: synchronous optimized diagnostic
-PNG compression stalled the worker lock; and the post-gift world detector assumed
-an empty first inventory slot. Fast lossless compression is deployed. The existing
-inventory detector now uses its invariant border, passing real A2 replay with
-occupied slots and no gift banner; install that revision, finish the partial
-receipt, and run the final short dual smoke. Xpra's distribution default Xsession
-launch is disabled so it cannot create a desktop error dialog over DST.
+Both automatic account schedules are durably paused so LONG_SESSION jobs cannot
+compete for experiment input. The canonical launcher pauses them idempotently and
+waits for existing work to drain. This preserves authenticated clients and leaves
+scheduling opt-in. Future explicit full-run entrypoint (not run during preparation):
 
-Latest bounded capacity: host 11.07 GiB used / 4.49 available, CPU 93.25%, CPU PSI
-some 64.64 / full 0, memory PSI some .17 / full 0. Swap 35.83 MiB, no swap-in and
-only 4.9 MiB swap-out over ten seconds, no thrashing/OOM. A: 6.13 GiB RAM / 1.77
-cores, B: 5.57 GiB / 1.86 cores. High CPU alone is not a capacity blocker.
-Do not launch the full weekly experiment during preparation.
+```sh
+.venv/bin/python scripts/dual_ab.py --env-file .data/linux-validation.env --until-gift
+```
 
-Completed in this turn:
-- Guest storage already expanded: `/dev/sda` 128 GiB, `/dev/sda1` 127 GiB, ext4 root
-  123 GiB; 66 GiB available at confirmation. Incus `default` dir pool CREATED.
-  No resize was necessary. Storage audit is complete; do not repeat it this stage.
-- Account 1: `dst-000001-g1`, runtime 1, DISPLAY `:99`; fresh healthy Steam/DST
-  GAME_READY heartbeats. Canonical VERIFY reconciled inherited STALE without restart.
-  A newly available daily login gift was claimed by production GameWorker;
-  durable GameplayTask 7 is SUCCEEDED / DAILY_GIFT_CONFIRMED, timestamp
-  `2026-10-01T00:18:27.798283Z`. Receipt export and screenshot evidence are under
-  `.data/dual-ab-preparation/` (ignored). Current T0_A1 for the newest confirmed
-  claim is that timestamp; its kind is DAILY, not proof of a new weekly/playtime
-  gift. The prior in-world confirmed timestamp `2026-09-30T15:09:18.153670Z` and
-  original receipt remain preserved. Account 1 re-entered its existing prepared
-  online world through production GameWorker and then was returned to DISABLED.
-  Its latest world gift observation is gray IN_WORLD_GIFT_PENDING; a current
-  authoritative zero-count baseline is NOT established. HealthCheck returned OK.
-- Account 2: canonical REBUILD_RUNTIME job 111 created **runtime 4**, generation 2,
-  **dst-000002-g2** from dst-base-v1; SETUP job 114 succeeded. Runtime 2/g1 remains
-  historical. Account 3 / dst-000003-g1 was untouched. Control Plane Node 1 slot
-  limit changed from 1 to 2 for the authorized two-session smoke.
-- Account 2 uses DISPLAY `:100` in its guest agent.env. This generated override must
-  be made durable through canonical per-runtime configuration before final readiness.
-  Cold deployment upgraded the old template code; current guest revision is
-  `696f765595ee78e4b346c62cb2c52de9ddc65832`. Installed missing python3-pil,
-  apparmor and dbus-x11. Reused Account 1's `/etc/apparmor.d/dst-steam-bwrap`
-  profile without weakening host/Incus isolation. Steam installed and updated.
-  Credentials were decrypted in memory and entered through canonical xpra input;
-  no credentials were recorded in files or Git. Steam Guard has since been accepted; see the active checkpoint above. The readiness-aware launcher now
-  preserves a running unauthenticated client instead of killing it after 90 seconds.
+It creates fresh separate session/evidence IDs, runs Account 1 CONTROL and Account 2
+HIGH_ACTIVITY, monitors each gift independently, and requires explicit `--until-gift`;
+its normal default is only a bounded smoke. The earlier Account 2 daily receipt
+`2026-10-01T01:46:26.925098Z` remains durable separately from its later in-world
+claim. Account 3 runtime `dst-000003-g1` was not assigned or changed.
 
-Remaining live validation: updated HUD perception in Account 2, simultaneous
-GAME_READY, input isolation, dual capacity, and locomotion profile intensity.
-Launcher/claim wiring has focused tests; full dual live proof remains pending.
-
-Changes: scripts/deploy_runtime.py adds fail-closed --cold deployment into an idle
-existing guest and installs modules missing from old base images; launchers.py
-preserves interactive login; xpra_bridge.py adds US-layout authentication keys to the
-same canonical input channel. Focused deployment/launcher/xpra tests passed (33
-combined), Ruff passed, git diff --check passed. Commits 83f926b, 110168a, ca5677e,
-696f765; source push completed below / in the final report.
-
-Resume: finish source deployment, restore Account 1, and perform dual isolation
-and bounded locomotion smoke. Do not repeat storage, provisioning, authentication,
-installation, or already-confirmed claims.
+Storage and account prerequisites, individual account health, both profiles, gift
+receipts, and reciprocal input isolation are LIVE_PROVEN. Relevant code checks passed
+before deployment: focused scheduler/API/launcher/worker tests, Xpra input tests (15),
+Ruff, and `git diff --check`. Recent commits include scheduler reservation, robust
+inventory-border perception, failure diagnostics, and bounded Xpra handshake timeout.
+No multi-hour experiment, screenshots, credentials, logs or temporary evidence were
+committed. The current source branch is `main`; changes are ready to push.
 
 ## Current business goal
 
