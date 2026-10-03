@@ -138,9 +138,12 @@ def test_setup_without_fresh_game_readiness_cannot_verify(client, app):
     assert client.post(path + "/setup").status_code == 202
     app.state.executor.execute_next()
     with app.state.db.session() as session:
-        session.add(WorkerStatus(runtime_id=account["runtime_id"], phase="GAME_READY", healthy=True,
-                                 steam_running=True, dst_running=True,
-                                 updated_at=utcnow() - timedelta(hours=1)))
+        worker = session.get(WorkerStatus, account["runtime_id"])
+        worker.phase = "GAME_READY"
+        worker.healthy = True
+        worker.steam_running = True
+        worker.dst_running = True
+        worker.updated_at = utcnow() - timedelta(hours=1)
     job = client.post(path + "/verify").json()["job"]
     app.state.executor.execute_next()
     assert app.state.jobs.get(job["id"]).status == JobStatus.FAILED

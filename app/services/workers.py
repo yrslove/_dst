@@ -65,6 +65,19 @@ class WorkerControlService:
                     or not values.get("experiment_session_id")
                 ):
                     raise WorkerControlError("experiment requires ACTIVE/OBSERVE mode and independent session identity")
+            worker = session.get(WorkerStatus, runtime.id)
+            if worker is None:
+                worker = WorkerStatus(runtime_id=runtime.id, phase="BOOTING")
+                session.add(worker)
+            if command == "PAUSE":
+                worker.desired_worker_state = "MANUAL_PAUSED"
+            elif command in {"RESUME", "SET_MODE"}:
+                mode = values.get("mode", "ACTIVE")
+                worker.desired_worker_state = (
+                    "DISABLED" if mode == "DISABLED" else "ACTIVE_STATIONARY"
+                )
+            elif command == "STOP":
+                worker.desired_worker_state = "DISABLED"
             record = WorkerCommand(
                 runtime_id=runtime.id,
                 command=command,
@@ -119,6 +132,7 @@ class WorkerControlService:
                 "worker_version": worker.worker_version,
                 "worker_config_version": worker.worker_config_version,
                 "worker_mode": worker.worker_mode,
+                "desired_worker_state": worker.desired_worker_state,
                 "worker_state": worker.automation_state,
                 "last_tick_at": worker.last_tick_at.isoformat()
                 if worker.last_tick_at

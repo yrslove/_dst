@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -51,7 +52,17 @@ class RuntimeVerification:
         )
 
 
-def _record_accepted_heartbeat(settings, *, phase: str, healthy: bool) -> None:
+def _record_accepted_heartbeat(
+    settings,
+    *,
+    phase: str,
+    healthy: bool,
+    steam_running: bool,
+    dst_running: bool,
+    process_identities: dict,
+    http_status: int,
+    response: dict,
+) -> None:
     runtime_dir = getattr(settings, "xdg_runtime_dir", None)
     if not runtime_dir:
         return
@@ -64,13 +75,28 @@ def _record_accepted_heartbeat(settings, *, phase: str, healthy: bool) -> None:
         )
     except (OSError, json.JSONDecodeError):
         revision = "UNKNOWN"
+    timestamp = datetime.now(UTC).isoformat()
     payload = {
         "runtime_id": settings.runtime_id,
+        "account_id": settings.account_id,
+        "node_id": settings.node_id,
+        "runtime_generation": settings.runtime_generation,
+        "agent_reported_image_version": settings.runtime_image_version,
         "agent_pid": os.getpid(),
         "revision": revision,
         "timestamp_unix": time.time(),
+        "local_timestamp": timestamp,
         "phase": phase,
         "healthy": healthy,
+        "steam_running": steam_running,
+        "dst_running": dst_running,
+        "process_identities": process_identities,
+        "request_status": http_status,
+        "control_plane_last_seen": response.get("control_plane_last_seen_at"),
+        "control_plane_verified_at": response.get("control_plane_verified_at"),
+        "computed_stale_reason": response.get("computed_stale_reason"),
+        "runtime_verified": response.get("runtime_verified"),
+        "control_plane_image_version": response.get("runtime_image_version"),
     }
     try:
         temporary.write_text(json.dumps(payload) + "\n", encoding="utf-8")
@@ -95,6 +121,11 @@ def send_heartbeat(
 ) -> dict:
     payload = {
         "runtime_id": settings.runtime_id,
+        "account_id": settings.account_id,
+        "node_id": settings.node_id,
+        "runtime_generation": settings.runtime_generation,
+        "runtime_image_version": settings.runtime_image_version,
+        "process_identities": details.get("process_identities", {}),
         "phase": phase,
         "steam_running": steam_running,
         "dst_running": dst_running,
@@ -137,14 +168,17 @@ def send_heartbeat(
         response.raise_for_status()
         value = response.json()
         value = value if isinstance(value, dict) else {"ok": True}
-        logger.info(
-            "runtime_heartbeat_accepted runtime_id=%s phase=%s healthy=%s",
-            settings.runtime_id,
-            phase,
-            healthy,
-        )
         if value.get("ok", True) is not False:
-            _record_accepted_heartbeat(settings, phase=phase, healthy=healthy)
+            _record_accepted_heartbeat(
+                settings,
+                phase=phase,
+                healthy=healthy,
+                steam_running=steam_running,
+                dst_running=dst_running,
+                process_identities=payload["process_identities"],
+                http_status=response.status_code,
+                response=value,
+            )
         if results:
             logger.info(
                 "worker_ack_control_plane_response runtime_id=%s results=%s "

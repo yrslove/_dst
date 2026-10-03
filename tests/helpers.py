@@ -35,6 +35,15 @@ def make_ready(client, app, username: str) -> dict:
         headers={"Authorization": f"Bearer {token}"},
         json={
             "runtime_id": account["runtime_id"],
+            "account_id": account["id"],
+            "node_id": app.state.node_id,
+            "runtime_generation": 1,
+            "runtime_image_version": "dst-base-v1",
+            "process_identities": {
+                "display": {"pid": 2001, "start_ticks": 10001},
+                "steam": {"pid": 2002, "start_ticks": 10002},
+                "dst": {"pid": 2003, "start_ticks": 10003},
+            },
             "phase": "GAME_READY",
             "steam_running": True,
             "dst_running": True,

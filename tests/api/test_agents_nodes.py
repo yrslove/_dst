@@ -1,5 +1,7 @@
 from datetime import timedelta
 
+import pytest
+
 from app.domain.state import transition_account, transition_runtime
 from app.models import (
     Account,
@@ -20,11 +22,25 @@ from tests.helpers import create_account
 def heartbeat_payload(runtime_id: int) -> dict:
     return {
         "runtime_id": runtime_id,
+        "account_id": runtime_id,
+        "node_id": 1,
+        "runtime_generation": 1,
+        "runtime_image_version": "dst-base-v1",
+        "process_identities": {
+            "display": {"pid": 2001, "start_ticks": 10001},
+            "steam": {"pid": 2002, "start_ticks": 10002},
+            "dst": {"pid": 2003, "start_ticks": 10003},
+        },
         "phase": "GAME_READY",
         "steam_running": True,
         "dst_running": True,
         "healthy": True,
         "automation_state": "NOOP",
+        "worker": {
+            "mode": "DISABLED",
+            "state": "DISABLED",
+            "healthy": True,
+        },
         "details": {},
         "agent_version": "test-1",
         "protocol_version": 1,
@@ -104,6 +120,95 @@ def test_stale_runtime_recovers_when_worker_is_intentionally_disabled(client, ap
         assert runtime.last_error_code is None
         assert session.get(Account, account["id"]).status == AccountState.RUNNING
         assert worker.worker_mode == "DISABLED"
+
+
+@pytest.mark.parametrize(
+    "error_code", [ErrorCode.NODE_OFFLINE, ErrorCode.UNKNOWN]
+)
+def test_stale_lifecycle_error_requires_fresh_explicit_verification(
+    client, app, error_code
+):
+    account, token = stale_verified_runtime(
+        client, app, f"stale-{error_code.lower()}-verify"
+    )
+    with app.state.db.transaction(immediate=True) as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        runtime.last_error_code = error_code
+        runtime.last_error_message = f"Detected {error_code}"
+        runtime.verified_at = utcnow() - timedelta(days=2)
+        old_verified_at = runtime.verified_at
+
+    heartbeat = send_heartbeat(
+        client,
+        account["runtime_id"],
+        token,
+        heartbeat_payload(account["runtime_id"]),
+    )
+
+    assert heartbeat.status_code == 200
+    assert heartbeat.json()["runtime_verified"] is False
+    with app.state.db.session() as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        assert runtime.state == RuntimeState.STALE
+        assert runtime.last_error_code == error_code
+        assert runtime.verified_at == old_verified_at.replace(tzinfo=None)
+
+    assert client.post(f"/api/v1/accounts/{account['id']}/verify").status_code == 202
+    assert app.state.executor.execute_next()
+    with app.state.db.session() as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        assert runtime.state == RuntimeState.RUNNING
+        assert runtime.last_error_code is None
+        assert runtime.verified_at > old_verified_at.replace(tzinfo=None)
+
+    resumed = send_heartbeat(
+        client,
+        account["runtime_id"],
+        token,
+        heartbeat_payload(account["runtime_id"]),
+    )
+    assert resumed.status_code == 200
+    assert resumed.json()["runtime_verified"] is True
+    assert resumed.json()["desired_worker_state"] == "ACTIVE_STATIONARY"
+    assert resumed.json()["commands"][0]["command"] == "SET_MODE"
+    assert resumed.json()["commands"][0]["payload"] == {"mode": "ACTIVE"}
+
+
+def test_durable_manual_pause_and_disabled_intents_do_not_autostart(client, app):
+    for desired, label in (
+        ("MANUAL_PAUSED", "manual-paused-intent"),
+        ("DISABLED", "disabled-intent"),
+    ):
+        account = create_account(client, label)
+        assert (
+            client.get(f"/api/v1/accounts/{account['id']}").json()[
+                "desired_worker_state"
+            ]
+            == "ACTIVE_STATIONARY"
+        )
+        assert app.state.executor.execute_next()
+        token = client.post(
+            f"/api/v1/runtimes/{account['runtime_id']}/token/rotate"
+        ).json()["token"]
+        assert client.post(f"/api/v1/accounts/{account['id']}/setup").status_code == 202
+        assert app.state.executor.execute_next()
+        with app.state.db.transaction(immediate=True) as session:
+            runtime = session.get(RuntimeInstance, account["runtime_id"])
+            runtime.verified_at = utcnow()
+            runtime.state = RuntimeState.RUNNING
+            worker = session.get(WorkerStatus, runtime.id)
+            worker.desired_worker_state = desired
+
+        response = send_heartbeat(
+            client,
+            account["runtime_id"],
+            token,
+            heartbeat_payload(account["runtime_id"]),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["desired_worker_state"] == desired
+        assert response.json()["commands"] == []
 
 
 def test_stale_runtime_does_not_recover_without_steam_or_dst_readiness(client, app):
@@ -189,6 +294,35 @@ def test_healthy_heartbeat_for_wrong_runtime_identity_does_not_recover(client, a
     assert send_heartbeat(client, account["runtime_id"], token, payload).status_code == 404
     with app.state.db.session() as session:
         assert session.get(RuntimeInstance, account["runtime_id"]).state == RuntimeState.STALE
+
+
+@pytest.mark.parametrize(
+    "identity_field",
+    ["account_id", "node_id", "runtime_generation", "runtime_image_version"],
+)
+def test_runtime_identity_mismatch_is_rejected_without_advancing_liveness(
+    client, app, identity_field
+):
+    account = create_account(client, "heartbeat-identity-mismatch")
+    assert app.state.executor.execute_next()
+    token = client.post(
+        f"/api/v1/runtimes/{account['runtime_id']}/token/rotate"
+    ).json()["token"]
+    assert client.post(f"/api/v1/accounts/{account['id']}/setup").status_code == 202
+    assert app.state.executor.execute_next()
+    payload = heartbeat_payload(account["runtime_id"])
+    payload[identity_field] = (
+        "mismatched-image"
+        if identity_field == "runtime_image_version"
+        else payload[identity_field] + 100
+    )
+
+    response = send_heartbeat(client, account["runtime_id"], token, payload)
+
+    assert response.status_code == 401
+    with app.state.db.session() as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        assert runtime.last_heartbeat_at is None
 
 
 def test_bad_runtime_token_does_not_change_heartbeat(client, app):

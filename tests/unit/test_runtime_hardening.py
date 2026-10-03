@@ -82,6 +82,49 @@ def test_ready_dst_loss_restarts_after_grace_instead_of_terminal_timeout(tmp_pat
     assert not dst._terminal_error
 
 
+def test_dst_lifecycle_reconciles_cluster_created_after_server_start(tmp_path):
+    root = tmp_path / "DoNotStarveTogether"
+    account = root / "account"
+    account.mkdir(parents=True)
+
+    class Supervisor:
+        def __init__(self):
+            self.now = 0.0
+            self.alive = False
+            self.running_for = 0.0
+            self.status = type("Status", (), {"exhausted": False, "started_at": "started"})()
+            self.before_start = None
+
+        def clock(self):
+            return self.now
+
+        def request_start(self):
+            if self.before_start:
+                self.before_start()
+            cluster = account / "Cluster_1"
+            cluster.mkdir()
+            (cluster / "cluster.ini").write_text(
+                "[NETWORK]\nidle_timeout = 1800\n", encoding="utf-8"
+            )
+            self.alive = True
+
+    supervisor = Supervisor()
+    dst = DSTProcess(
+        supervisor,
+        tmp_path / "dst.ready",
+        user_root=root,
+    )
+
+    dst.start()
+    assert "idle_timeout = 1800" in (account / "Cluster_1/cluster.ini").read_text()
+    supervisor.now = 30.0
+    assert dst.status() == DSTState.RUNNING
+    cluster_ini = (account / "Cluster_1/cluster.ini").read_text()
+
+    assert cluster_ini == "[NETWORK]\nidle_timeout = 0\n"
+    assert dst._idle_timeout_reconciled
+
+
 def test_supervisor_stop_during_backoff_allows_fresh_start():
     now = [0.0]
     processes: list[FakeProcess] = []

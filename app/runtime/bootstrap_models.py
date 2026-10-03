@@ -26,6 +26,7 @@ class RuntimeAgentConfig:
     protocol_version: int
     heartbeat_interval: float
     runtime_generation: int = 1
+    runtime_image_version: str = "unknown"
     display_backend: str = "xvfb"
     display: str = ":99"
     xdg_runtime_dir: str | None = "/run/dst-runtime"
@@ -52,6 +53,7 @@ class RuntimeAgentConfig:
             "CONTROL_PLANE_URL": self.orchestrator_url,
             "RUNTIME_ID": self.runtime_id,
             "RUNTIME_GENERATION": self.runtime_generation,
+            "RUNTIME_IMAGE_VERSION": self.runtime_image_version,
             "ACCOUNT_ID": self.account_id,
             "NODE_ID": self.node_id,
             "RUNTIME_TOKEN": self.runtime_token,

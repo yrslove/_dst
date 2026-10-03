@@ -31,6 +31,13 @@ class LoginRequest(BaseModel):
 
 class RuntimeHeartbeatRequest(BaseModel):
     runtime_id: int
+    account_id: int | None = Field(default=None, ge=1)
+    node_id: int | None = Field(default=None, ge=1)
+    runtime_generation: int | None = Field(default=None, ge=1)
+    runtime_image_version: str | None = Field(
+        default=None, min_length=1, max_length=120
+    )
+    process_identities: dict[str, dict[str, Any]] = Field(default_factory=dict, max_length=4)
     phase: Literal[
         "BOOTING",
         "DISPLAY_STARTING",

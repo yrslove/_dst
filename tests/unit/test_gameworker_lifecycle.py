@@ -36,6 +36,7 @@ from runtime_agent.heartbeat import (
     VerificationState,
     send_heartbeat,
 )
+from runtime_agent.main import _handoff_environment
 from runtime_agent.worker_bridge import WorkerBridge
 
 
@@ -45,6 +46,24 @@ class FakeQueue(queue.Queue):
 
     def close(self):
         return None
+
+
+def test_agent_reload_hands_off_updated_image_identity(monkeypatch, tmp_path):
+    env_file = tmp_path / "agent.env"
+    env_file.write_text('RUNTIME_IMAGE_VERSION="dst-base-v2"\n')
+    monkeypatch.setattr("runtime_agent.main.RUNTIME_AGENT_ENV_FILE", env_file)
+
+    class Managed:
+        def adoption_identity(self):
+            return 123, 456
+
+    environment = _handoff_environment(
+        Managed(), Managed(), Managed(), runtime_token="runtime-secret"
+    )
+
+    assert environment["RUNTIME_IMAGE_VERSION"] == "dst-base-v2"
+    assert environment["RUNTIME_TOKEN"] == "runtime-secret"
+    assert environment["RUNTIME_ADOPT_DISPLAY"] == "123:456"
 
 
 class FakeProcess:
@@ -196,7 +215,15 @@ def test_control_plane_submission_logs_terminal_ack_response(monkeypatch, caplog
             return None
 
         def json(self):
-            return {"ok": True, "commands": []}
+            return {
+                "ok": True,
+                "commands": [],
+                "runtime_verified": False,
+                "control_plane_last_seen_at": "2026-10-03T00:00:00+00:00",
+                "control_plane_verified_at": "2026-10-01T00:00:00+00:00",
+                "computed_stale_reason": "AGENT_STALE",
+                "runtime_image_version": "image-test",
+            }
 
     def post(_url, *, json, headers, timeout):
         sent.append(json)
@@ -205,6 +232,10 @@ def test_control_plane_submission_logs_terminal_ack_response(monkeypatch, caplog
     monkeypatch.setattr("runtime_agent.heartbeat.httpx.post", post)
     settings = SimpleNamespace(
         runtime_id=2,
+        account_id=7,
+        node_id=1,
+        runtime_generation=1,
+        runtime_image_version="dst-base-v1",
         control_plane_url="http://127.0.0.1:8080",
         runtime_token="test-token",
         request_timeout_seconds=1,
@@ -227,11 +258,20 @@ def test_control_plane_submission_logs_terminal_ack_response(monkeypatch, caplog
 
     assert response["ok"] is True
     assert sent[0]["worker_command_results"] == [{"id": 60, "result": "OK"}]
-    assert "runtime_heartbeat_accepted runtime_id=2 phase=GAME_READY healthy=True" in caplog.text
+    assert sent[0]["runtime_image_version"] == "dst-base-v1"
     heartbeat = json.loads((tmp_path / "heartbeat.json").read_text())
     assert heartbeat["runtime_id"] == 2
+    assert heartbeat["account_id"] == 7
+    assert heartbeat["node_id"] == 1
+    assert heartbeat["runtime_generation"] == 1
     assert heartbeat["phase"] == "GAME_READY"
     assert heartbeat["healthy"] is True
+    assert heartbeat["request_status"] == 200
+    assert heartbeat["control_plane_last_seen"] == "2026-10-03T00:00:00+00:00"
+    assert heartbeat["control_plane_verified_at"] == "2026-10-01T00:00:00+00:00"
+    assert heartbeat["computed_stale_reason"] == "AGENT_STALE"
+    assert heartbeat["runtime_verified"] is False
+    assert heartbeat["control_plane_image_version"] == "image-test"
     assert isinstance(heartbeat["revision"], str)
     assert "worker_ack_control_plane_submit" in caplog.text
     assert "worker_ack_control_plane_response" in caplog.text
@@ -246,6 +286,10 @@ def test_control_plane_submission_logs_terminal_ack_failure(monkeypatch, caplog)
     monkeypatch.setattr("runtime_agent.heartbeat.httpx.post", post)
     settings = SimpleNamespace(
         runtime_id=2,
+        account_id=7,
+        node_id=1,
+        runtime_generation=1,
+        runtime_image_version="dst-base-v1",
         control_plane_url="http://127.0.0.1:8080",
         runtime_token="test-token",
         request_timeout_seconds=1,

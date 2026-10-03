@@ -29,6 +29,7 @@ class RuntimeAgentSettings:
     runtime_token: str = field(repr=False)
     account_id: int
     runtime_generation: int = 1
+    runtime_image_version: str = "unknown"
     node_id: int = 0
     heartbeat_seconds: float = 5
     request_timeout_seconds: float = 5
@@ -177,6 +178,7 @@ class RuntimeAgentSettings:
             runtime_token=token,
             account_id=int(os.getenv("ACCOUNT_ID", "0")),
             runtime_generation=int(os.getenv("RUNTIME_GENERATION", "1")),
+            runtime_image_version=os.getenv("RUNTIME_IMAGE_VERSION", "unknown"),
             node_id=int(os.getenv("NODE_ID", "0")),
             heartbeat_seconds=float(os.getenv("RUNTIME_HEARTBEAT_SECONDS", "5")),
             request_timeout_seconds=float(

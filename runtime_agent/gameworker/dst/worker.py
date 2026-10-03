@@ -87,6 +87,8 @@ class DSTGameWorker:
             validation_flow_enabled=config.validation_flow_enabled,
             validation_movement_enabled=config.validation_movement_enabled,
             locomotion=self.locomotion,
+            claim_latch_path=config.diagnostic_directory.parent
+            / "gift-claim-latch.json",
         )
         self.navigation: NavigationController | None = None
         self.recovery: RecoveryController | None = None
@@ -525,7 +527,11 @@ class DSTGameWorker:
         if self.pipeline is not None:
             self.pipeline.engine.world_roi_only = True
             self.pipeline.engine._monitor.local_anchor_enabled = False
-        self.activity = ActivityController(locomotion=self.locomotion)
+        self.activity = ActivityController(
+            locomotion=self.locomotion,
+            claim_latch_path=self.config.diagnostic_directory.parent
+            / "gift-claim-latch.json",
+        )
         # A characterization continuation may carry a single already-failed
         # claim forward without re-clicking the same still-visible gift.
         self.activity.claim_not_actionable = session_id.endswith(
@@ -836,6 +842,7 @@ class DSTGameWorker:
                     from runtime_agent.gameworker.activity import InWorldGiftState
                     self.activity.inworld_gift_confirmation = receipt
                     self.activity.gift_claim_state = "CLAIM_CONFIRMED"
+                    self.activity.confirm_claim_reconciled()
                     self.activity.claim_confirmation_pending = False
                     self._claim_confirmation_pending_since = None
                     self._claim_confirmation_anomaly_logged = False
@@ -1508,6 +1515,10 @@ class DSTGameWorker:
                 "inworld_gift_state": self.activity.inworld_gift_state.value,
                 "gift_availability_evidence": self.activity.gift_availability_evidence,
                 "gift_claim_state": self.activity.gift_claim_state,
+                "gift_claim_correlation_id": self.activity._gift_claim_correlation_id,
+                "claim_reconciliation_pending": (
+                    self.activity._claim_reconciliation_pending
+                ),
                 "stationary": self.stationary.telemetry(),
                 "gift_visual_temporal": self.activity.gift_visual.telemetry(),
                 "gift_claim_attempt": self.activity.gift_attempt,

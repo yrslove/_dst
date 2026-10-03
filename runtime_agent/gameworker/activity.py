@@ -7,10 +7,12 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import ClassVar, Protocol
 
 from runtime_agent.gameworker.actions import ActionName, ActionResult, ActionStatus
 from runtime_agent.gameworker.gift_icon import GiftTemporalEvidence
+from runtime_agent.gameworker.reward_evidence import durable_json
 from runtime_agent.gameworker.vision import DSTScreen, GameObservation
 
 logger = logging.getLogger("runtime_agent.gameworker.behavior")
@@ -177,6 +179,7 @@ class ActivityController:
         validation_flow_enabled: bool = False,
         validation_movement_enabled: bool = False,
         locomotion=None,
+        claim_latch_path: Path | None = None,
     ) -> None:
         self.validation_flow_enabled = validation_flow_enabled
         self.validation_movement_enabled = validation_movement_enabled
@@ -226,6 +229,9 @@ class ActivityController:
         self.claim_not_actionable = False
         self._gift_retry_at = 0.0
         self.gift_attempt: dict | None = None
+        self._claim_latch_path = claim_latch_path
+        self._claim_latch: dict | None = self._read_claim_latch()
+        self._claim_reconciliation_pending = self._claim_latch is not None
         self._gift_station_approach_attempted = False
         self._gift_station_approach_step = 0
         self._gift_station_crafting_opened = False
@@ -270,6 +276,7 @@ class ActivityController:
         self.claim_not_actionable = False
         self._gift_retry_at = 0.0
         self.gift_attempt = None
+        self._clear_claim_latch()
         self._gift_station_approach_attempted = False
         self._gift_station_approach_step = 0
         self._awaiting_reward_transition = False
@@ -277,6 +284,64 @@ class ActivityController:
         self._recoverable_intervention_action = None
         if self.locomotion:
             self.locomotion.gift_latched = False
+
+    def _read_claim_latch(self) -> dict | None:
+        if self._claim_latch_path is None or not self._claim_latch_path.exists():
+            return None
+        try:
+            if self._claim_latch_path.stat().st_size > 4096:
+                raise ValueError("gift claim latch exceeds bound")
+            value = json.loads(self._claim_latch_path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict) or not isinstance(
+                value.get("claim_correlation_id"), str
+            ):
+                raise TypeError("gift claim latch is malformed")
+            return value
+        except (OSError, ValueError, TypeError):
+            logger.exception("gift claim latch could not be read; holding clicks")
+            return {"claim_correlation_id": "gift:reconciliation:unknown"}
+
+    def _restore_claim_latch(self, observation: GameObservation) -> None:
+        latch = self._claim_latch
+        if not latch:
+            return
+        if (
+            latch.get("runtime_id") == observation.runtime_id
+            and latch.get("runtime_generation") == observation.runtime_generation
+        ):
+            self._claim_reconciliation_pending = True
+            self._gift_claim_correlation_id = latch["claim_correlation_id"]
+        elif latch.get("runtime_id") is not None:
+            self._clear_claim_latch()
+
+    def _persist_claim_latch(self, observation: GameObservation) -> bool:
+        if self._claim_latch_path is None:
+            return True
+        latch = {
+            "runtime_id": observation.runtime_id,
+            "runtime_generation": observation.runtime_generation,
+            "worker_generation": observation.worker_generation,
+            "claim_correlation_id": self._gift_claim_correlation_id,
+            "claim_started_at": observation.timestamp,
+            "state": "CLAIM_CONFIRMATION_PENDING",
+        }
+        try:
+            durable_json(self._claim_latch_path, latch)
+        except OSError:
+            logger.exception("gift claim latch could not be persisted; holding click")
+            return False
+        self._claim_latch = latch
+        self._claim_reconciliation_pending = True
+        return True
+
+    def _clear_claim_latch(self) -> None:
+        if self._claim_latch_path is not None:
+            self._claim_latch_path.unlink(missing_ok=True)
+        self._claim_latch = None
+        self._claim_reconciliation_pending = False
+
+    def confirm_claim_reconciled(self) -> None:
+        self._clear_claim_latch()
 
     def _recoverable_action(self, action):
         return (action in {ActionName.TURN_RIGHT, ActionName.MOVE_BACKWARD}
@@ -331,6 +396,7 @@ class ActivityController:
         return active
 
     def propose(self, observation: GameObservation) -> ActionProposal | None:
+        self._restore_claim_latch(observation)
         if self.claim_evidence is not None:
             self.claim_evidence.observe(observation)
             self.gift_claim_ready = self.claim_evidence.ready
@@ -342,6 +408,8 @@ class ActivityController:
             self._validation_last_world_sequence = None
             self.on_unknown(observation)
             return None
+        if self._claim_reconciliation_pending:
+            self.gift_claim_state = "CLAIM_CONFIRMATION_PENDING"
         if self.claim_not_actionable and time.monotonic() >= self._gift_retry_at:
             self.claim_not_actionable = False
             self._gift_icon_click_attempts = 0
@@ -355,6 +423,8 @@ class ActivityController:
             self.gift_claim_state = ("GIFT_CLAIMABLE" if self.gift_visual.candidate
                                      and availability == "GIFT_AVAILABLE" else
                                      "GIFT_PENDING" if self.gift_visual.candidate else "NO_GIFT")
+            if self._claim_reconciliation_pending:
+                self.gift_claim_state = "CLAIM_CONFIRMATION_PENDING"
             if self.claim_not_actionable and availability == "NO_REWARD_AVAILABLE":
                 self.claim_not_actionable = False
             world_states = {
@@ -473,6 +543,7 @@ class ActivityController:
             and dict(icon.metadata).get("availability") == "GIFT_AVAILABLE"
             and (active_gift or self.gift_visual.candidate)
             and self.gift_claim_ready
+            and not self._claim_reconciliation_pending
             and not self.claim_not_actionable
             and not self.claim_confirmation_pending
             and self._gift_icon_click_attempts < 3
@@ -483,6 +554,9 @@ class ActivityController:
                     f"gift:{observation.runtime_id}:{observation.runtime_generation}:"
                     f"{observation.worker_generation}:{observation.source_sequence}"
                 )
+            if not self._persist_claim_latch(observation):
+                self.gift_claim_state = "CLAIM_CONFIRMATION_PENDING"
+                return None
             self.gift_attempt = {
                 "claim_correlation_id": self._gift_claim_correlation_id,
                 "before_frame_id": observation.source_frame_id,

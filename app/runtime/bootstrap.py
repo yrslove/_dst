@@ -199,7 +199,7 @@ class RuntimeBootstrapService:
             # configuration repair require the new EnvironmentFile to be loaded.
             self.provider.execute(
                 runtime,
-                ("/bin/systemctl", "restart", "dst-runtime-agent.service"),
+                ("/bin/systemctl", "reload-or-restart", "dst-runtime-agent.service"),
                 correlation_id=correlation_id,
             )
 

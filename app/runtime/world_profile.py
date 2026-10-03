@@ -20,12 +20,36 @@ SAFE_PROFILE = {
     "spring": "noseason",
     "summer": "noseason",
     "hounds": "never",
+    "houndmound": "never",
+    "spiders": "never",
+    "walrus": "never",
+    "chess": "never",
+    "merm": "never",
+    "tentacles": "never",
+    "leifs": "never",
+    "deciduousmonster": "never",
+    "krampus": "never",
+    "deerclops": "never",
+    "bearger": "never",
+    "goosemoose": "never",
+    "dragonfly": "never",
+    "antliontribute": "never",
+    "bats": "never",
+    "fissure": "never",
+    "wormattacks": "never",
+    "worms": "never",
+    "tallbirds": "never",
+    "angrybees": "never",
     "shadowcreatures": "never",
     "weather": "never",
     "lightning": "never",
+    "wildfires": "never",
+    "earthquakes": "never",
+    "meteorspawner": "never",
+    "meteorshowers": "never",
 }
 
-SAFE_PROFILE_VERSION = 1
+SAFE_PROFILE_VERSION = 2
 FIXTURE_MANIFEST = "safe-world-fixture.json"
 
 DEFAULT_USER_ROOT = Path("/home/dst/.klei/DoNotStarveTogether")

@@ -64,7 +64,7 @@ def test_bounded_monitor_completion_failure_resume_and_cleanup(
 
     import app.services.session as policy
     from app.models import RuntimeState, WorkerRun, utcnow
-    from app.runtime.world_profile import desired_profile_hash
+    from app.runtime.world_profile import SAFE_PROFILE_VERSION, desired_profile_hash
 
     account = make_ready(client, app, "monitor-" + str(failure))
     ex = app.state.executor
@@ -132,7 +132,7 @@ def test_bounded_monitor_completion_failure_resume_and_cleanup(
             "verification_scope": "PERSISTED_WORLD_SETTINGS_AND_CURRENT_PROCESS",
             "world_profile_verified": True,
             "loaded_world_verified": True,
-            "profile_version": 1,
+            "profile_version": SAFE_PROFILE_VERSION,
             "world_session_id": "EA6E12E4296C650B",
             "fixture_manifest_sha256": "a" * 64,
             "settings_fingerprint": desired_profile_hash(),

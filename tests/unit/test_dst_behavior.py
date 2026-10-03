@@ -2076,6 +2076,118 @@ def test_managed_gift_detection_is_saved_before_a_claim_proposal():
     assert saved[-1] == third_frame.source_frame_id
 
 
+def _active_gift_observation(frame_id="cross-generation-active"):
+    return analyze_image(
+        Image.open(ASSETS / "samples/gift_icon_active_in_world_live.png").convert("RGB"),
+        frame_id,
+        1,
+        profile_id="dst-1280x720-linux-v1",
+    )
+
+
+def _start_latched_claim(path):
+    policy = ActivityController(claim_latch_path=path)
+    policy.set_production_actions_enabled(True)
+    observation = _active_gift_observation()
+    policy.propose(observation)
+    policy.propose(replace(observation, source_sequence=2, source_frame_id="active-2"))
+    proposal = policy.propose(
+        replace(observation, source_sequence=3, source_frame_id="active-3")
+    )
+    assert proposal.action == ActionName.CLICK_GIFT_ICON
+    assert path.exists()
+    return observation
+
+
+def test_worker_restart_after_gift_click_does_not_duplicate_click(tmp_path):
+    latch = tmp_path / "gift-claim-latch.json"
+    _start_latched_claim(latch)
+
+    recovered = ActivityController(claim_latch_path=latch)
+    recovered.set_production_actions_enabled(True)
+    active = _active_gift_observation("active-after-restart")
+    recovered.propose(active)
+    next_frame = replace(active, source_sequence=2, source_frame_id="active-after-restart-2")
+
+    assert recovered.propose(next_frame) is None
+    assert recovered.gift_claim_state == "CLAIM_CONFIRMATION_PENDING"
+
+
+def _received_gift_observation(frame_id="received-after-restart"):
+    return analyze_image(
+        Image.open(ASSETS / "samples/inworld_gift_received_live.png").convert("RGB"),
+        frame_id,
+        1,
+        profile_id="dst-1280x720-linux-v1",
+    )
+
+
+def test_worker_restart_during_reveal_waits_without_clicking_gift_icon(tmp_path):
+    latch = tmp_path / "gift-claim-latch.json"
+    _start_latched_claim(latch)
+    recovered = ActivityController(claim_latch_path=latch)
+    recovered.set_production_actions_enabled(True)
+    received = _received_gift_observation()
+
+    assert recovered.propose(received) is None
+    assert recovered.propose(
+        replace(received, source_sequence=2, source_frame_id="received-reveal-2")
+    ) is None
+    assert recovered.gift_claim_state == "CLAIM_CONFIRMATION_PENDING"
+
+
+def test_worker_restart_before_use_later_keeps_single_gift_click(tmp_path):
+    latch = tmp_path / "gift-claim-latch.json"
+    _start_latched_claim(latch)
+    recovered = ActivityController(claim_latch_path=latch)
+    recovered.set_production_actions_enabled(True)
+    received = _received_gift_observation()
+    recovered.propose(received)
+    recovered._gift_clicked_monotonic = received.observed_monotonic - 11
+
+    proposal = recovered.propose(
+        replace(received, source_sequence=2, source_frame_id="received-close-ready")
+    )
+
+    assert proposal.action == ActionName.CLICK_INWORLD_USE_LATER
+    assert recovered._claim_reconciliation_pending
+
+
+def test_worker_restart_after_use_later_before_confirmation_never_reclicks(tmp_path):
+    latch = tmp_path / "gift-claim-latch.json"
+    _start_latched_claim(latch)
+    first = ActivityController(claim_latch_path=latch)
+    first.set_production_actions_enabled(True)
+    received = _received_gift_observation()
+    first.propose(received)
+    first._gift_clicked_monotonic = received.observed_monotonic - 11
+    close_frame = replace(received, source_sequence=2, source_frame_id="received-use-later")
+    proposal = first.propose(close_frame)
+    assert proposal.action == ActionName.CLICK_INWORLD_USE_LATER
+    first.on_verified(
+        close_frame,
+        ActionResult(
+            "use-later-ok",
+            ActionName.CLICK_INWORLD_USE_LATER,
+            ActionStatus.SUCCEEDED,
+            0.5,
+            1,
+            1,
+            1,
+        ),
+    )
+    assert first.claim_confirmation_pending
+
+    recovered = ActivityController(claim_latch_path=latch)
+    recovered.set_production_actions_enabled(True)
+    active = _active_gift_observation("active-after-use-later")
+    recovered.propose(active)
+    next_frame = replace(active, source_sequence=2, source_frame_id="active-after-use-later-2")
+
+    assert recovered.propose(next_frame) is None
+    assert recovered.gift_claim_state == "CLAIM_CONFIRMATION_PENDING"
+
+
 def test_received_gift_with_disabled_use_now_still_closes_through_use_later():
     from runtime_agent.gameworker.transitions import action_precondition_error
     image = Image.open(ASSETS / 'samples/inworld_gift_received_live.png').convert('RGB')

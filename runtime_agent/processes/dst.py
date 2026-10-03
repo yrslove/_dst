@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -19,6 +20,8 @@ from app.runtime.world_profile import (
     verified_fixture,
 )
 from runtime_agent.process_supervisor import ProcessSupervisor
+
+logger = logging.getLogger("runtime_agent.processes.dst")
 
 
 class DSTState(StrEnum):
@@ -60,6 +63,8 @@ class DSTProcess:
         self.user_root = user_root
         self.evidence_path = evidence_path
         self._pending_reconciliation: dict | None = None
+        self._idle_timeout_reconciled = False
+        self._next_idle_timeout_check = 0.0
         previous_before_start = supervisor.before_start
 
         def reset_marker() -> None:
@@ -67,7 +72,7 @@ class DSTProcess:
                 previous_before_start()
             self.readiness_file.unlink(missing_ok=True)
             self._pending_reconciliation = None
-            reconcile_idle_timeout(user_root=self.user_root)
+            self._reconcile_idle_timeout()
             if self.safe_idle_world_profile:
                 self.evidence_path.unlink(missing_ok=True)
                 try:
@@ -95,6 +100,7 @@ class DSTProcess:
         if self.supervisor.status.exhausted:
             return DSTState.ERROR
         if self.supervisor.alive:
+            self._reconcile_idle_timeout()
             if self._ready_marker() and self.supervisor.alive:
                 self._ever_ready = True
                 self._readiness_lost_at = None
@@ -137,6 +143,29 @@ class DSTProcess:
 
     def diagnostics(self):
         return self.supervisor.status.as_dict()
+
+    def _reconcile_idle_timeout(self) -> None:
+        if self._idle_timeout_reconciled:
+            return
+        now = self.supervisor.clock()
+        if now < self._next_idle_timeout_check:
+            return
+        self._next_idle_timeout_check = now + 30.0
+        try:
+            evidence = reconcile_idle_timeout(user_root=self.user_root)
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("generated cluster idle-timeout reconciliation failed")
+            return
+        if evidence.get("status") == "CONFIG_PRESENT":
+            self._idle_timeout_reconciled = True
+            logger.info(
+                "dst_idle_timeout_reconciled path=%s changed=%s idle_timeout=%s "
+                "loaded_server_verified=%s",
+                evidence.get("path"),
+                evidence.get("changed"),
+                evidence.get("idle_timeout"),
+                evidence.get("loaded_server_verified"),
+            )
 
     def world_profile_evidence(self) -> dict:
         if not self.safe_idle_world_profile:

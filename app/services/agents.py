@@ -23,6 +23,8 @@ from app.models import (
     AccountState,
     DesiredState,
     ErrorCode,
+    GameplayTask,
+    GameplayTaskStatus,
     Node,
     NodeHeartbeat,
     NodeResourceSnapshot,
@@ -116,6 +118,20 @@ class AgentService:
                 raise AuthenticationRequired("invalid runtime agent token")
             if not runtime.active:
                 raise AuthenticationRequired("runtime generation is inactive")
+            identity = {
+                "account_id": runtime.account_id,
+                "node_id": runtime.node_id,
+                "runtime_generation": runtime.runtime_generation,
+                "runtime_image_version": runtime.image_version,
+            }
+            for field, expected in identity.items():
+                reported = getattr(payload, field)
+                if field == "runtime_image_version" and reported == "unknown":
+                    reported = None
+                if reported is not None and reported != expected:
+                    raise AuthenticationRequired(
+                        f"runtime identity mismatch for {field}"
+                    )
             if runtime.state not in {
                 RuntimeState.STARTING,
                 RuntimeState.RUNNING,
@@ -228,6 +244,13 @@ class AgentService:
                     {
                         "capabilities": payload.capabilities,
                         "diagnostics": payload.details,
+                        "reported_identity": {
+                            "account_id": payload.account_id,
+                            "node_id": payload.node_id,
+                            "runtime_generation": payload.runtime_generation,
+                            "runtime_image_version": payload.runtime_image_version,
+                            "process_identities": payload.process_identities,
+                        },
                     }
                 ),
                 "updated_at": now,
@@ -323,6 +346,48 @@ class AgentService:
                     command.completed_at = now
                     command.result = str(result.get("result", "OK"))[:80]
             self._update_worker_run(session, runtime, report, requested_mode, now)
+            desired_worker_state = worker.desired_worker_state
+            target_mode = None
+            active_gameplay_task = session.scalar(
+                select(GameplayTask.id)
+                .where(
+                    GameplayTask.runtime_id == runtime.id,
+                    GameplayTask.status.in_(
+                        [GameplayTaskStatus.PENDING, GameplayTaskStatus.RUNNING]
+                    ),
+                )
+                .limit(1)
+            )
+            if desired_worker_state == "DISABLED" and worker.worker_mode != "DISABLED":
+                target_mode = "DISABLED"
+            elif (
+                desired_worker_state == "ACTIVE_STATIONARY"
+                and active_gameplay_task is None
+                and runtime.state == RuntimeState.RUNNING
+                and runtime.verified_at is not None
+                and payload.phase in GAME_READY_PHASES
+                and requested_mode != "ACTIVE"
+            ):
+                target_mode = "ACTIVE"
+            unresolved = session.scalar(
+                select(WorkerCommand.id)
+                .where(
+                    WorkerCommand.runtime_id == runtime.id,
+                    WorkerCommand.status.in_(["PENDING", "DELIVERED"]),
+                )
+                .limit(1)
+            )
+            if target_mode and unresolved is None:
+                session.add(
+                    WorkerCommand(
+                        runtime_id=runtime.id,
+                        command="SET_MODE",
+                        payload={"mode": target_mode},
+                        status="PENDING",
+                        created_by="durable_worker_intent",
+                        created_at=now,
+                    )
+                )
             commands = list(
                 session.scalars(
                     select(WorkerCommand)
@@ -344,6 +409,20 @@ class AgentService:
                 "ok": True,
                 "runtime_verified": runtime.verified_at is not None
                 and runtime.state == RuntimeState.RUNNING,
+                "runtime_state": str(runtime.state),
+                "runtime_image_version": runtime.image_version,
+                "control_plane_last_seen_at": now.isoformat(),
+                "control_plane_verified_at": (
+                    ensure_utc(runtime.verified_at).isoformat()
+                    if runtime.verified_at
+                    else None
+                ),
+                "computed_stale_reason": (
+                    str(runtime.last_error_code)
+                    if runtime.state == RuntimeState.STALE
+                    else ("VERIFICATION_NOT_ESTABLISHED" if not runtime.verified_at else None)
+                ),
+                "desired_worker_state": desired_worker_state,
                 "commands": [
                     {"id": item.id, "command": item.command, "payload": item.payload}
                     for item in commands

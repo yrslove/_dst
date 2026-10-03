@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import signal
 import sys
@@ -23,6 +24,7 @@ from runtime_agent.worker_bridge import WorkerBridge
 logger = logging.getLogger("runtime_agent")
 stop_event = threading.Event()
 reload_event = threading.Event()
+RUNTIME_AGENT_ENV_FILE = Path("/etc/dst-runtime/agent.env")
 
 
 def _adoption_identity(name: str) -> tuple[int, int] | None:
@@ -31,6 +33,14 @@ def _adoption_identity(name: str) -> tuple[int, int] | None:
         return None
     pid, start_ticks = value.split(":", 1)
     return int(pid), int(start_ticks)
+
+
+def _process_identity(process) -> dict[str, int | None]:
+    identity = process.adoption_identity()
+    return {
+        "pid": identity[0] if identity else None,
+        "start_ticks": identity[1] if identity else None,
+    }
 
 _CHILD_ENVIRONMENT_SECRETS = {
     "RUNTIME_TOKEN",
@@ -63,6 +73,15 @@ def _handoff_environment(display, steam, dst, *, runtime_token: str) -> dict[str
     # The bearer was removed from os.environ before managed children started.
     # Restore it only in the replacement agent's exec environment.
     environment["RUNTIME_TOKEN"] = runtime_token
+    try:
+        for line in RUNTIME_AGENT_ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if line.startswith("RUNTIME_IMAGE_VERSION="):
+                values = shlex.split(line.partition("=")[2], posix=True)
+                if len(values) == 1 and values[0]:
+                    environment["RUNTIME_IMAGE_VERSION"] = values[0]
+                break
+    except (OSError, ValueError):
+        logger.warning("could not read updated runtime image identity during reload")
     for name, identity in identities.items():
         assert identity is not None
         environment[f"RUNTIME_ADOPT_{name}"] = f"{identity[0]}:{identity[1]}"
@@ -255,6 +274,11 @@ def main() -> int:
                     "display": display.diagnostics(),
                     "steam": steam.status.as_dict(),
                     "dst": dst.status.as_dict(),
+                    "process_identities": {
+                        "display": _process_identity(display),
+                        "steam": _process_identity(steam),
+                        "dst": _process_identity(dst),
+                    },
                     "world_profile": dst_process.world_profile_evidence(),
                     "readiness": {
                         "steam": steam_process.status(),

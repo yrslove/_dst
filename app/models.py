@@ -451,6 +451,9 @@ class WorkerStatus(Base):
     worker_mode: Mapped[str] = mapped_column(
         String(16), default="DISABLED", nullable=False
     )
+    desired_worker_state: Mapped[str] = mapped_column(
+        String(32), default="DISABLED", nullable=False
+    )
     last_tick_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_action: Mapped[str | None] = mapped_column(String(80))
     last_observation_at: Mapped[datetime | None] = mapped_column(

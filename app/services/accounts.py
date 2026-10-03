@@ -151,6 +151,13 @@ class AccountService:
                 )
                 session.add(runtime)
                 session.flush()
+                session.add(
+                    WorkerStatus(
+                        runtime_id=runtime.id,
+                        phase="BOOTING",
+                        desired_worker_state="ACTIVE_STATIONARY",
+                    )
+                )
                 job = self.jobs.enqueue_in_session(
                     session,
                     kind=JobKind.PROVISION_RUNTIME,
@@ -529,6 +536,9 @@ class AccountService:
             "worker_version": worker.worker_version if worker else None,
             "worker_config_version": worker.worker_config_version if worker else None,
             "worker_mode": worker.worker_mode if worker else "DISABLED",
+            "desired_worker_state": (
+                worker.desired_worker_state if worker else "DISABLED"
+            ),
             "worker_state": worker.automation_state if worker else "UNKNOWN",
             "worker_last_tick_at": _dt(worker.last_tick_at) if worker else None,
             "worker_last_action": worker.last_action if worker else None,

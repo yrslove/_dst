@@ -27,6 +27,8 @@ from app.models import (
     GameplayTaskStatus,
     Job,
     JobKind,
+    Node,
+    NodeStatus,
     Run,
     RuntimeImage,
     RuntimeInstance,
@@ -324,6 +326,7 @@ class JobExecutor(LongSessionMixin):
         config = RuntimeAgentConfig(
             runtime_id=descriptor.id,
             runtime_generation=descriptor.runtime_generation,
+            runtime_image_version=descriptor.image_version,
             account_id=descriptor.account_id,
             node_id=descriptor.node_id,
             runtime_token=token,
@@ -348,7 +351,7 @@ class JobExecutor(LongSessionMixin):
             ),
             dst_readiness_timeout=self.settings.runtime_dst_readiness_timeout_seconds,
         )
-        RuntimeBootstrapService(self.db, self.provider, version=5).bootstrap(
+        RuntimeBootstrapService(self.db, self.provider, version=6).bootstrap(
             descriptor, config, correlation_id=job.request_id
         )
 
@@ -1158,7 +1161,6 @@ class JobExecutor(LongSessionMixin):
             worker = session.get(WorkerStatus, runtime.id)
             if (
                 worker is None
-                or not worker.healthy
                 or not worker.steam_running
                 or not worker.dst_running
                 or worker.phase not in GAME_READY_PHASES
@@ -1166,9 +1168,47 @@ class JobExecutor(LongSessionMixin):
                 < utcnow() - timedelta(seconds=self.settings.watchdog_stale_seconds)
             ):
                 raise VerificationRequired("runtime agent has not reported GAME_READY")
+            reported_identity = (
+                worker.details.get("reported_identity")
+                if isinstance(worker.details, dict)
+                else None
+            )
+            process_identities = (
+                reported_identity.get("process_identities")
+                if isinstance(reported_identity, dict)
+                else None
+            )
+            if (
+                not isinstance(reported_identity, dict)
+                or reported_identity.get("account_id") != runtime.account_id
+                or reported_identity.get("node_id") != runtime.node_id
+                or reported_identity.get("runtime_generation")
+                != runtime.runtime_generation
+                or reported_identity.get("runtime_image_version")
+                != runtime.image_version
+                or not isinstance(process_identities, dict)
+                or any(
+                    not isinstance(process_identities.get(name), dict)
+                    or not isinstance(process_identities[name].get("pid"), int)
+                    or process_identities[name]["pid"] < 2
+                    or not isinstance(
+                        process_identities[name].get("start_ticks"), int
+                    )
+                    or process_identities[name]["start_ticks"] <= 0
+                    for name in ("display", "steam", "dst")
+                )
+            ):
+                raise VerificationRequired(
+                    "runtime process identity evidence is missing or mismatched"
+                )
+            node = session.get(Node, runtime.node_id)
+            if node is None or node.status != NodeStatus.ONLINE:
+                raise VerificationRequired("runtime node is not online")
             runtime.verified_at = utcnow()
             if runtime.state != RuntimeState.RUNNING:
                 transition_runtime(runtime, RuntimeState.RUNNING)
+            runtime.last_error_code = None
+            runtime.last_error_message = None
             account = session.get(Account, runtime.account_id)
             if account and account.status != AccountState.RUNNING:
                 transition_account(account, AccountState.RUNNING)

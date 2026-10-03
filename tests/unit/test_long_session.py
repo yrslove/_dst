@@ -5,6 +5,7 @@ import pytest
 from app.models import utcnow
 from app.runtime.world_profile import (
     SAFE_PROFILE,
+    SAFE_PROFILE_VERSION,
     desired_profile_hash,
     reconcile_idle_timeout,
     reconcile_world_profile,
@@ -19,6 +20,11 @@ def test_safe_profile_is_deterministic_partial_override():
     assert "override_enabled = true" in rendered
     assert 'day = "onlyday"' in rendered
     assert 'hunger = "nonlethal"' in rendered
+    assert 'temperaturedamage = "nonlethal"' in rendered
+    assert 'wildfires = "never"' in rendered
+    assert 'earthquakes = "never"' in rendered
+    assert 'meteorshowers = "never"' in rendered
+    assert 'spiders = "never"' in rendered
     assert "leveldataoverride" not in rendered
     assert desired_profile_hash() == desired_profile_hash()
 
@@ -122,7 +128,7 @@ def test_long_session_requires_fresh_current_process_profile_evidence():
         "verification_scope": "PERSISTED_WORLD_SETTINGS_AND_CURRENT_PROCESS",
         "world_profile_verified": True,
         "loaded_world_verified": True,
-        "profile_version": 1,
+        "profile_version": SAFE_PROFILE_VERSION,
         "world_session_id": "EA6E12E4296C650B",
         "fixture_manifest_sha256": "a" * 64,
         "settings_fingerprint": desired_profile_hash(),
