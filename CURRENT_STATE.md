@@ -1,5 +1,58 @@
 # Current State
 
+## Fresh runtime provisioning — A3 PASS, operator login pending (2026-10-03)
+
+Current scope: repair canonical provisioning before authentication. A1/A2 remain
+STOPPED/DISABLED and were inspected read-only. A4 remains STOPPED and has not been
+bootstrapped in this task. No Steam credentials or Guard code were entered; no game
+was launched. A4 reproducibility and authenticated game startup are not yet proven.
+
+Exact original A3 blocker: the base's Runtime Agent lacked `runtime_agent/launchers.py`
+while agent.env invoked that module, producing supervisor exit 1 before Steam ran.
+The same base also lacked the private Steam client/DST installation and the AppArmor/
+D-Bus preparation previously done inside A1/A2. Both Steam/DST bootstrap phases were
+`/usr/bin/true`. Historical A1 preparation is explicitly recorded in
+LINUX_VALIDATION_2026-09-26.md; A2 installer interaction is retained in ignored
+.data/dual-ab-preparation/steam-install.py. Their common base image fingerprint,
+uid 1001/home /home/dst and nesting/network/root devices match A3; A1/A2 have private
+installed binaries, profiles and newer agent packages. Their CPU/RAM limits differ
+(4/8 GiB versus A3 2/5 GiB), but the concrete failures above were missing prerequisites.
+
+Bootstrap v10 installs the committed agent through the existing deployment archive,
+attaches a read-only node binary cache, creates/checks private Steam directories,
+installs missing apparmor/dbus-x11 with bounded apt calls, loads narrow Steam/bwrap
+userns profiles and verifies bwrap as dst, then registers cached DST in the private
+Steam library before starting the agent. Supervisor startup also checks prerequisites.
+Existing phases and account states are reused. Heartbeat accepts NEEDS_LOGIN and the
+content-preparation phase. Completed bootstrap rechecks content without service restart.
+An active older agent is never implicitly stopped by the agent installer.
+
+Shared cache: /var/lib/dst-orchestrator/runtime-assets/dst-25643519-v1, selected through
+current and mounted at /opt/dst-runtime-assets. It contains an explicit client program
+allow-list and one read-only DST executable/data installation, build 25643519 (4.3 GB).
+The canonical publisher read those binaries from stopped A1, excluding authentication,
+config, userdata, logs and generated runtime state, and constructed fresh app metadata.
+Client self-update/config/userdata, Klei/world/cluster and worker evidence remain private.
+New slots copy the cached client locally and share game files; they do not download or
+copy the multi-gigabyte game per account. Content updates require a new published cache.
+
+LIVE_PROVEN against real Steam, 2026-10-03 17:10–17:11 UTC: A3 Steam home/content ready,
+X :101 ready, mapped Sign in to Steam window with empty credentials, fresh accepted
+healthy NEEDS_LOGIN heartbeat, account NEEDS_LOGIN. Runtime container lifecycle is
+RUNNING (the project's existing separate convention), not ERROR; agent operational
+phase and Steam adapter are NEEDS_LOGIN. Steam supervisor PID 3049/restart_count 0/
+exhausted false survived repeated canonical bootstrap and SETUP jobs; DST remained
+STOPPED with no PID. Worker DISABLED. Jobs 222/224 (bootstrap) and 223/225 (SETUP) passed.
+Initial job 221 exposed the missing namespace prerequisite; its earlier attempt is
+not claimed as a successful Steam startup. Source agent revision 7c279ad, heartbeat
+contract ad2958b; initial implementation b9bdf60. Evidence is ignored
+.data/runtime-provisioning/ (comparison, final status and login screenshot).
+
+Final focused regression run: 79 passed, one existing Starlette deprecation warning.
+Ruff on changed Python files and git diff --check passed. Implementation committed
+locally; no push. NEXT_ACTION: NEED_STEAM_LOGIN_A3. Keep A4 stopped until the operator
+continues the requested sequence; fresh A4 reproduction remains pending.
+
 ## Stationary liveness and reload — live PASS (2026-10-02)
 
 User scope: preserve stationary architecture and zero movement; separate liveness
