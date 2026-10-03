@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import os
 import queue
 import subprocess
@@ -474,6 +475,55 @@ def test_xpra_cleanup_does_not_hide_operational_failure():
 
     assert XpraRuntimeViewProvider._idempotent_cleanup_result(absent)
     assert not XpraRuntimeViewProvider._idempotent_cleanup_result(failed)
+
+
+def test_xpra_transport_readiness_requires_a_complete_http_page(monkeypatch):
+    responses = [
+        http.client.RemoteDisconnected("server closed before HTTP headers"),
+        (200, "text/html", b"<title>xpra websockets client</title>"),
+    ]
+
+    class Connection:
+        def __init__(self, _host, _port, *, timeout):
+            assert timeout == 0.5
+
+        def request(self, method, path):
+            assert (method, path) == ("GET", "/")
+
+        def getresponse(self):
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+
+            class Response:
+                status = result[0]
+
+                def getheader(self, name, default=""):
+                    return result[1] if name == "Content-Type" else default
+
+                def read(self, size):
+                    return result[2][:size]
+
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.providers.view.xpra.http.client.HTTPConnection", Connection)
+
+    assert not XpraRuntimeViewProvider._http_transport_ready(14500)
+    assert XpraRuntimeViewProvider._http_transport_ready(14500)
+
+
+def test_xpra_view_shadow_does_not_launch_xsession_commands():
+    argv = XpraRuntimeViewProvider._shadow_argv(
+        DisplayEnvironment(":100"), 14500
+    )
+
+    assert argv[:4] == ("/usr/bin/env", "DISPLAY=:100", "xpra", "shadow")
+    assert "--start=" in argv
+    assert "--start-child=" in argv
+    assert all("=true" not in value for value in argv)
 
 
 def test_xpra_cleanup_targets_only_the_created_shadow(monkeypatch):

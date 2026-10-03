@@ -2,14 +2,136 @@
 
 from __future__ import annotations
 
+import time
+from collections import deque
+
 import numpy as np
 
 from runtime_agent.gameworker.geometry import Viewport
 
-GIFT_ROI = (0.115, 0.0, 0.36, 0.14)
+GIFT_ROI = (0.035, 0.0, 0.36, 0.14)
 HOVER_ROI = (0.10, 0.10, 0.32, 0.23)
 UNKNOWN = "GIFT_AVAILABILITY_UNKNOWN"
 PENDING = "IN_WORLD_GIFT_PENDING"
+
+
+class GiftTemporalEvidence:
+    """Debounce the existing HUD detector without making the HUD authoritative."""
+
+    def __init__(self):
+        self.state = "ABSENT"
+        self.frames = 0
+        self.first_transient_visual_at = None
+        self.confirmed_persistent_visual_at = None
+        self.confirmed_first_detection = None
+        self.last_frame = None
+        self.last_observed_monotonic = None
+        self.before_frame = None
+        self.visible_frame = None
+        self.started = None
+        self.pending_before = None
+        self.episode_first_visual_at = None
+        self.episode_confirmed_at = None
+        self.confirmed_receipt_logged = False
+        self.context = {}
+        self.events = deque(maxlen=16)
+        self.event_sequence = 0
+
+    @property
+    def candidate(self):
+        return self.state == "PERSISTENT"
+
+    def observe(self, observation, *, pending=None, receipt=None):
+        if (observation is None or observation.source_frame_id == self.last_frame
+                or not observation.is_fresh() or observation.screen.value != "IN_WORLD_IDLE"):
+            return
+        icon = next((d for d in observation.detections if d.kind == "gift_icon"), None)
+        visible = bool(icon and icon.detected and icon.verified and icon.confidence >= .94
+                       and dict(icon.metadata).get("availability") in {
+                           "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"})
+        previous_frame = self.last_frame
+        previous_at = self.last_observed_monotonic
+        self.last_frame = observation.source_frame_id
+        observed_monotonic = getattr(observation, "observed_monotonic", time.monotonic())
+        self.last_observed_monotonic = observed_monotonic
+        if visible:
+            if (self.state != "ABSENT" and previous_at is not None
+                    and observed_monotonic - previous_at > 5.0):
+                self.state = "ABSENT"
+                self.frames = 0
+            if self.state == "ABSENT":
+                self.before_frame = previous_frame
+                self.visible_frame = observation.source_frame_id
+                self.started = observed_monotonic
+                self.pending_before = pending
+                self.episode_first_visual_at = observation.timestamp
+                self.episode_confirmed_at = None
+                self.confirmed_receipt_logged = False
+                self.frames = 0
+                if self.first_transient_visual_at is None:
+                    self.first_transient_visual_at = observation.timestamp
+            self.frames += 1
+            self.state = "SEEN_ONCE"
+            if self.frames >= 3 or (pending is not None and pending > 0):
+                self.state = "PERSISTENT"
+                self.episode_confirmed_at = observation.timestamp
+                if self.confirmed_first_detection is None:
+                    self.confirmed_first_detection = observation.timestamp
+                if self.frames >= 3 and self.confirmed_persistent_visual_at is None:
+                    self.confirmed_persistent_visual_at = observation.timestamp
+            if receipt and not self.confirmed_receipt_logged:
+                self.event_sequence += 1
+                self.events.append({
+                    **self.context, "event_id": self.event_sequence,
+                    "event": "STALE_GIFT_HUD_AFTER_CONFIRMED_CLAIM",
+                    "timestamp": observation.timestamp,
+                    "account_id": self.context.get("account_id"),
+                    "frames_visible": self.frames,
+                    "first_transient_visual_at": self.episode_first_visual_at,
+                    "confirmed_persistent_visual_at": self.episode_confirmed_at,
+                    "after_frame_id": observation.source_frame_id,
+                    "SetItemOpened_Complete": True, "receipt": True,
+                })
+                self.confirmed_receipt_logged = True
+            return
+        if pending is not None and pending > 0:
+            self.state = "PERSISTENT"
+            self.frames = 0
+            self.confirmed_first_detection = self.confirmed_first_detection or observation.timestamp
+            self.confirmed_persistent_visual_at = (
+                self.confirmed_persistent_visual_at or observation.timestamp
+            )
+            self.episode_confirmed_at = observation.timestamp
+            return
+        if self.state != "ABSENT":
+            self.event_sequence += 1
+            event = {
+                **self.context, "event_id": self.event_sequence,
+                "event": ("STALE_GIFT_HUD_AFTER_CONFIRMED_CLAIM" if receipt else
+                          "GIFT_VISUAL_FLASH" if self.frames < 3 else
+                          "GIFT_VISUAL_DISAPPEARED_UNCONFIRMED"),
+                "timestamp": observation.timestamp, "account_id": self.context.get("account_id"),
+                "frames_visible": self.frames,
+                "first_transient_visual_at": self.episode_first_visual_at,
+                "confirmed_persistent_visual_at": self.episode_confirmed_at,
+                "duration_ms": round((observed_monotonic - self.started) * 1000),
+                "before_frame_id": self.before_frame, "visible_frame_id": self.visible_frame,
+                "after_frame_id": observation.source_frame_id,
+                "item_service_pending_before": self.pending_before,
+                "item_service_pending_during": self.context.get("pending_during"),
+                "item_service_pending_after": pending,
+                "SetItemOpened_Complete": bool(receipt), "receipt": bool(receipt),
+            }
+            self.events.append(event)
+        self.state = "ABSENT"
+        self.frames = 0
+
+    def telemetry(self):
+        return {"state": self.state, "frames_visible": self.frames,
+                "first_transient_visual_at": self.first_transient_visual_at,
+                "confirmed_persistent_visual_at": self.confirmed_persistent_visual_at,
+                "confirmed_first_detection": self.confirmed_first_detection,
+                "events": list(self.events)}
 
 
 def classify_icon(image, detection, template, *, active=None, hover_verified=False):

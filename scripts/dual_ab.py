@@ -309,13 +309,27 @@ def status_characterization(run_id, output):
 
 def fresh_baseline_gift(report, requested_at):
     observation = report.get("details", {}).get("observation", {})
-    gift = (report.get("telemetry") or {}).get("gift_availability_evidence") or {}
+    telemetry = report.get("telemetry") or {}
+    gift = telemetry.get("gift_availability_evidence") or {}
     try:
         observed_at = datetime.fromisoformat(gift["observed_at"].replace("Z", "+00:00")).timestamp()
     except (KeyError, ValueError, AttributeError):
         return None
+    item_service = telemetry.get("item_service") or {}
+    try:
+        cache_at = datetime.fromisoformat(item_service["cache_updated_at"].replace(
+            "Z", "+00:00")).timestamp()
+    except (KeyError, ValueError, AttributeError):
+        cache_at = 0
+    server_pending = (item_service.get("state") == "OK"
+                      and item_service.get("pending_items", 0) > 0
+                      and 0 <= time.time() - cache_at <= 30)
+    persistent_visual = (gift.get("temporal_state") == "PERSISTENT"
+                         and gift.get("availability") in {
+                             "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"})
     if (observation.get("screen") != "IN_WORLD_IDLE" or observation.get("validity") != "VALID"
-            or observed_at < requested_at or not 0 <= time.time() - observed_at <= 20):
+            or observed_at < requested_at or not 0 <= time.time() - observed_at <= 20
+            or not (persistent_visual or server_pending)):
         return None
     return gift
 
@@ -445,7 +459,7 @@ def run_characterization(args, api):
                     and current_gift.get("identity_confidence", 0) >= .94)
                 api.command(account, "DISABLED")
                 gift = state["baseline_gift"]
-                claimable = state["preexisting_pending"]
+                claimable = state["preexisting_pending"] and gift.get("availability") == "GIFT_AVAILABLE"
                 if claimable:
                     pre_session = f"gift-{run_id}-a{account}-r{state['identity']['runtime_id']}-preexisting"
                     append_jsonl(event_path, {"event": "PREEXISTING_AT_RUN_START", "at": utc_now(),

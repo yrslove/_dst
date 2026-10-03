@@ -183,6 +183,10 @@ class XpraInputDriver:
     def key_down(self, key):
         self._call("key", key, True)
 
+    def key_pulse(self, key, duration):
+        # Down/up share one ACK; no transport round-trip extends the hold.
+        self._call("key_pulse", key, duration)
+
     def key_up(self, key):
         self._call("key", key, False)
 

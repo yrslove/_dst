@@ -142,6 +142,7 @@ class GameObservation:
     frame_width: int = 0
     frame_height: int = 0
     gameplay_change: float | None = None
+    local_displacement: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -348,6 +349,58 @@ class FrameChangeMonitor:
         self._last_hash: bytes | None = None
         self._last_gameplay_hash: bytes | None = None
         self._last_changed_at: float | None = None
+        self.local_anchor_enabled = False
+        self._local_patches = []
+        self.local_displacement = None
+        self.local_single_patch = False
+
+    def arm_local_anchor(self):
+        self.local_anchor_enabled = True
+        self._local_patches = []
+        self.local_displacement = None
+
+    def locate_local_anchor(self, frame):
+        """Register static world patches to takeover, excluding player and HUD.
+
+        Coordinates are in the canonical game viewport, never the browser.
+        Require agreement from independent patches; NPC animation cannot alone
+        establish displacement. Missing registration stops movement.
+        """
+        if not self.local_anchor_enabled:
+            return
+        import cv2
+        import numpy as np
+
+        sample = np.asarray(frame.convert("L").resize((640, 360)))
+        if not self._local_patches:
+            for x, y in ((160, 115), (224, 115), (416, 115), (480, 115),
+                         (160, 180), (224, 223), (416, 223), (480, 180),
+                         (288, 140), (352, 140), (256, 220), (320, 260),
+                         (352, 220), (256, 260)):
+                patch = sample[y-16:y+16, x-16:x+16].copy()
+                if float(patch.std()) >= 8:
+                    self._local_patches.append((x, y, patch))
+        shifts = []
+        for x, y, patch in self._local_patches:
+            region = sample[y-40:y+40, x-48:x+48]
+            scores = cv2.matchTemplate(region, patch, cv2.TM_CCOEFF_NORMED)
+            _, score, _, point = cv2.minMaxLoc(scores)
+            if score >= .88:
+                shifts.append((point[0]-32, point[1]-24))
+        self.local_displacement = None
+        if self.local_single_patch and len(shifts) == 1:
+            self.local_displacement = tuple(float(-v*2) for v in shifts[0])
+        elif len(shifts) >= 2:
+            clusters = [[v for v in shifts if np.linalg.norm(np.array(v)-seed) <= 2]
+                        for seed in shifts]
+            clusters.sort(key=len, reverse=True)
+            agreed = clusters[0]
+            # Ambiguous independent clusters must hold input rather than guess.
+            competing = [c for c in clusters if np.linalg.norm(
+                np.median(c, axis=0)-np.median(agreed, axis=0)) > 4]
+            if len(agreed) >= 2 and (not competing or len(agreed) > len(competing[0])):
+                # Camera follows the player; stationary world moves oppositely.
+                self.local_displacement = tuple(float(-v*2) for v in np.median(agreed, axis=0))
 
     @staticmethod
     def frame_digest(frame) -> tuple[str, bytes]:
@@ -358,6 +411,7 @@ class FrameChangeMonitor:
     def update(
         self, frame, now_monotonic: float
     ) -> tuple[str, float | None, bool, float | None]:
+        self.locate_local_anchor(frame)
         digest, current = self.frame_digest(frame)
         width, height = frame.size
         gameplay = frame.crop((
@@ -420,6 +474,7 @@ class VisionDetector:
         self._templates: dict[str, object] = {}
         self._monitor = FrameChangeMonitor()
         self._gift_hover = None
+        self.world_roi_only = False
 
     def arm_gift_hover(self, frame: Frame, observation: GameObservation) -> None:
         from runtime_agent.gameworker.gift_icon import HOVER_ROI
@@ -538,13 +593,26 @@ class VisionDetector:
         image = frame.image()
         digest, change, frozen, gameplay_change = self._monitor.update(image, started)
         names = ("game_hud", "pause_menu", "player_marker", "interaction_prompt")
+        local_world = (self.world_roi_only or self._monitor.local_anchor_enabled) and getattr(self, "_last_local_screen", None) in {
+            DSTScreen.IN_WORLD_IDLE, DSTScreen.IN_WORLD_GIFT_OPENING, DSTScreen.IN_WORLD_GIFT_RECEIVED}
+        local_templates = {"world_inventory_frame", "world_present_banner", "loading_label",
+                           "death_world_reset_text", "death_reset_now_button"}
+        selected_assets = (key for key in self.registry.assets if not local_world
+                           or key in names or key in local_templates
+                           or key.startswith(("gift_icon_active", "inworld_gift_")))
         detected = {
             name: self.detect(image, name, deadline=deadline)
             for name in (
                 *names,
-                *(key for key in self.registry.assets if key not in names),
+                *(key for key in selected_assets if key not in names),
             )
         }
+        active_variants = [
+            value for key, value in detected.items()
+            if key.startswith("gift_icon_active") and value.detected and value.verified
+        ]
+        if active_variants:
+            detected["gift_icon_active"] = max(active_variants, key=lambda item: item.confidence)
         detections = tuple(detected.values())
         game, menu, player, interaction = (detected[name] for name in names)
 
@@ -784,6 +852,15 @@ class VisionDetector:
                 detected["game_hud"].confidence,
                 detected["world_present_banner"].confidence,
             )
+        if screen == DSTScreen.UNKNOWN:
+            # A modal animation must not immediately expand the next frame to
+            # every menu template. Still fall back after sustained uncertainty.
+            self._local_unknown_frames = getattr(self, "_local_unknown_frames", 0) + 1
+            if self._local_unknown_frames >= 8:
+                self._last_local_screen = screen
+        else:
+            self._local_unknown_frames = 0
+            self._last_local_screen = screen
         confidence_threshold = self.default_threshold
         if screen == DSTScreen.IN_WORLD_IDLE:
             marker_asset = self.registry.assets.get("player_marker")
@@ -945,6 +1022,7 @@ class VisionDetector:
             frame_width=frame.width,
             frame_height=frame.height,
             gameplay_change=gameplay_change,
+            local_displacement=self._monitor.local_displacement,
         )
 
 

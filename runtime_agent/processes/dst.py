@@ -12,6 +12,7 @@ from app.runtime.world_profile import (
     desired_profile_hash,
     loaded_profile,
     read_process_evidence,
+    reconcile_idle_timeout,
     reconcile_world_profile,
     record_process_evidence,
     refresh_process_evidence,
@@ -66,6 +67,7 @@ class DSTProcess:
                 previous_before_start()
             self.readiness_file.unlink(missing_ok=True)
             self._pending_reconciliation = None
+            reconcile_idle_timeout(user_root=self.user_root)
             if self.safe_idle_world_profile:
                 self.evidence_path.unlink(missing_ok=True)
                 try:

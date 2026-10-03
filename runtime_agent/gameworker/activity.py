@@ -10,6 +10,7 @@ from enum import StrEnum
 from typing import ClassVar, Protocol
 
 from runtime_agent.gameworker.actions import ActionName, ActionResult, ActionStatus
+from runtime_agent.gameworker.gift_icon import GiftTemporalEvidence
 from runtime_agent.gameworker.vision import DSTScreen, GameObservation
 
 logger = logging.getLogger("runtime_agent.gameworker.behavior")
@@ -20,6 +21,7 @@ class ActionProposal:
     action: ActionName
     duration: float | None = None
     reason: str | None = None
+    target: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.action, ActionName) or self.action is ActionName.NONE:
@@ -54,6 +56,7 @@ class InWorldGiftState(StrEnum):
     CLAIMED = "IN_WORLD_GIFT_CLAIMED"
     UI_CLOSED = "IN_WORLD_GIFT_UI_CLOSED"
     CONFIRMED = "IN_WORLD_GIFT_CONFIRMED"
+    PENDING_UNCLAIMED = "PENDING_GIFT_UNCLAIMED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +158,7 @@ class ActivityController:
         ),
         ActionName.START_SURVIVOR: frozenset({DSTScreen.IN_WORLD_IDLE}),
         ActionName.TURN_LEFT: frozenset({DSTScreen.IN_WORLD_IDLE}),
+        ActionName.TURN_RIGHT: frozenset({DSTScreen.IN_WORLD_IDLE}),
         ActionName.MOVE_FORWARD: frozenset({
             DSTScreen.IN_WORLD_IDLE, DSTScreen.LOADING, DSTScreen.DEAD,
             DSTScreen.WORLD_RESET_PENDING, DSTScreen.MAIN_MENU,
@@ -211,9 +215,15 @@ class ActivityController:
         self.inworld_close_evidence: dict | None = None
         self._inworld_received_evidence: dict | None = None
         self._inworld_close_attempts = 0
+        self._gift_clicked_monotonic: float | None = None
         self.gift_availability_evidence: dict | None = None
+        self.gift_visual = GiftTemporalEvidence()
+        self.gift_claim_state = "NO_GIFT"
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
+        self.claim_not_actionable = False
+        self._gift_retry_at = 0.0
+        self.gift_attempt: dict | None = None
         self._gift_station_approach_attempted = False
         self._gift_station_approach_step = 0
         self._gift_station_crafting_opened = False
@@ -250,20 +260,27 @@ class ActivityController:
         self.inworld_close_evidence = None
         self._inworld_received_evidence = None
         self._inworld_close_attempts = 0
+        self._gift_clicked_monotonic = None
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
+        self.claim_not_actionable = False
+        self._gift_retry_at = 0.0
+        self.gift_attempt = None
         self._gift_station_approach_attempted = False
         self._gift_station_approach_step = 0
         self._awaiting_reward_transition = False
         self.intervention_required = False
         self._recoverable_intervention_action = None
+        if self.locomotion:
+            self.locomotion.gift_latched = False
 
     def _recoverable_action(self, action):
         return (action in {ActionName.TURN_RIGHT, ActionName.MOVE_BACKWARD}
                 and self._gift_station_approach_attempted
                 and self._gift_station_approach_step < 4) or action in self.RECOVERABLE_WORLD_ENTRY_ACTIONS or (
             self.locomotion is not None and self.locomotion.profile
-            and action in {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD}
+            and action in {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
+                           ActionName.TURN_LEFT, ActionName.TURN_RIGHT, ActionName.CLICK_LOCAL_TARGET}
         )
 
     @property
@@ -290,15 +307,40 @@ class ActivityController:
         self.decisions.append(decision)
         logger.info("dst_behavior_decision %s", json.dumps(decision, sort_keys=True))
 
+    def observe_gift(self, observation):
+        """Latch one fresh confident ACTIVE frame, even during movement verification."""
+        if (self.locomotion is None or not self.locomotion.profile
+                or not observation.production_ready or not observation.is_fresh()
+                or observation.screen != DSTScreen.IN_WORLD_IDLE):
+            return False
+        icon = next((d for d in observation.detections if d.kind == "gift_icon"), None)
+        active = bool(icon and icon.detected and icon.verified and icon.bounds
+                      and icon.confidence >= .94
+                      and dict(icon.metadata).get("availability") == "GIFT_AVAILABLE")
+        if active:
+            self.locomotion.gift_latched = True
+            self._active_gift_latched_at = time.monotonic()
+        elif (self.locomotion.gift_latched and not self._awaiting_reward_transition
+              and time.monotonic() - getattr(self, "_active_gift_latched_at", 0) >= 20):
+            # Failed re-localization may resume only the same bounded local zone.
+            self.locomotion.gift_latched = False
+        return active
+
     def propose(self, observation: GameObservation) -> ActionProposal | None:
         if self.claim_evidence is not None:
             self.claim_evidence.observe(observation)
             self.gift_claim_ready = self.claim_evidence.ready
+            self.gift_visual = getattr(self.claim_evidence, "temporal", self.gift_visual)
+        self.gift_visual.observe(observation)
+        active_gift = self.observe_gift(observation)
         if not observation.production_ready:
             self._validation_world_frames = 0
             self._validation_last_world_sequence = None
             self.on_unknown(observation)
             return None
+        if self.claim_not_actionable and time.monotonic() >= self._gift_retry_at:
+            self.claim_not_actionable = False
+            self._gift_icon_click_attempts = 0
         icon = next((d for d in observation.detections if d.kind == "gift_icon"), None)
         if observation.screen == DSTScreen.IN_WORLD_IDLE:
             if not observation.is_fresh(time.monotonic()):
@@ -306,6 +348,11 @@ class ActivityController:
                 return None
             evidence = dict(icon.metadata) if icon is not None else {}
             availability = evidence.get("availability", "GIFT_AVAILABILITY_UNKNOWN")
+            self.gift_claim_state = ("GIFT_CLAIMABLE" if self.gift_visual.candidate
+                                     and availability == "GIFT_AVAILABLE" else
+                                     "GIFT_PENDING" if self.gift_visual.candidate else "NO_GIFT")
+            if self.claim_not_actionable and availability == "NO_REWARD_AVAILABLE":
+                self.claim_not_actionable = False
             world_states = {
                 "IN_WORLD_GIFT_PENDING": InWorldGiftState.PENDING_STATION,
                 "GIFT_AVAILABLE": InWorldGiftState.ACTIONABLE,
@@ -315,6 +362,10 @@ class ActivityController:
             self.inworld_gift_state = world_states.get(
                 availability, InWorldGiftState.AVAILABILITY_UNKNOWN
             )
+            if self.claim_not_actionable and availability in {
+                "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"
+            }:
+                self.inworld_gift_state = InWorldGiftState.PENDING_UNCLAIMED
             self.gift_availability_evidence = {
                 **evidence,
                 "semantic": self.inworld_gift_state.value,
@@ -323,6 +374,10 @@ class ActivityController:
                 "evidence_frame_id": observation.source_frame_id,
                 "evidence_sequence": observation.source_sequence,
                 "observed_at": observation.timestamp,
+                "temporal_state": self.gift_visual.state,
+                "confirmed_first_detection": self.gift_visual.confirmed_first_detection,
+                "first_transient_visual_at": self.gift_visual.first_transient_visual_at,
+                "confirmed_persistent_visual_at": self.gift_visual.confirmed_persistent_visual_at,
                 "calibration_profile": observation.calibration_profile_id,
                 "icon_bounds": (
                     [
@@ -356,6 +411,13 @@ class ActivityController:
             self._candidate_frames = 1
         else:
             self._candidate_frames += 1
+        if (observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
+                and observation.production_ready
+                and observation.screen_confidence >= 0.94
+                and any(d.kind == "inworld_gift_use_later" and d.detected
+                        and d.verified and d.confidence >= 0.94
+                        for d in observation.detections)):
+            self._candidate_frames = max(2, self._candidate_frames)
         if self._candidate_frames >= 2 and observation.screen != self.state:
             self.state = observation.screen
             self._dry_run_seen = False
@@ -372,7 +434,7 @@ class ActivityController:
         if self._awaiting_reward_transition:
             self._record(observation, "NONE", "awaiting reward transition")
             return None
-        if self.state != observation.screen or self._candidate_frames < 2:
+        if (self.state != observation.screen or self._candidate_frames < 2) and not active_gift:
             self._record(observation, "NONE", "hysteresis")
             return None
         if self.intervention_required:
@@ -383,6 +445,14 @@ class ActivityController:
             and observation.screen == DSTScreen.IN_WORLD_GIFT_RECEIVED
             and self._inworld_close_attempts < 2
         ):
+            # RECEIVED may be recognized before the native reveal/open sequence
+            # finishes. Keep the popup visible for ten seconds after our click.
+            # Recovery into an existing popup starts the same bounded dwell.
+            if self._gift_clicked_monotonic is None:
+                self._gift_clicked_monotonic = observation.observed_monotonic
+            if observation.observed_monotonic - self._gift_clicked_monotonic < 10.0:
+                self._record(observation, "NONE", "waiting for gift reveal/open sequence")
+                return None
             self._inworld_close_attempts += 1
             return ActionProposal(
                 ActionName.CLICK_INWORLD_USE_LATER,
@@ -396,19 +466,24 @@ class ActivityController:
             and icon.verified
             and icon.bounds is not None
             and icon.confidence >= 0.94
-            and (
-                dict(icon.metadata).get("availability") == "GIFT_AVAILABLE"
-                or dict(icon.metadata).get("availability") == "IN_WORLD_GIFT_PENDING"
-            )
+            and dict(icon.metadata).get("availability") == "GIFT_AVAILABLE"
+            and (active_gift or self.gift_visual.candidate)
             and self.gift_claim_ready
-            and self._gift_icon_click_attempts < 2
+            and not self.claim_not_actionable
+            and self._gift_icon_click_attempts < 3
         ):
             self._gift_icon_click_attempts += 1
-            reason = (
-                "open the fresh, verified pending in-world gift"
-                if dict(icon.metadata).get("availability") == "IN_WORLD_GIFT_PENDING"
-                else "open the reward UI from the fresh active gift icon"
-            )
+            self.gift_attempt = {
+                "before_frame_id": observation.source_frame_id,
+                "claim_started_at": observation.timestamp,
+                "claim_attempt_count": self._gift_icon_click_attempts,
+                "gift_bbox": [icon.bounds.left, icon.bounds.top, icon.bounds.right, icon.bounds.bottom],
+                "center_x": (icon.bounds.left + icon.bounds.right) / 2,
+                "center_y": (icon.bounds.top + icon.bounds.bottom) / 2,
+                "icon_bounds": self.gift_availability_evidence.get("icon_bounds"),
+                "status": "CLAIM_ATTEMPT",
+            }
+            reason = "open the reward UI from the fresh active gift icon"
             return ActionProposal(ActionName.CLICK_GIFT_ICON, reason=reason)
         if (
             self.production_actions_enabled
@@ -589,11 +664,9 @@ class ActivityController:
                 if proposal.action == ActionName.CLICK_HOST_GAME:
                     self._production_host_source_sequence = observation.source_sequence
                 return proposal
-        if self.production_actions_enabled and self.locomotion:
-            movement = self.locomotion.proposal(observation)
-            if movement is not None:
-                return ActionProposal(movement[0], duration=movement[1],
-                                      reason=f"{self.locomotion.profile} locomotion")
+        # Production waits at the gift station. Legacy experiment profiles keep
+        # their identities/time accounting, but never select cyclic targets.
+        # Locomotion remains available to explicit, bounded recovery tooling.
         if self.validation_flow_enabled:
             if self.state in {DSTScreen.DEAD, DSTScreen.WORLD_RESET_PENDING}:
                 self._validation_step = 3
@@ -966,12 +1039,18 @@ class ActivityController:
             ActionName.MOVE_BACKWARD,
             ActionName.TURN_LEFT,
             ActionName.TURN_RIGHT,
+            ActionName.CLICK_LOCAL_TARGET,
             ActionName.CANCEL,
             ActionName.RESUME_WORLD,
             ActionName.PAUSE_WORLD,
             ActionName.INTERACT,
         }:
             if result.status == ActionStatus.VERIFYING:
+                if result.action == ActionName.CLICK_GIFT_ICON:
+                    self._gift_clicked_monotonic = time.monotonic()
+                    self.gift_claim_state = "CLAIM_IN_PROGRESS"
+                    if hasattr(self.claim_evidence, "start_attempt"):
+                        self.claim_evidence.start_attempt(observation, result.action_id)
                 if (self.production_actions_enabled and not self.validation_flow_enabled
                         and self._recoverable_action(result.action)):
                     self._production_world_entry_action_id = result.action_id
@@ -986,15 +1065,32 @@ class ActivityController:
                     self.daily_gift_state = DailyGiftState.GIFT_INTERACTION_STARTED
             elif (
                 result.action == ActionName.CLICK_GIFT_ICON
-                and result.status == ActionStatus.TIMED_OUT
                 and self.production_actions_enabled
                 and observation.screen == DSTScreen.IN_WORLD_IDLE
-                and self._gift_icon_click_attempts < 2
+                and (
+                    result.status == ActionStatus.TIMED_OUT
+                    or (result.status == ActionStatus.SAFETY_BLOCKED
+                        and result.reason in {
+                            "gift detection is stale",
+                            "fresh active gift detection is unavailable",
+                            "fresh claimable gift detection is unavailable",
+                        })
+                )
             ):
-                # The verified-transition handler below permits one fresh
-                # production retry when the world stayed in-world and the
-                # actionable gift icon is still independently detected.
+                # A rejected gift precondition sends no input. A bounded
+                # deadline cancellation must be followed by fresh perception;
+                # neither result confirms a claim or requires stopping play.
                 self._awaiting_reward_transition = False
+                self.claim_not_actionable = (
+                    result.status == ActionStatus.SAFETY_BLOCKED
+                    or self._gift_icon_click_attempts >= 3
+                )
+                if self.claim_not_actionable:
+                    self._gift_retry_at = time.monotonic() + 45.0
+                self.inworld_gift_state = InWorldGiftState.PENDING_UNCLAIMED
+                self.intervention_required = False
+                if self.gift_attempt:
+                    self.gift_attempt["status"] = result.status.value
             elif result.status == ActionStatus.SUPPRESSED:
                 self._dry_run_seen = True
             elif result.status not in {ActionStatus.PREEMPTED} and result.terminal:
@@ -1018,18 +1114,21 @@ class ActivityController:
     def on_verified(self, observation: GameObservation, result: ActionResult) -> None:
         if self.locomotion:
             self.locomotion.verified(result)
-        if (result.status == ActionStatus.SUCCEEDED
-                and self._gift_station_approach_step < 4
-                and result.action == (ActionName.TURN_RIGHT, ActionName.MOVE_BACKWARD)[
-                    self._gift_station_approach_step % 2
-                ]):
-            self._gift_station_approach_step += 1
+        if (self.locomotion and self.locomotion.profile
+                and result.action in {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
+                                      ActionName.TURN_LEFT, ActionName.TURN_RIGHT, ActionName.CLICK_LOCAL_TARGET}):
+            self._awaiting_reward_transition = False
+            self.intervention_required = False
+            self._recoverable_intervention_action = None
+            self._record(observation, result.action.value, "local target displacement", result.status.value)
+            return
         if result.action == ActionName.CLICK_INWORLD_USE_LATER:
             self._awaiting_reward_transition = False
             if result.status == ActionStatus.SUCCEEDED and self._inworld_received_evidence:
                 self.inworld_gift_state = InWorldGiftState.UI_CLOSED
                 self.inworld_close_evidence = {
                     **self._inworld_received_evidence,
+                    "active_gift_icon_disappeared": True,
                     "worker_generation": observation.worker_generation,
                     "evidence_frame_id": observation.source_frame_id,
                     "evidence_sequence": observation.source_sequence,
@@ -1065,6 +1164,13 @@ class ActivityController:
                 self.on_unknown(observation)
             return
         if result.action == ActionName.CLICK_GIFT_ICON:
+            if self.gift_attempt:
+                self.gift_attempt.update(
+                    after_frame_id=observation.source_frame_id,
+                    after_screen=observation.screen.value,
+                    status=result.status.value,
+                    transition_verified=result.status == ActionStatus.SUCCEEDED,
+                )
             self._awaiting_reward_transition = False
             if result.status == ActionStatus.SUCCEEDED:
                 self.inworld_gift_state = (
@@ -1076,12 +1182,15 @@ class ActivityController:
                 self.counters["verified_actions"] += 1
             elif (
                 result.status == ActionStatus.TIMED_OUT
-                and observation.screen == DSTScreen.IN_WORLD_IDLE
-                and self._gift_icon_click_attempts < 2
             ):
-                # Retry only through the normal planner on a later fresh frame;
-                # it must still detect the active icon before proposing a click.
-                self.inworld_gift_state = InWorldGiftState.ACTIONABLE
+                # A production timeout is a single bounded attempt. Keep gift
+                # telemetry, suppress further clicks, and let the locomotion
+                # planner continue on the next fresh in-world observation.
+                self.claim_not_actionable = True
+                self._gift_retry_at = time.monotonic() + 20.0
+                self.gift_claim_state = "CLAIM_UNKNOWN"
+                self.inworld_gift_state = InWorldGiftState.PENDING_UNCLAIMED
+                self.intervention_required = False
             else:
                 self.intervention_required = True
             self._record(
@@ -1239,6 +1348,35 @@ class ActivityController:
             self.on_action_failure(result)
 
     def on_action_failure(self, result: ActionResult) -> None:
+        if (result.action == ActionName.CLICK_INWORLD_USE_LATER
+                and result.status == ActionStatus.TIMED_OUT
+                and self._inworld_close_attempts < 2):
+            # The deadline poll has no observation. Re-localize the received
+            # modal before the existing final retry, without claiming success.
+            self._awaiting_reward_transition = False
+            self.intervention_required = False
+            self._recoverable_intervention_action = None
+            return
+        if (self.locomotion and self.locomotion.profile
+                and result.action in {ActionName.CLICK_LOCAL_TARGET, ActionName.HOVER_GIFT_ICON}
+                and result.status == ActionStatus.TIMED_OUT):
+            self.locomotion.verified(result)
+            self._awaiting_reward_transition = False
+            self.intervention_required = False
+            self._recoverable_intervention_action = None
+            return
+        if (result.action == ActionName.CLICK_GIFT_ICON
+                and result.status == ActionStatus.TIMED_OUT):
+            # A transition deadline has no fresh frame. Release the latch and
+            # wait for a fresh verified world/icon before a bounded retry.
+            self._awaiting_reward_transition = False
+            self.claim_not_actionable = True
+            self._gift_retry_at = time.monotonic() + 20.0
+            self.gift_claim_state = "CLAIM_UNKNOWN"
+            self.intervention_required = False
+            if self.gift_attempt:
+                self.gift_attempt.update(status=result.status.value, transition_verified=False)
+            return
         if self.locomotion:
             self.locomotion.verified(result)
         self._awaiting_reward_transition = False

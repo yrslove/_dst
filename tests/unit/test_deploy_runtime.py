@@ -12,6 +12,7 @@ from scripts.deploy_runtime import (
     GUEST_PROBE,
     GUEST_RECOVER_STALLED_AGENT,
     DeployError,
+    agent_loaded_since,
     assert_clean_tree,
     guest_probe,
     make_metadata,
@@ -19,6 +20,24 @@ from scripts.deploy_runtime import (
     require_revision,
     runtime_files,
 )
+
+
+def test_deploy_requires_loaded_agent_revision_after_reload(monkeypatch):
+    calls = []
+
+    def journal(command):
+        calls.append(command)
+        return "runtime_heartbeat_accepted phase=GAME_READY"
+
+    monkeypatch.setattr('scripts.deploy_runtime.run', journal)
+    assert not agent_loaded_since('guest', 'a' * 40, 100.25)
+    assert calls[0][calls[0].index('--since') + 1] == '@100.250000'
+    monkeypatch.setattr('scripts.deploy_runtime.run', lambda _: (
+        'INFO:runtime_agent:runtime_agent_started deployed_revision=' + 'a' * 40))
+    assert agent_loaded_since('guest', 'a' * 40, 100.25)
+    monkeypatch.setattr('scripts.deploy_runtime.run', lambda _: (
+        'INFO:runtime_agent:runtime_agent_reload_preserving_managed_processes runtime_id=4'))
+    assert agent_loaded_since('guest', 'a' * 40, 100.25)
 
 
 def test_runtime_manifest_excludes_non_runtime_content() -> None:

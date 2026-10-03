@@ -27,6 +27,7 @@ class ActionName(StrEnum):
     MOVE_BACKWARD = "MOVE_BACKWARD"
     TURN_LEFT = "TURN_LEFT"
     TURN_RIGHT = "TURN_RIGHT"
+    CLICK_LOCAL_TARGET = "CLICK_LOCAL_TARGET"
     PAUSE_WORLD = "PAUSE_WORLD"
     INTERACT = "INTERACT"
     HOVER_GIFT_ICON = "HOVER_GIFT_ICON"
@@ -181,9 +182,10 @@ _PRESS_KEYS = {
     ActionName.PAUSE_WORLD: "cancel",
 }
 CLICK_REGIONS = {
-    ActionName.HOVER_GIFT_ICON: (0.115, 0.0, 0.36, 0.14),
+    ActionName.CLICK_LOCAL_TARGET: (0.45, 0.49, 0.55, 0.62),
+    ActionName.HOVER_GIFT_ICON: (0.035, 0.0, 0.36, 0.14),
     # Guard only. The actual point is resolved from the current gift detection.
-    ActionName.CLICK_GIFT_ICON: (0.115, 0.0, 0.36, 0.14),
+    ActionName.CLICK_GIFT_ICON: (0.035, 0.0, 0.36, 0.14),
     ActionName.CLICK_INWORLD_USE_LATER: (0.34, 0.79, 0.51, 0.9),
     ActionName.CLICK_REWARD_OPEN: (0.35, 0.75, 0.65, 0.97),
     ActionName.CLICK_REWARD_CLOSE: (0.35, 0.75, 0.65, 0.97),
@@ -530,6 +532,20 @@ class ActionExecutor:
         )
         result = ticket.wait(1.0)
         if result is not None:
+            # A deadline cancellation is recoverable only after the executor
+            # acknowledged it and released every held/uncertain input. Never
+            # reopen a gate closed by pause, shutdown, or the deadman.
+            with self._lock:
+                recoverable = (
+                    result.status == ActionStatus.TIMED_OUT
+                    and ticket.cancel_status == ActionStatus.TIMED_OUT
+                    and not self._closed
+                    and not self.deadman.tripped
+                    and self._gate_is_open(self._state)
+                )
+            if (recoverable and not self.controller.has_held_inputs
+                    and not self.controller.uncertain_inputs):
+                self.reset()
             return result
         result = self._result(
             action, ActionStatus.TIMED_OUT, reason="executor did not stop in time"
@@ -650,10 +666,14 @@ class ActionExecutor:
                 self.deadman.touch()
                 if action.name in _MOVEMENT_KEYS:
                     key = getattr(self.bindings, _MOVEMENT_KEYS[action.name])
-                    self.controller.key_down(key)
+                    assert action.duration is not None
+                    pulsed = .025 <= action.duration <= .10 and self.controller.key_pulse(key, action.duration)
+                    if not pulsed:
+                        self.controller.key_down(key)
                     try:
-                        assert action.duration is not None
-                        end = started + action.duration
+                        # Hold for the requested duration after key-down ACK;
+                        # transport latency must not consume the movement.
+                        end = self._clock() + (0 if pulsed else action.duration)
                         while self._clock() < end:
                             if ticket.cancel_status is not None:
                                 return self._result(
@@ -712,6 +732,12 @@ class ActionExecutor:
                                     reason="transport exceeded deadline")
             return self._result(action, ActionStatus.SENT, started=started)
         except InputError as exc:
+            if ticket.cancel_status is not None and self.controller.revoked:
+                self.controller.release_all(reason="cancelled_input")
+                return self._result(
+                    action, ticket.cancel_status, started=started,
+                    reason=ticket.cancel_reason,
+                )
             with self._lock:
                 self._faulted = True
             self.controller.revoke()

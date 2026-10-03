@@ -18,7 +18,11 @@ from runtime_agent.gameworker.capture import (
     LatestFrameSlot,
 )
 from runtime_agent.gameworker.config import WorkerMode
-from runtime_agent.gameworker.geometry import CalibrationProfile
+from runtime_agent.gameworker.geometry import (
+    CalibrationProfile,
+    NormalizedPoint,
+    Viewport,
+)
 from runtime_agent.gameworker.transitions import (
     CONTRACTS,
     ActionLifecycle,
@@ -382,6 +386,18 @@ class ObservePipeline:
             or observation.observed_monotonic + self.max_observation_age < now
         ):
             return PipelineOutcome("STALE_OBSERVATION", frame.frame_id, observation)
+        gift_hook = getattr(self.planner, "observe_gift", None)
+        active_gift = bool(gift_hook and gift_hook(observation))
+        pending = self.action_lifecycle.pending
+        if (active_gift and pending is not None and pending.result.action in {
+                ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
+                ActionName.TURN_LEFT, ActionName.TURN_RIGHT, ActionName.CLICK_LOCAL_TARGET}):
+            self.actions.release_all()
+            cancelled = self.action_lifecycle._status(
+                ActionStatus.PREEMPTED, "active gift preempts local movement", clear=True)
+            callback = getattr(self.planner, "on_verified", None)
+            if callback is not None:
+                callback(observation, cancelled)
         if self.action_lifecycle.pending is not None:
             verified_result = self.action_lifecycle.observe(observation)
             result = verified_result or self.action_lifecycle.current()
@@ -472,6 +488,9 @@ class ObservePipeline:
                     result,
                     reason=precondition_error,
                 )
+            if proposal.action == ActionName.CLICK_LOCAL_TARGET:
+                target = NormalizedPoint(*proposal.target)
+                viewport = Viewport(observation.frame_width, observation.frame_height)
             if contract.anchors:
                 try:
                     target, viewport = click_request(proposal.action, observation)

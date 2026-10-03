@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -94,6 +95,54 @@ def test_session_claims_require_correct_account_ack_and_independent_runtime(tmp_
     assert not (b.evidence / "claim.json").exists()
 
 
+def test_native_ack_waits_for_fresh_world_and_active_icon_disappearance(tmp_path):
+    from types import SimpleNamespace
+
+    from runtime_agent.gameworker.vision import DSTScreen
+
+    cache = tmp_path / 'account/client_save/inventory_cache_prod'
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({'Error': False, 'UserID': 'KU_1', 'Items': [
+        {'ItemID': 7, 'ItemType': 'TEST_ITEM', 'Context': 3},
+    ]}))
+    provider = SessionClaimEvidence(tmp_path, tmp_path / 'evidence', {
+        'account_id': 1, 'runtime_id': 1, 'experiment_session_id': 'unknown-reward-frame',
+    })
+    provider.before_tick()
+    before_click = SimpleNamespace(runtime_id=1, source_frame_id='before-click',
+        source_sequence=1, worker_generation=2, timestamp=datetime.now(UTC).isoformat())
+    provider.start_attempt(before_click, 'canonical-click-1')
+    attempt = datetime.fromisoformat(provider.attempt['claim_attempt_at']).timestamp()
+    (tmp_path / 'client_log.txt').write_text(
+        '[SetItemOpened_Complete Success:200] ' + json.dumps({
+            'Error': False, 'ItemID': 7, 'ItemType': 'TEST_ITEM',
+            'Modified': attempt + .01, 'UserID': 'KU_1',
+        }) + '\n'
+    )
+    unknown = SimpleNamespace(runtime_id=1, screen=DSTScreen.UNKNOWN,
+        source_frame_id='unknown-after-click', production_ready=True,
+        is_fresh=lambda: True, detections=[])
+    assert provider.observe(unknown) is None
+    world = SimpleNamespace(runtime_id=1, screen=DSTScreen.IN_WORLD_IDLE,
+        source_frame_id='world-after-click', source_sequence=3, worker_generation=2,
+        production_ready=True, is_fresh=lambda: True, detections=[],
+        timestamp=datetime.now(UTC).isoformat())
+    for availability in ('IN_WORLD_GIFT_PENDING', 'GIFT_AVAILABLE'):
+        blocked = SimpleNamespace(**{**vars(world),
+            'source_frame_id': f'gift-remains-{availability}',
+            'as_dict': lambda: {'source_frame_id': 'gift-remains'},
+            'detections': [SimpleNamespace(kind='gift_icon', detected=True,
+                verified=True, confidence=.99, metadata=(('availability', availability),))]})
+        assert provider.observe(blocked) is None
+        assert provider.provider.receipt is None
+    receipt = provider.observe(world)
+    assert receipt['active_gift_icon_disappeared'] is True
+    assert receipt['evidence_frame_id'] == 'world-after-click'
+    assert receipt['backend']['operation'] == 'SetItemOpened_Complete'
+    assert receipt['backend']['http_status'] == 200
+    assert receipt['action_id'] == 'canonical-click-1'
+
+
 def recording(tmp_path, *, screen='IN_WORLD_GIFT_RECEIVED', mode='ACTIVE', later=False):
     root = tmp_path / 'recording'
     root.mkdir()
@@ -171,12 +220,19 @@ def test_live_gift_can_precede_cache_but_cannot_reclaim_known_item(tmp_path):
     })
     provider.before_tick()
     assert not provider.ready
-    obs = SimpleNamespace(runtime_id=4, production_ready=True, is_fresh=lambda: True,
-        screen=DSTScreen.IN_WORLD_IDLE, source_frame_id="r4-new",
-        timestamp=datetime.now(UTC).isoformat(), as_dict=lambda: {'source_frame_id': 'r4-new'},
-        detections=[SimpleNamespace(kind='gift_icon', detected=True, verified=True,
-            confidence=.99, metadata=(('availability', 'GIFT_AVAILABLE'),))])
-    provider.observe(obs)
+    base = time.monotonic()
+    obs = None
+    for sequence in range(3):
+        obs = SimpleNamespace(runtime_id=4, production_ready=True, is_fresh=lambda: True,
+            screen=DSTScreen.IN_WORLD_IDLE, source_frame_id=f"r4-new-{sequence}",
+            source_sequence=sequence + 1, observed_monotonic=base + sequence * .1,
+            timestamp=datetime.now(UTC).isoformat(),
+            as_dict=lambda sequence=sequence: {'source_frame_id': f'r4-new-{sequence}'},
+            detections=[SimpleNamespace(kind='gift_icon', detected=True, verified=True,
+                confidence=.99, metadata=(('availability', 'GIFT_AVAILABLE'),))])
+        if sequence == 0:
+            first_active_at = obs.timestamp
+        provider.observe(obs)
     assert provider.ready
     assert (provider.evidence / 'detection.json').exists()
     started = provider.provider.started_at
@@ -201,7 +257,7 @@ def test_live_gift_can_precede_cache_but_cannot_reclaim_known_item(tmp_path):
     receipt = provider.confirm(result)
     assert receipt['item_id'] == 8
     assert receipt['experiment_session_id'] == 'uncached-live-gift'
-    assert receipt['detection_timestamp'] == obs.timestamp
+    assert receipt['detection_timestamp'] == first_active_at
 
 
 def test_received_claim_recovers_from_archived_ack_after_log_rotation(tmp_path):
@@ -238,7 +294,12 @@ def test_received_claim_recovers_from_archived_ack_after_log_rotation(tmp_path):
     world = observation(DSTScreen.IN_WORLD_IDLE, 3)
     assert resumed.observe(world) is None
     assert resumed.observe(world) is None
-    receipt = resumed.observe(observation(DSTScreen.IN_WORLD_IDLE, 4))
+    clear = observation(DSTScreen.IN_WORLD_IDLE, 4)
+    clear.detections = []
+    assert resumed.observe(clear) is None
+    clear = observation(DSTScreen.IN_WORLD_IDLE, 5)
+    clear.detections = []
+    receipt = resumed.observe(clear)
     assert receipt['item_id'] == 7
     assert receipt['completion_path'] == 'FRESH_WORLD_AFTER_RECEIVED_UI_RECOVERY'
     assert receipt['experiment_session_id'] == identity['experiment_session_id']

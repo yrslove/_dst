@@ -72,9 +72,14 @@ CONTRACTS = {
         ("inworld_gift_use_later",),
         frozenset({DSTScreen.IN_WORLD_GIFT_RECEIVED}),
         frozenset({DSTScreen.IN_WORLD_IDLE}),
-        timeout=45.0,
+        timeout=6.0,
+        stable_observations=1,
         required_detections=("inworld_gift_received_title",),
         postcondition_hidden_detections=("inworld_gift_received_title", "inworld_gift_use_later"),
+    ),
+    ActionName.CLICK_LOCAL_TARGET: ActionContract(
+        (), frozenset({DSTScreen.IN_WORLD_IDLE}),
+        frozenset({DSTScreen.IN_WORLD_IDLE}), timeout=3.0,
     ),
     ActionName.MOVE_FORWARD: ActionContract(
         (), frozenset({DSTScreen.IN_WORLD_IDLE}),
@@ -227,9 +232,7 @@ def action_precondition_error(
             or not icon.verified
             or icon.bounds is None
             or icon.confidence < contract.confidence
-            or dict(icon.metadata).get("availability") not in {
-                "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"
-            }
+            or dict(icon.metadata).get("availability") != "GIFT_AVAILABLE"
         ):
             return "fresh claimable gift detection is unavailable"
     if (
@@ -276,6 +279,7 @@ class PendingAction:
     count: int = 0
     changed: bool = False
     movement_evidence: float | None = None
+    local_origin: tuple[float, float] | None = None
 
 
 class ActionLifecycle:
@@ -304,6 +308,7 @@ class ActionLifecycle:
             )
         self.pending = PendingAction(
             result, contract, self.clock(), observation.source_sequence,
+            local_origin=observation.local_displacement,
             changed=(
                 contract.min_screen_change == 0
                 and contract.min_gameplay_change == 0
@@ -314,6 +319,44 @@ class ActionLifecycle:
     def observe(self, observation: GameObservation) -> ActionResult | None:
         pending = self.pending
         if pending is None:
+            return None
+        if pending.result.action == ActionName.CLICK_LOCAL_TARGET:
+            if (pending.local_origin is not None and observation.local_displacement is not None
+                    and observation.production_ready and observation.is_fresh(self.clock())
+                    and observation.runtime_id == pending.result.runtime_id
+                    and observation.runtime_generation == pending.result.runtime_generation
+                    and observation.worker_generation == pending.result.worker_generation
+                    and observation.source_sequence > pending.last_sequence
+                    and observation.source_captured_monotonic >= pending.sent_at
+                    and observation.screen == DSTScreen.IN_WORLD_IDLE):
+                dx = observation.local_displacement[0] - pending.local_origin[0]
+                dy = observation.local_displacement[1] - pending.local_origin[1]
+                if dx*dx + dy*dy >= 4:
+                    return self._status(ActionStatus.SUCCEEDED, "fresh local click displacement", clear=True)
+            if self.clock() - pending.sent_at >= 3:
+                return self._status(ActionStatus.TIMED_OUT, "local click not verified; next cycle point", clear=True)
+            return None
+        if pending.local_origin is not None and pending.result.action in {
+                ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
+                ActionName.TURN_LEFT, ActionName.TURN_RIGHT}:
+            if (observation.production_ready and observation.is_fresh(self.clock())
+                    and observation.runtime_id == pending.result.runtime_id
+                    and observation.runtime_generation == pending.result.runtime_generation
+                    and observation.worker_generation == pending.result.worker_generation
+                    and observation.source_sequence > pending.last_sequence
+                    and observation.source_captured_monotonic >= pending.sent_at
+                    and observation.screen == DSTScreen.IN_WORLD_IDLE
+                    and observation.local_displacement is not None):
+                dx = observation.local_displacement[0] - pending.local_origin[0]
+                dy = observation.local_displacement[1] - pending.local_origin[1]
+                projected = {ActionName.TURN_RIGHT: dx, ActionName.TURN_LEFT: -dx,
+                             ActionName.MOVE_FORWARD: -dy, ActionName.MOVE_BACKWARD: dy}[pending.result.action]
+                if projected >= 2:
+                    return self._status(ActionStatus.SUCCEEDED,
+                                        "fresh world registration verifies directional displacement", clear=True)
+            if self.clock() - pending.sent_at >= 3:
+                return self._status(ActionStatus.TIMED_OUT,
+                                    "local target temporarily obstructed or anchor unavailable", clear=True)
             return None
         if self.clock() - pending.sent_at >= pending.contract.timeout:
             return self._status(ActionStatus.TIMED_OUT, "verified transition deadline elapsed", clear=True)
@@ -380,6 +423,13 @@ class ActionLifecycle:
             if pending.movement_evidence is None:
                 pending.movement_evidence = observation.gameplay_change
         if observation.screen in pending.contract.targets:
+            if (pending.result.action == ActionName.CLICK_INWORLD_USE_LATER
+                    and any(d.kind == "gift_icon" and d.detected and d.verified
+                            and dict(d.metadata).get("availability") in {
+                                "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"}
+                            for d in observation.detections)):
+                pending.candidate, pending.count = DSTScreen.UNKNOWN, 0
+                return None
             if any(
                 (item := next(
                     (d for d in observation.detections if d.kind == kind), None
@@ -493,9 +543,7 @@ def click_request(action: ActionName, observation: GameObservation):
                 and item.verified
                 and item.bounds is not None
                 and item.confidence >= contract.confidence
-                and dict(item.metadata).get("availability") in {
-                    "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"
-                }
+                and dict(item.metadata).get("availability") == "GIFT_AVAILABLE"
             ),
             None,
         )

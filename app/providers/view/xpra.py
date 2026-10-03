@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import re
@@ -97,6 +98,22 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
             return int(listener.getsockname()[1])
 
     @staticmethod
+    def _http_transport_ready(port: int) -> bool:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=0.5)
+        try:
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            if response.status != 200 or not response.getheader(
+                "Content-Type", ""
+            ).startswith("text/html"):
+                return False
+            return b"xpra websockets client" in response.read(1024)
+        except (OSError, http.client.HTTPException):
+            return False
+        finally:
+            connection.close()
+
+    @staticmethod
     def _encode(payload: dict) -> str:
         return (
             base64.urlsafe_b64encode(
@@ -110,7 +127,15 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
     def _runtime_argv(
         display: DisplayEnvironment, *command: str
     ) -> tuple[str, ...]:
-        environment = [f"DISPLAY={display.display}"]
+        # Do not inherit the runtime image's system Xpra config for a shadow
+        # session. On Ubuntu it sets `start = /etc/X11/Xsession true`, which
+        # starts an Xsession on the existing game display even when the CLI
+        # passes empty --start/--start-child values.
+        environment = [
+            f"DISPLAY={display.display}",
+            "XPRA_SYSTEM_CONF_DIRS=/dev/null",
+            "XPRA_USER_CONF_DIRS=/dev/null",
+        ]
         if display.xauthority:
             environment.append(f"XAUTHORITY={display.xauthority}")
         if display.xdg_runtime_dir:
@@ -120,6 +145,24 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
                 f"DBUS_SESSION_BUS_ADDRESS={display.dbus_session_bus_address}"
             )
         return ("/usr/bin/env", *environment, *command)
+
+    @classmethod
+    def _shadow_argv(
+        cls, display: DisplayEnvironment, port: int
+    ) -> tuple[str, ...]:
+        return cls._runtime_argv(
+            display,
+            "xpra",
+            "shadow",
+            display.display,
+            "--daemon=yes",
+            "--exit-with-client=no",
+            f"--bind-tcp=127.0.0.1:{port}",
+            "--html=on",
+            "--auth=none",
+            "--tcp-auth=none",
+            "--socket-dir=/run/dst-runtime/xpra",
+        )
 
     @staticmethod
     def _decode(value: str) -> dict:
@@ -313,19 +356,7 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
             )
             started = self.runtime_provider.execute(
                 runtime,
-                self._runtime_argv(
-                    display,
-                    "xpra",
-                    "shadow",
-                    display.display,
-                    "--daemon=yes",
-                    "--exit-with-client=no",
-                    f"--bind-tcp=127.0.0.1:{self.container_port}",
-                    "--html=on",
-                    "--auth=none",
-                    "--tcp-auth=none",
-                    "--socket-dir=/run/dst-runtime/xpra",
-                ),
+                self._shadow_argv(display, self.container_port),
                 timeout=20,
             )
         except ProviderError as exc:
@@ -353,13 +384,14 @@ class XpraRuntimeViewProvider(RuntimeViewProvider):
         except Exception:
             self._cleanup_or_defer(target, device, display.display, backend_id)
             raise
-        deadline = time.monotonic() + 3
+        # Shadow startup includes GTK initialization and can take several
+        # seconds in the runtime. Keep the HTTP readiness probe bounded, but
+        # do not tear down a healthy server while it is still starting.
+        deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            try:
-                with socket.create_connection(("127.0.0.1", host_port), timeout=0.25):
-                    break
-            except OSError:
-                time.sleep(0.1)
+            if self._http_transport_ready(host_port):
+                break
+            time.sleep(0.1)
         else:
             self._cleanup_or_defer(target, device, display.display, backend_id)
             raise ViewBackendUnavailable("xpra loopback transport did not become ready")

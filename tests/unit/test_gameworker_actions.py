@@ -3,6 +3,7 @@ from __future__ import annotations
 import pickle
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -749,3 +750,94 @@ def test_fresh_channel_acquisition_failure_sends_no_gameplay_input(monkeypatch):
             max_actions_per_second=10, max_key_presses_per_second=10,
         )
     assert calls == ["acquire"]
+
+
+def test_movement_duration_starts_after_slow_key_down_ack():
+    class SlowKeyDriver(FakeInputDriver):
+        def key_down(self, key):
+            time.sleep(0.12)
+            super().key_down(key)
+
+    value, controller, driver, _ = executor(driver=SlowKeyDriver())
+    try:
+        result = value.execute(action('slow-key', ActionName.MOVE_FORWARD, duration=0.08))
+        down, up = [e for e in driver.events if e.operation in {'key_down', 'key_up'}]
+        assert result.status == ActionStatus.SENT
+        assert up.timestamp - down.timestamp >= 0.07
+        assert not controller.has_held_inputs
+    finally:
+        value.shutdown()
+
+
+def test_click_deadline_cancellation_releases_input_and_allows_next_action():
+    class SlowButtonDriver(FakeInputDriver):
+        def mouse_down(self, button):
+            time.sleep(0.3)
+            super().mouse_down(button)
+
+    value, controller, _, _ = executor(driver=SlowButtonDriver())
+    request = action('slow-click', ActionName.CLICK_GIFT_ICON,
+                     deadline=time.monotonic() + 0.1)
+    request = replace(request, parameters=(
+        ('x', 0.2), ('y', 0.05), ('width', 1280), ('height', 720),
+        ('evidence_sequence', 1)))
+    try:
+        result = value.execute(request)
+        assert result.status == ActionStatus.TIMED_OUT
+        assert not controller.has_held_inputs
+        assert not controller.uncertain_inputs
+        assert not controller.revoked
+        assert value.execute(action('after-timeout')).status == ActionStatus.SENT
+    finally:
+        value.shutdown()
+
+
+def test_click_timeout_does_not_reopen_concurrent_pause():
+    entered = threading.Event()
+    class SlowButtonDriver(FakeInputDriver):
+        def mouse_down(self, button):
+            entered.set()
+            time.sleep(0.3)
+            super().mouse_down(button)
+
+    value, controller, _, _ = executor(driver=SlowButtonDriver())
+    request = replace(
+        action('paused-click', ActionName.CLICK_GIFT_ICON,
+               deadline=time.monotonic() + 0.1),
+        parameters=(('x', 0.2), ('y', 0.05), ('width', 1280), ('height', 720),
+                    ('evidence_sequence', 1)))
+    thread = threading.Thread(target=lambda: value.execute(request))
+    try:
+        thread.start()
+        assert entered.wait(0.5)
+        value.update_safety(configured_mode=WorkerMode.ACTIVE,
+                            effective_mode=WorkerMode.OBSERVE,
+                            runtime_verified=True, game_ready=True, healthy=True,
+                            paused=True, stopping=False)
+        thread.join(2)
+        assert not thread.is_alive()
+        assert not controller.has_held_inputs
+        assert controller.revoked
+        assert value.execute(action('still-paused')).status == ActionStatus.SAFETY_BLOCKED
+    finally:
+        value.shutdown()
+
+
+def test_short_local_movement_uses_bounded_driver_pulse_and_releases():
+    class PulseDriver(FakeInputDriver):
+        def __init__(self):
+            super().__init__()
+            self.pulses = []
+
+        def key_pulse(self, key, duration):
+            self.pulses.append((key, duration))
+            self.key_down(key)
+            self.key_up(key)
+
+    driver = PulseDriver()
+    value, controller, _, _ = executor(driver=driver)
+    result = value.execute(action("local-pulse", ActionName.TURN_LEFT, duration=.05))
+    value.shutdown()
+    assert result.status == ActionStatus.SENT
+    assert driver.pulses == [("a", .05)]
+    assert not controller.has_held_inputs

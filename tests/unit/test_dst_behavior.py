@@ -205,7 +205,7 @@ def test_validation_disabled_does_not_propose_validation_actions_in_world():
     assert policy._validation_step == 0
 
 
-def test_pending_inworld_gift_uses_bounded_canonical_prepared_station_route():
+def test_pending_inworld_gift_waits_for_native_claim_evidence():
     observation = analyze_image(
         Image.open(ASSETS / "samples/gift_icon_gray_in_world_live.png").convert("RGB"),
         "gift-station-approach-1",
@@ -227,41 +227,13 @@ def test_pending_inworld_gift_uses_bounded_canonical_prepared_station_route():
     policy = ActivityController(validation_flow_enabled=False)
     policy.set_production_actions_enabled(True)
 
+    policy.gift_claim_ready = False
     assert policy.propose(observation) is None
-    route = (
-        ActionName.TURN_RIGHT,
-        ActionName.MOVE_BACKWARD,
-        ActionName.TURN_RIGHT,
-        ActionName.MOVE_BACKWARD,
-    )
-    for index, expected in enumerate(route, start=2):
-        current = replace(
-            observation,
-            source_frame_id=f"gift-station-approach-{index}",
-            source_sequence=index,
-        )
-        proposal = policy.propose(current)
-        assert proposal is not None
-        assert proposal.action == expected
-        assert proposal.duration == 1.0
-        action_id = f"gift-station-approach-action-{index}"
-        verifying = ActionResult(
-            action_id, expected, ActionStatus.VERIFYING, 0.01, 1, 1, 1,
-        )
-        policy.on_action_result(current, verifying)
-        verified = replace(
-            current,
-            source_frame_id=f"gift-station-approach-verified-{index}",
-            source_sequence=index + 10,
-        )
-        policy.on_verified(
-            verified,
-            replace(verifying, status=ActionStatus.SUCCEEDED),
-        )
-
-    assert policy.propose(
-        replace(observation, source_frame_id="gift-station-approach-done", source_sequence=20)
-    ) is None
+    assert policy.propose(replace(
+        observation, source_frame_id="pending-not-ready", source_sequence=2,
+    )) is None
+    assert policy._gift_icon_click_attempts == 0
+    assert policy.inworld_gift_confirmation is None
 
 
 def test_active_production_world_entry_uses_fixed_profile_targets_without_validation_step():
@@ -2036,6 +2008,7 @@ def test_real_inworld_popup_and_canonical_use_later_remain_separate_from_daily()
     assert policy.propose(opening) is None
     assert policy.propose(replace(opening, source_sequence=2)) is None
     assert policy.propose(replace(received, source_sequence=3)) is None
+    policy._gift_clicked_monotonic = received.observed_monotonic - 10.0
     proposal = policy.propose(replace(received, source_sequence=4))
     assert proposal.action == ActionName.CLICK_INWORLD_USE_LATER
     point, _ = click_request(proposal.action, received)
@@ -2080,9 +2053,11 @@ def test_managed_gift_detection_is_saved_before_a_claim_proposal():
     policy.claim_evidence = Evidence()
     policy.propose(observation)
     next_frame = replace(observation, source_frame_id='managed-before-claim-2', source_sequence=2)
-    proposal = policy.propose(next_frame)
+    assert policy.propose(next_frame) is None
+    third_frame = replace(observation, source_frame_id='managed-before-claim-3', source_sequence=3)
+    proposal = policy.propose(third_frame)
     assert proposal.action == ActionName.CLICK_GIFT_ICON
-    assert saved[-1] == next_frame.source_frame_id
+    assert saved[-1] == third_frame.source_frame_id
 
 
 def test_received_gift_with_disabled_use_now_still_closes_through_use_later():
@@ -2118,6 +2093,8 @@ def test_use_later_label_survives_button_border_changes_and_close_retry_is_bound
     policy.set_production_actions_enabled(True)
     assert policy.propose(received) is None
     first = replace(received, source_sequence=2, source_frame_id='received-hover-2')
+    assert policy.propose(first) is None
+    policy._gift_clicked_monotonic = received.observed_monotonic - 10.0
     assert policy.propose(first).action == ActionName.CLICK_INWORLD_USE_LATER
     timeout = ActionResult('close-1', ActionName.CLICK_INWORLD_USE_LATER,
                            ActionStatus.TIMED_OUT, .5, 1, 1, 1, 'popup remains')
@@ -2130,7 +2107,7 @@ def test_use_later_label_survives_button_border_changes_and_close_retry_is_bound
     assert policy.propose(replace(second, source_sequence=4)) is None
 
 
-def test_verified_pending_gift_is_clicked_without_unrelated_station_actions():
+def test_verified_pending_gift_cannot_be_clicked():
     from runtime_agent.gameworker.transitions import action_precondition_error
     observation = analyze_image(
         Image.open(ASSETS / "samples/gift_icon_active_in_world_live.png").convert("RGB"),
@@ -2149,9 +2126,68 @@ def test_verified_pending_gift_is_clicked_without_unrelated_station_actions():
     before_click = replace(observation, source_sequence=2,
                            source_frame_id="pending-station-claim-click")
     proposal = policy.propose(before_click)
-    assert proposal.action == ActionName.CLICK_GIFT_ICON
-    assert action_precondition_error(proposal.action, before_click) is None
-    point, _ = click_request(proposal.action, before_click)
-    icon = next(item for item in detections if item.kind == "gift_icon")
-    assert icon.bounds.left < point.x < icon.bounds.right
-    assert icon.bounds.top < point.y < icon.bounds.bottom
+    assert proposal is None or proposal.action != ActionName.CLICK_GIFT_ICON
+    assert action_precondition_error(ActionName.CLICK_GIFT_ICON, before_click) is not None
+    try:
+        click_request(ActionName.CLICK_GIFT_ICON, before_click)
+    except ValueError as exc:
+        assert 'claimable gift detection is unavailable' in str(exc)
+    else:
+        raise AssertionError('gray gift must not supply a click target')
+
+
+def test_unclaimable_gift_precondition_defers_without_stopping_play():
+    observation = analyze_image(
+        Image.open(ASSETS / 'samples/gift_icon_active_in_world_live.png').convert('RGB'),
+        'blocked-gift', 1, profile_id='dst-1280x720-linux-v1')
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    policy._gift_icon_click_attempts = 1
+    result = ActionResult('blocked', ActionName.CLICK_GIFT_ICON,
+                          ActionStatus.SAFETY_BLOCKED, 0.0, 1, 1, 1,
+                          'fresh claimable gift detection is unavailable')
+    policy.on_action_result(observation, result)
+    assert not policy.intervention_required
+    assert policy.claim_not_actionable
+    assert policy._gift_retry_at > time.monotonic()
+    assert policy.inworld_gift_confirmation is None
+
+
+def test_last_gift_transport_timeout_defers_but_input_failure_still_stops():
+    observation = analyze_image(
+        Image.open(ASSETS / 'samples/gift_icon_active_in_world_live.png').convert('RGB'),
+        'timeout-gift', 1, profile_id='dst-1280x720-linux-v1')
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    policy._gift_icon_click_attempts = 3
+    timeout = ActionResult('timeout', ActionName.CLICK_GIFT_ICON,
+                           ActionStatus.TIMED_OUT, 0.2, 1, 1, 1,
+                           'executor wait timed out')
+    policy.on_action_result(observation, timeout)
+    assert not policy.intervention_required
+    assert policy.claim_not_actionable
+    assert policy.inworld_gift_confirmation is None
+    policy.on_action_result(observation, replace(timeout, status=ActionStatus.FAILED,
+                                                reason='transport connection lost'))
+    assert policy.intervention_required
+
+
+def test_gift_timeout_on_unknown_frame_keeps_observing_without_claim_confirmation():
+    observation = analyze_image(
+        Image.open(ASSETS / 'samples/gift_icon_active_in_world_live.png').convert('RGB'),
+        'unknown-after-gift', 1, profile_id='dst-1280x720-linux-v1')
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    policy._gift_icon_click_attempts = 3
+    policy._awaiting_reward_transition = True
+    result = ActionResult('gift', ActionName.CLICK_GIFT_ICON, ActionStatus.TIMED_OUT,
+                          .5, 1, 1, 1, 'verified transition deadline elapsed')
+    policy.on_verified(replace(observation, screen=DSTScreen.UNKNOWN), result)
+    assert not policy.intervention_required
+    assert not policy._awaiting_reward_transition
+    assert policy.claim_not_actionable
+    assert policy._gift_retry_at > time.monotonic()
+    assert policy.inworld_gift_confirmation is None
+    policy.on_action_failure(replace(result, status=ActionStatus.FAILED,
+                                     reason='input transport failed'))
+    assert policy.intervention_required

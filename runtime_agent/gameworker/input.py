@@ -238,6 +238,27 @@ class InputController:
             with self._state_lock:
                 self._uncertain_keys.discard(key)
 
+    def key_pulse(self, key: str, duration: float) -> bool:
+        pulse = getattr(self.driver, "key_pulse", None)
+        if not callable(pulse):
+            return False
+        if not self.key_limiter.allow():
+            raise InputError("key input rate limit exceeded")
+        with self._io_lock:
+            self._require_active()
+            with self._state_lock:
+                self._keys.add(key)
+            try:
+                pulse(key, duration)
+            except InputError:
+                self.release_all(reason="key_pulse_failure", _io_locked=True)
+                raise
+            finally:
+                with self._state_lock:
+                    self._keys.discard(key)
+        self._require_active()
+        return True
+
     def key_press(self, key: str) -> None:
         self.key_down(key)
         try:

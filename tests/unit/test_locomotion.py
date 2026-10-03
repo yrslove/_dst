@@ -9,7 +9,7 @@ from runtime_agent.gameworker.vision import DSTScreen
 
 def observation(sequence, at, screen=DSTScreen.IN_WORLD_IDLE, fresh=True):
     return SimpleNamespace(source_frame_id=f"frame-{sequence}", observed_monotonic=at,
-                           production_ready=True, is_fresh=lambda: fresh, screen=screen)
+                           production_ready=True, is_fresh=lambda: fresh, screen=screen, local_displacement=(0, 0))
 
 
 def test_invalid_world_and_heartbeat_gaps_do_not_accumulate_active_time():
@@ -29,7 +29,7 @@ def test_invalid_world_and_heartbeat_gaps_do_not_accumulate_active_time():
     assert run.telemetry()["active_elapsed"] == 4
 
 
-def test_high_activity_is_measurably_more_active(monkeypatch):
+def test_both_legacy_profiles_use_the_same_local_operational_policy(monkeypatch):
     from runtime_agent.gameworker import locomotion
     counters = {}
     for profile in ("CONTROL", "HIGH_ACTIVITY"):
@@ -51,9 +51,9 @@ def test_high_activity_is_measurably_more_active(monkeypatch):
                 run.verified(ActionResult(str(sequence), action, ActionStatus.SUCCEEDED, duration, 1, 1, 1))
             now[0] += 1
         counters[profile] = run.telemetry()
-    assert counters["HIGH_ACTIVITY"]["moving_seconds"] > 5 * counters["CONTROL"]["moving_seconds"]
-    assert counters["HIGH_ACTIVITY"]["movement_commands"] > 3 * counters["CONTROL"]["movement_commands"]
-    assert counters["HIGH_ACTIVITY"]["direction_changes"] > counters["CONTROL"]["direction_changes"]
+    assert counters["HIGH_ACTIVITY"]["moving_seconds"] > 0
+    assert counters["HIGH_ACTIVITY"]['movement_commands'] == counters["CONTROL"]['movement_commands']
+    assert counters["HIGH_ACTIVITY"]['moving_seconds'] == counters["CONTROL"]['moving_seconds']
 
 
 def test_unverified_action_never_counts_moving_time_or_blocks_next_pulse():
@@ -81,6 +81,42 @@ def test_characterization_stops_at_valid_target_or_wall_safety(monkeypatch):
     run.valid_elapsed = 0
     now[0] += 16 * 3600
     assert run.stop_reason == "MAX_WALL_CLOCK_REACHED"
+
+
+def test_failed_local_targets_choose_alternatives_and_success_clears_failure(monkeypatch):
+    from runtime_agent.gameworker import locomotion
+
+    now = [100.0]
+    monkeypatch.setattr(locomotion.time, "monotonic", lambda: now[0])
+    run = Locomotion()
+    run.configure("HIGH_ACTIVITY", "recover", 14 * 3600)
+    for seq in range(3):
+        action, duration = run.proposal(observation(seq, now[0]))
+        result = ActionResult(str(seq), action, ActionStatus.VERIFYING, duration, 1, 1, 1)
+        run.sent(result)
+        run.verified(ActionResult(str(seq), action, ActionStatus.TIMED_OUT, duration, 1, 1, 1))
+        now[0] = run.next_at
+    assert run.moving_seconds == 0
+    assert run.proposal(observation(4, now[0], DSTScreen.UNKNOWN)) is None
+    action, duration = run.proposal(observation(5, now[0]))
+    assert action in {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
+                      ActionName.TURN_LEFT, ActionName.TURN_RIGHT}
+    result = ActionResult('recovery', action, ActionStatus.VERIFYING, duration, 1, 1, 1)
+    run.sent(result)
+    run.verified(ActionResult('recovery', action, ActionStatus.SUCCEEDED, duration, 1, 1, 1))
+    assert run.failures == 0
+    assert run.recovery_commands == 0
+    now[0] = run.next_at
+    assert run.proposal(observation(6, now[0])) is not None
+
+
+def test_station_pulse_counts_its_own_duration():
+    run = Locomotion()
+    run.configure('HIGH_ACTIVITY', 'station-duration', 120)
+    sent = ActionResult('station', ActionName.MOVE_BACKWARD, ActionStatus.VERIFYING, .6, 1, 1, 1)
+    run.sent(sent, duration=.45)
+    run.verified(ActionResult('station', sent.action, ActionStatus.SUCCEEDED, .6, 1, 1, 1))
+    assert run.moving_seconds == .45
 
 
 @pytest.mark.parametrize("session,seconds", [("../other", 120), ("ok", 0), ("ok", float("nan"))])

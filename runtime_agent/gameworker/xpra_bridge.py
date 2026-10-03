@@ -330,6 +330,17 @@ def main():
                     diagnostics.update(button=button, pressed=pressed)
                     if not pressed:
                         buttons.discard(button)
+                elif operation == "key_pulse":
+                    key, duration = args
+                    if isinstance(duration, bool) or not .025 <= float(duration) <= .10:
+                        raise ValueError("invalid bounded key pulse")
+                    keys.add(key)
+                    channel.send(key_packet(key, True, keys))
+                    try:
+                        time.sleep(float(duration))
+                    finally:
+                        channel.send(key_packet(key, False, keys))
+                        keys.discard(key)
                 elif operation == "key":
                     key, pressed = args
                     if pressed:

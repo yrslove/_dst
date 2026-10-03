@@ -1,6 +1,311 @@
 # Current State
 
-## Active checkpoint — dual A/B preparation (2026-10-01)
+## Stationary liveness and reload — live PASS (2026-10-02)
+
+User scope: preserve stationary architecture and zero movement; separate liveness
+from gameplay activity; run only a 15–20-minute validation and stop. No long run
+was launched. Operator placement beside an existing machine remains precondition.
+
+Exact historical failure condition: WorkerProcessHost.shutdown joined A1's child
+for stop_timeout=3s; the child remained alive, so forced=True, _force_stop_child
+and _mark_crashed produced healthy=False. Runtime Agent then took its full shutdown
+reload fallback. Journal: STOP received 22:06:53, fallback at 22:06:56 UTC. This
+happened during deployment shutdown, before stationary wait: the last A1 sample
+was MAIN_MENU/JOIN_WORLD with no wait timestamp. It was not an inactivity timer.
+The historical log has no stack trace explaining the internal STOP delay; do not
+claim a particular IPC/cleanup operation was proven responsible.
+
+Changes are limited to process.py, dst/worker.py, lifecycle tests and this document.
+Bounded cooperative STOP grace is now 10s, with explicit worker_stop_timeout logs.
+Forced stop and nonzero process exit remain unhealthy. Unexpected process death
+is unhealthy during restart backoff; restart budgets and readiness deadline remain.
+The existing bounded status-Queue feeder handling is retained.
+
+Worker loop reports carry producer monotonic time; host marks reports older than
+30s WORKER_HEARTBEAT_STALE. Command ACKs do not renew the loop timestamp.
+Active/observe DST health independently checks last successful capture and last
+valid observation, with a 30s freshness limit/startup grace. Fatal states, cleanup
+failure and stationary session-loss blockers remain unhealthy. Disabled, explicit
+pause and shutdown do not require active capture. Movement, gift arrival, clicks,
+proposal count and state transitions are never required for health.
+
+Timer audit: startup readiness 10s (unchanged), cooperative STOP 10s; loop/capture/
+valid observation health 30s. Existing capture/perception/planner operation limits
+and frame/observation acceptance ages are unchanged. Existing unknown-state
+recovery remains 20s. Input deadman checks only held inputs, never idle activity.
+Action/transition deadlines apply only to actions actually sent.
+
+Live snapshot 7b86f24caa8f38b4072838c2cbc9874c37d013ce deployed on both guests.
+Run stationary_health_smoke_20261002T224618Z: A1 902.796s, A2 901.129s observed
+stationary intervals; movement_count=0 and locomotion_commands=0 on both.
+All 164/162 stationary samples healthy=True, with 107/106 distinct fresh HUD
+samples and capture deltas 2614/2525. Max loop-report ages 10.439/8.292s.
+Both remained IN_WORLD_IDLE/GAME_READY with restart_count=0, no recovery blocker,
+and unchanged game PIDs 2959/1160. idle_timeout=0 rechecked after world observation.
+No gift appeared. Both were disabled/input released at completion, 23:03:24 UTC.
+
+A separate planned post-smoke A1 reload also passed: managed processes preserved,
+actual DST PID 2959 unchanged, no stop timeout/full shutdown fallback, GAME_READY,
+healthy worker and DISABLED/input released afterward (23:03:51 UTC).
+Evidence, reports, copied guest logs and source provenance are preserved under
+ignored .data/stationary-health/. Schedules remain paused; no root-checkout commit
+or push. Previous root changes and smoke artifacts were preserved.
+
+Tests cover eight modeled stationary hours with fresh HUD/no actions; capture/HUD
+staleness independently; loop-report timeout; bounded clean/forced STOP; abnormal
+exit and restart backoff. Initial focused suite: 89 passed. Under live load, extended
+suite had 171 passes and one NOOP startup test exceeding its explicit 5s test
+startup deadline; isolated retry passed in 1.94s. A wider hardening run also exposed
+an existing unrelated Xpra argv expectation failure; its path was not changed.
+Final six-file focused suite: 172 passed (one existing Starlette deprecation
+warning), with workers disabled. Ruff and git diff --check passed. Final API
+check confirms both DISABLED, healthy=True, held_inputs=false, driver_present=false.
+READY_FOR_LONG_TEST: YES, for an explicit operator launch; none was started.
+
+## Stationary smoke — PASS_WITH_LIMITATIONS, stopped (2026-10-02)
+
+Current user instruction explicitly excludes Science Machine bootstrap/discovery,
+initial positioning, anchor calibration and automatic position correction. The
+operator places each account next to its existing Science Machine before takeover;
+this is a launch precondition, not an autonomous-positioning blocker. Prior-turn
+bootstrap edits were reverted. No bootstrap or station search is invoked.
+
+Production ActivityController does not call Locomotion.proposal. Stationary
+experiments also exclude WASD, CLICK_LOCAL_TARGET and INTERACT at the canonical
+executor whitelist. A2 click cycling/clearance and anchor registration are not
+armed. The existing HUD ROI selection remains available without anchor tracking.
+Locomotion and existing recovery primitives remain available in the repository.
+A fresh normal in-world observation begins STATIONARY_WAIT. Death, reset or
+runtime/session loss is logged as RECOVERY_BLOCKER; no automatic return is attempted.
+
+Gift flow preserves the existing detection/input/native ACK path, waits at least
+ten seconds after the click (or first recovered received popup), then uses Use Later.
+Clearance rejects both ACTIVE and gray PENDING HUD gifts and requires native
+SetItemOpened_Complete HTTP 200 plus fresh world/UI clearance. Bounded ordinary
+experiments re-arm the next gift without movement. Structured account/session
+stationary events, movement_count and wait/gift intervals are fsynced in bounded
+JSONL segments alongside the existing durable gift evidence.
+
+Both live guests deployed isolated clean runtime snapshot
+`4c7bdbea27753080f57ff249e526153a5c742f14` (initial snapshot
+`f783676f7e09989c204bebc311585c6b6f118243`). The final one-line correction
+lets stationary profiles reuse the existing production JOIN flow. The shared
+checkout's pre-existing changes are retained; no main-checkout commit or push was
+made. Canonical restart jobs 211 (A1) and 213 (A2) succeeded. Fresh GAME_READY and
+new DST PIDs 1124 / 1160 were confirmed; old PIDs were 115983 / 62722.
+Both prepared Cluster_1/cluster.ini files retain NETWORK idle_timeout=0 after
+restart. Only that setting was changed, with cluster.ini.before-stationary backups.
+This is configuration-after-restart evidence; no native idle-timeout getter is
+exposed by the inspected Lua bundle.
+
+User authorized ONLY a short 15–30-minute smoke and stopping afterward, not a
+5–8-hour experiment. Final run `stationary_smoke_20261002T220856Z` passed:
+A1 entered stationary wait at 22:10:53.118813 UTC; A2 at 22:11:31.103798 UTC.
+Each completed at least 900 seconds (901.413 / 901.120 observed seconds).
+Both stationary movement_count and legacy movement_commands stayed zero.
+Each account had 111 distinct fresh world HUD samples; capture counts increased
+by 2663 / 2670. Runtime stayed GAME_READY, screens stayed IN_WORLD_IDLE after
+entry, with no worker restart or recovery blocker during the smoke. Start/end
+screenshots show the living characters at the same station positions.
+Both cluster.ini files were checked again after world entry: idle_timeout=0.
+No gift appeared; the changed timed-gift reveal/clear cycle is therefore tested
+by focused tests, not proven live in this smoke. This short run does not establish
+the 5–8-hour gifting hypothesis or native effective idle-timeout getter value.
+
+The smoke monitor disabled both workers automatically and finished at
+22:27:37.341338 UTC. A fresh check at 22:37 UTC confirmed DISABLED on both,
+held_inputs=false and driver_present=false, with runtimes still GAME_READY.
+Schedules remain paused. No long experiment was launched.
+
+Startup evidence is retained separately: a login gift transition initially timed
+out; one existing-flow retry progressed. CV templates matched the fresh result
+and were not changed. A1's final managed reload fell back to full runtime shutdown
+because worker_healthy=False; it recovered GAME_READY before the final smoke.
+A2 final reload preserved its game. This reload fallback remains a concrete
+operational risk; no supervisor redesign was introduced.
+
+Evidence and source provenance: ignored `.data/stationary-smoke/`; final report,
+samples, start/end screenshots and copied guest stationary logs are under
+`.data/stationary-smoke/stationary_smoke_20261002T220856Z/`.
+Root checkout pre-existing changes were preserved; no main-checkout commit/push.
+
+Final focused command (stationary, lifecycle, behavior, reward, deploy, runtime):
+165 passed, one existing Starlette deprecation warning. Ruff on touched Python
+files and git diff --check passed. New tests cover forbidden locomotion invocation,
+canonical executor rejection with no driver events, ten-second reveal dwell,
+operator precondition, recovery blocker, JOIN preservation and idle config edits.
+
+## Gift modal latency correction — A2 deployed (2026-10-02)
+
+A2 revision `08deb8604b131a9c41d695ae710a3dbc9d5eef3f`: Use Later timeout 45→6 seconds, one fresh strong hidden-modal/world postcondition; high-confidence received-title/button may act on the first valid frame. UNKNOWN retains local perception for up to eight frames before broad fallback. Deadline-poll timeout now allows the existing second close attempt instead of prematurely latching intervention. Native ACK + fresh active-icon disappearance remains mandatory. A2 second gift confirmed in durable DB at 17:57:00.226184 UTC before managed code reload; accelerated flow itself awaits a subsequent live gift. A1 deployment unchanged.
+
+## A2 click-cycle drift correction (2026-10-02)
+
+A2 remains operator-stopped. Deployed revision `51c50186dd752f9aa7dacf750943f9873d62ac78` removes blind relative cycling on registration loss. Click targets remain absolute offsets from the original reference, not the last commanded point; arrival requires fresh measured proximity within 2 px. Failed legs return to center before another target; blocked targets cool down. Outside ±32/±20 px, only inward center correction is allowed. No live movement validation was performed because A2 is explicitly stopped. The older relative-cycle override below is superseded.
+
+## Current operational override — account 2 click cycle (2026-10-02)
+
+User explicitly replaced A2's camera-registration hold with a simple small click
+cycle, without test runs: RIGHT +8 px, UP −6 px, DOWN +6 px, LEFT −8 px to center.
+A2 avatar was located beside the right post of the arch, feet near (640,400) in the
+canonical 1280x720 GAME viewport. A short rightward key pulse clears the arch's
+Examine hit area once; then existing canonical click/input/action/ACK paths send
+CLICK_LOCAL_TARGET. Camera registration uses one static arch detail to compensate
+world-to-screen targets; a closed relative cycle continues if that reference drops.
+No blind displacement is credited as verified movement. Local click timeout advances
+the cycle rather than latching intervention. Fresh ACTIVE >=.94 preempts clicks;
+existing native ACK + fresh active-icon disappearance collection proof remains.
+
+A1 keeps its original movement deployment; it was resumed from a benign gift-hover
+timeout. The run monitor uses canonical worker/resume for that specific timeout.
+A2 revision: `cab64cd537c7c43a9934281dc1204ddb76d19ffb`; existing DST PID preserved.
+Current run ID and planned end remain unchanged below; account-specific policy
+changes and interrupted periods must be included in the eventual report, not hidden.
+Guest A2 local-click-anchor.json and local-click-reference.png are runtime artifacts;
+route diagram is ignored `.data/local-gift-zone/click-route.svg`.
+
+## Five-hour observation run — RUNNING (2026-10-02)
+
+`gift_zone_run_20261002T153220Z` uses the SAME bounded local policy on accounts 1/2.
+Existing DST clients remain PID 115983 / 62722; no new accounts or A/B.
+Minimal live-audit fixes: 14 small anchor-patch candidates with a uniquely dominant
+consensus (including static arch details), cooldown-only obstacles INCLUDING center,
+short key pulses timed inside the canonical xpra bridge, native receipt DB acceptance,
+and lightweight state/summary logs. Runtime revision:
+`439efe78e8d7bff563da360c8f0b9a00dc9fad76` on both guests via managed adoption.
+
+Both fresh GAME_READY workers actually sent and verified local movement before the
+clock began: `2026-10-02T15:33:15.613640+00:00`; planned end:
+`2026-10-02T20:33:15.613640+00:00`. Historical collected UNKNOWN; run counters zero
+at start. Earlier interrupted startup/audit windows are separate and not counted.
+Live evidence isolated two corrections during audit: ACK latency prolonged held keys
+and exceeded the soft boundary before inward correction; A2 had too few textured
+patches after one reference degraded. Both are fixed in this deployed revision.
+
+Autonomous monitor/end/report unit: `dst-gift-zone-run-20261002T153220Z.service`
+(Restart=on-failure); gameplay remains in existing supervised guest GameWorkers.
+Source: `scripts/gift_zone_run.py`. Metadata, incremental guest events, minute
+telemetry, alerts and eventual final-report.json/.md: ignored
+`.data/gift-zone-runs/gift_zone_run_20261002T153220Z/`.
+Guest evidence/events remain in `/home/dst/.local/state/dst-runtime/experiments/`
+under run `_a1` / `_a2` sessions. Stop only at planned end or real anchor/session
+loss; ordinary obstacle failures continue inside the same local zone.
+Correlation in this run cannot establish GREY eligibility or activation causality.
+
+## Active checkpoint — local gift-zone worker (2026-10-02)
+
+Current user-authorized task replaces the A/B movement policy with the same local
+operational behavior for both existing accounts. The operator manually places each
+character in the activation-zone center before takeover. No A/B comparison, world
+route search is authorized. The current follow-up explicitly authorizes a five-hour
+observation run on these same two accounts, with historical_collected UNKNOWN and
+run-scoped confirmed counters starting at zero.
+
+Implementation: canonical bounded key input is retained; the current movement path
+has no calibrated movement-click primitive. The first takeover viewport supplies
+14 small static-world patch candidates, registered through the existing perception engine.
+At least two patches must agree in a uniquely dominant cluster. Targets are offsets from that anchor in canonical
+1280x720 viewport pixels: left/right 18, up/down 10, diagonals (±12, ±8), with center
+returns and an inward correction boundary of (±32, ±20). Pulses are 0.025–0.10 seconds;
+these pixel limits are deliberately conservative, not a proven 3–5 world-unit mapping.
+Short movement pulses now send key-down/up in one existing xpra bridge operation,
+with the ACK after release, preventing an ACK round trip from extending the hold.
+A fresh directional world translation of at least two pixels verifies movement;
+after three seconds without displacement, the target is withheld for four selection
+cycles and another nearby target is selected. Even eight consecutive unverified targets remain temporary cooldowns; fresh
+registration is required for every retry. Missing anchor registration holds input.
+The anchor survives resource recovery; takeover explicitly resets it.
+
+One fresh verified ACTIVE gift at confidence ≥0.94 latches immediately, including
+while movement verification is pending, and preempts movement for the existing gift
+flow. Gray/pending gifts do not latch. Local-mode observation/tick delays are 0.1
+seconds; the existing detector uses only world/gift/safety ROIs while the world is
+known, with full classification restored after an unrecognized state. This is a
+sampling interval, not proof that every rendered frame is captured.
+
+Managed success now requires a fresh world observation without an active gift icon
+and this account's native SetItemOpened_Complete HTTP 200 after its canonical click.
+Received/Use Later closing still uses the existing verified flow. The same durable
+receipt, state/DB heartbeat lifecycle, and next-gift rearming remain in use.
+
+Deployment uses an isolated clean source snapshot because the shared checkout had
+pre-existing uncommitted edits; no main-branch commit or push was made. Final runtime
+snapshot revision: `7514f056e24eb8f8ae6ffe98423d8a9b27c953c5`. Provenance and a prepared
+canonical activation command are in ignored `.data/local-gift-zone/`. Authenticated
+clients are preserved by the existing managed-process adoption deployment path.
+Both final deployments completed with unchanged managed-process identities; fresh
+accepted GAME_READY heartbeats and RUNNING/GAME_READY account status were observed
+for both guests. Both canonical workers remain DISABLED.
+
+**LIVE_PROVEN gift collection on both accounts (2026-10-02 14:25–14:31 UTC):**
+The operator explicitly requested claiming A1, then A2. Each canonical worker clicked
+its fresh ACTIVE gift once, then continued the existing received/Use Later flow.
+The initial short wall budget expired during slow gift opening; continuation reused
+the same session/evidence and did not re-click the gift icon. Both returned to fresh
+IN_WORLD_IDLE frames with the active gift icon absent and durable
+IN_WORLD_GIFT_CONFIRMED / CLAIM_CONFIRMED receipts. Both workers ended DISABLED.
+
+- A1: Loafers, item `961697195743394926`; native ACK HTTP 200 / Error=false at
+  14:27:03.403108 UTC, fresh world postcondition at 14:30:16.426384 UTC.
+- A2: Arctic Explorer’s Mitts, item `745510462931798848`; native ACK HTTP 200 /
+  Error=false at 14:28:09.857565 UTC, fresh world postcondition at
+  14:30:52.531209 UTC.
+- Evidence: ignored `.data/local-gift-zone/finish-a1.json`, `finish-a2.json`,
+  `a1-complete.png`, `a2-complete.png`; guest durable receipts are under the
+  matching `local-claim-a1-20261002T142525Z` and `local-claim-a2-20261002T142602Z`
+  experiment folders. The command-schema name does not denote an A/B run.
+- Previously observed persistence limitation: Control Plane only accepted recorded
+  received-frame receipts. A minimal fix now also accepts authoritative
+  NATIVE_ACK_AFTER_CANONICAL_CLICK with ordered native ACK and fresh icon-disappearance
+  postcondition. Twelve focused persistence tests passed and the Control Plane was
+  reloaded; the new-run path will use this ingestion.
+  Do not confuse this DB limitation with an unclaimed gift or repeat the claim.
+
+Permanent local movement has not been live validated or left running; this request
+was fulfilled as collection with stop after confirmation.
+Focused offline action/perception/behavior checks passed after resolving the changed
+first-frame expectations; the final gift-evidence/transition suite passed 45 tests,
+local movement plus native-postcondition check passed 11 tests. First-frame latch
+and anchor translation direction were checked offline. Ruff and diff whitespace
+checks passed.
+
+## Historical checkpoint — resumed dual workers (2026-10-02)
+
+Current user-authorized goal: keep A1 CONTROL and A2 HIGH_ACTIVITY running toward
+14 valid in-world hours per account. The user explicitly authorized fixing and
+restarting both workers. The preparation-only launch restriction below is historical.
+
+Deployed runtime revision `a40af6eeb5f1711d49e3a9fc65c5f3f94f402863` to both guests
+through managed-process adoption. Steam, DST and display PIDs remained unchanged.
+Canonical SET_MODE commands 902 (A1) and 903 (A2) returned ACK OK.
+
+- A1 session `a1-control-recovered-20261002T013437Z`: CONTROL; prior valid
+  3180.748 seconds credited; remaining target 47219.252 seconds.
+- A2 session `a2-high_activity-recovered-20261002T013448Z`: HIGH_ACTIVITY; prior
+  valid 3117.908 seconds credited; remaining target 47282.092 seconds.
+- Original wall deadlines remain A1 2026-10-02 15:53:51 UTC and A2 15:45:19 UTC.
+  Invalid world time does not advance the valid-time target; the wall deadline can
+  stop a run before that target if too much invalid time accumulates.
+- Automatic schedules remain paused. VIEW_ONLY does not require worker disable.
+
+Fixed movement hold timing to begin after key-down acknowledgment, preserved
+cancellation status when ownership is revoked, and allowed subsequent actions after
+an acknowledged bounded timeout with no held or uncertain input. Concurrent PAUSE
+still keeps the input gate closed. Unavailable gift transitions now defer within the
+existing retry policy rather than permanently stopping normal idle-world activity.
+
+**LIVE_PROVEN, bounded:** a 180-second monitor observed both workers remain ACTIVE
+and execute perception-verified movements. A1 initially had two failed movement
+checks, then verified movement and cleared the consecutive-failure counter. At
+01:38:16 UTC A1 had 4 movement commands / 137.042 valid seconds, A2 had 12 commands /
+159.442 valid seconds; both counters for consecutive movement failures were zero.
+This does not prove completion or unattended reliability over the full 14 hours.
+Both gifts remain PENDING_GIFT_UNCLAIMED; no new gift receipt was confirmed.
+Evidence: ignored `.data/worker-fix-20261002/` (before, launch ACKs, PID identities,
+monitor and screenshots). Focused action/behavior/locomotion tests: 107 passed;
+shifted-gift tests: 4 passed; Ruff and diff whitespace checks passed.
+
+## Historical checkpoint — dual A/B preparation (2026-10-01)
 
 Current user-authorized goal: prepare two isolated online DST sessions for a bounded
 CONTROL / HIGH_ACTIVITY locomotion smoke and a future weekly-gift experiment.

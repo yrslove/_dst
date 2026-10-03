@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,8 +45,13 @@ from runtime_agent.gameworker.replay import (
     ReplayRunner,
     ReplayTimingMode,
 )
-from runtime_agent.gameworker.reward_evidence import SessionClaimEvidence, durable_json
+from runtime_agent.gameworker.reward_evidence import (
+    SessionClaimEvidence,
+    durable_bytes,
+    durable_json,
+)
 from runtime_agent.gameworker.state import WorkerState, WorkerStateMachine
+from runtime_agent.gameworker.stationary import StationarySession
 from runtime_agent.gameworker.vision import AssetRegistry, VisionDetector
 
 logger = logging.getLogger("runtime_agent.gameworker.dst")
@@ -56,11 +63,14 @@ class DSTGameWorker:
     IDLE_OBSERVATION_INTERVAL_SECONDS = 4.0
     VERIFY_OBSERVATION_INTERVAL_SECONDS = 0.15
     VERIFY_TICK_INTERVAL_SECONDS = 0.1
+    LIVENESS_TIMEOUT_SECONDS = 30.0
 
     def __init__(self, config: WorkerConfig, *, worker_generation: int = 0, claim_evidence=None):
         self.config = config
         self.claim_evidence = claim_evidence
         self.locomotion = Locomotion()
+        self.stationary = StationarySession()
+        self._local_anchor_monitor = None
         self.worker_generation = max(1, worker_generation)
         self.machine = WorkerStateMachine(
             WorkerState.DISABLED
@@ -113,12 +123,15 @@ class DSTGameWorker:
         self._capture_errors = 0
         self._perception_errors = 0
         self._cleanup_failed = False
+        self._liveness_started_at: float | None = None
         self._recording_error: str | None = None
         self._auto_resume_pending = False
         self._replay_exhausted = False
         self._experiment_evidence_root = None
         self._experiment_continue_after_claim = False
         self._experiment_gift_sequence = 0
+        self._gift_attempt_artifact_key = None
+        self._gift_visual_event_cursor = 0
 
     @staticmethod
     def _release_partial(
@@ -181,6 +194,32 @@ class DSTGameWorker:
         self.recorder = None
         self.replay = None
         return not failed
+
+    def _persist_gift_visual_events(self) -> None:
+        evidence = self.activity.gift_visual
+        new_events = [event for event in evidence.events
+                      if event.get("event_id", 0) > self._gift_visual_event_cursor]
+        if not new_events:
+            return
+        directory = self.diagnostics.directory / "gift-visual"
+        log_path = directory / "events.jsonl"
+        try:
+            existing = log_path.read_bytes().splitlines()[-48:] if log_path.exists() else []
+            for event in new_events:
+                saved = {}
+                for label, key in (("before", "before_frame_id"),
+                                   ("visible", "visible_frame_id"),
+                                   ("after", "after_frame_id")):
+                    frame_id = event.get(key)
+                    if frame_id:
+                        path = directory / f"{event['event_id']:04d}-{label}.png"
+                        saved[label] = str(path) if self.diagnostics.save_frame(frame_id, path) else None
+                event = {**event, "screenshots": saved}
+                existing.append(json.dumps(event, sort_keys=True).encode())
+                self._gift_visual_event_cursor = event.get("event_id", self._gift_visual_event_cursor)
+            durable_bytes(log_path, b"\n".join(existing[-64:]) + b"\n")
+        except OSError:
+            logger.warning("could not persist bounded gift visual events", exc_info=True)
 
     def prepare(self, context: WorkerContext) -> WorkerReport:
         self.context = context
@@ -311,6 +350,7 @@ class DSTGameWorker:
                     recorder = None
                     self._recording_error = type(exc).__name__
                     logger.warning("worker recording could not start", exc_info=True)
+            vision.world_roi_only = bool(self.locomotion.profile)
             pipeline = ObservePipeline(
                 capture,
                 vision,
@@ -336,6 +376,7 @@ class DSTGameWorker:
             self.recovery = recovery
             self.vision = vision
             self.pipeline = pipeline
+            self._liveness_started_at = time.monotonic()
             self.recorder = recorder
             if self._game_ready:
                 pipeline.on_game_ready()
@@ -458,17 +499,44 @@ class DSTGameWorker:
             self.resume()
         self._sync_action_mode()
 
+    def _arm_local_movement_anchor(self, monitor):
+        monitor.arm_local_anchor()
+        config = self.config.diagnostic_directory.parent / "local-click-anchor.json"
+        if self.context and self.context.account_id == 2 and config.exists():
+            import numpy as np
+            from PIL import Image
+            settings = json.loads(config.read_text())
+            self.locomotion.click_anchor = tuple(settings["player_anchor"])
+            self.locomotion.click_clearance_pending = bool(settings.get("initial_clearance", False))
+            sample = np.asarray(Image.open(settings["reference_frame"]).convert("L").resize((640, 360)))
+            x, y = settings["landmark_center_half_viewport"]
+            monitor._local_patches = [(x, y, sample[y-16:y+16, x-16:x+16].copy())]
+            monitor.local_single_patch = True
+
     def configure_experiment(self, profile, session_id, seconds, until_gift=False,
                              target_valid_seconds=None, continue_after_claim=False):
         if self.mode != WorkerMode.DISABLED:
             raise ValueError("disable the worker before configuring an experiment")
         self.locomotion.configure(profile, session_id, seconds, until_gift, target_valid_seconds)
+        self.stationary = StationarySession()
+        self._local_anchor_monitor = None
+        if self.pipeline is not None:
+            self.pipeline.engine.world_roi_only = True
+            self.pipeline.engine._monitor.local_anchor_enabled = False
         self.activity = ActivityController(locomotion=self.locomotion)
+        # A characterization continuation may carry a single already-failed
+        # claim forward without re-clicking the same still-visible gift.
+        self.activity.claim_not_actionable = session_id.endswith(
+            "-claim-not-actionable"
+        )
         if not self.context:
             raise ValueError("experiment requires a prepared runtime context")
         self._experiment_evidence_root = self.config.diagnostic_directory.parent / "experiments" / session_id
-        self._experiment_continue_after_claim = bool(continue_after_claim)
+        self._experiment_continue_after_claim = bool(continue_after_claim or not until_gift)
         self._experiment_gift_sequence = 1
+        while (self._experiment_evidence_root / "gifts" /
+               f"gift-{self._experiment_gift_sequence:04d}" / "claim.json").exists():
+            self._experiment_gift_sequence += 1
         self.claim_evidence = self._new_gift_claim_evidence()
         self.diagnostics.directory = self._experiment_evidence_root / "diagnostics"
         frame_id = self._last_observation.get("source_frame_id")
@@ -501,6 +569,10 @@ class DSTGameWorker:
                 validation_flow_enabled=self.config.validation_flow_enabled,
                 validation_movement_enabled=self.config.validation_movement_enabled,
                 locomotion=self.locomotion,
+            )
+            self.activity.claim_not_actionable = bool(
+                self.locomotion.session_id
+                and self.locomotion.session_id.endswith("-claim-not-actionable")
             )
             if self.context:
                 self.prepare(self.context)
@@ -554,6 +626,10 @@ class DSTGameWorker:
                 validation_movement_enabled=self.config.validation_movement_enabled,
                 locomotion=self.locomotion,
             )
+            self.activity.claim_not_actionable = bool(
+                self.locomotion.session_id
+                and self.locomotion.session_id.endswith("-claim-not-actionable")
+            )
             if self.machine.state == WorkerState.DISABLED:
                 self.machine.transition(WorkerState.INITIALIZING, "worker mode enabled")
             if self.context:
@@ -568,6 +644,7 @@ class DSTGameWorker:
         if self.mode == WorkerMode.REPLAY:
             return self.status()
         self._game_ready = True
+        self._liveness_started_at = time.monotonic()
         if self.recorder:
             self.recorder.record_event(RecordingEventType.GAME_READY)
         if self.mode == WorkerMode.DISABLED:
@@ -591,12 +668,17 @@ class DSTGameWorker:
         if self.mode == WorkerMode.REPLAY:
             return self.status()
         self._game_ready = False
+        self.stationary.lost_world(datetime.now(timezone.utc).isoformat(), "GAME_LOST")
+        self._local_anchor_monitor = None
+        if self.pipeline:
+            self.pipeline.engine._monitor.local_anchor_enabled = False
         if self.recorder:
             self.recorder.record_event(RecordingEventType.GAME_LOST)
         if self.pipeline:
             self.pipeline.on_game_lost()
         report = self.pause(runtime_loss=True)
         self._sync_action_mode()
+        self._persist_stationary_events()
         return report
 
     def execute_action(self, action: Action) -> ActionResult:
@@ -629,9 +711,6 @@ class DSTGameWorker:
         if (self.locomotion.profile and self.mode == WorkerMode.ACTIVE
                 and time.monotonic() >= self.locomotion.deadline):
             return self.set_mode(WorkerMode.DISABLED)
-        if self.mode == WorkerMode.ACTIVE and self.locomotion.failures >= 3:
-            self._fail("WORKER_LOCOMOTION_STALLED")
-            return self.status()
         if self._shutting_down or self.mode == WorkerMode.DISABLED:
             return self.status()
         if self.mode == WorkerMode.REPLAY:
@@ -672,9 +751,37 @@ class DSTGameWorker:
                 self.claim_evidence.before_tick()
                 self.activity.gift_claim_ready = self.claim_evidence.ready
                 self.activity.claim_evidence = self.claim_evidence
+            self.activity.gift_visual.context = {
+                "account_id": context.account_id, "runtime_id": context.runtime_id,
+                "profile": self.locomotion.profile,
+                "movement_action_before": self._last_action,
+                "station_zone": self.locomotion.telemetry().get("station_zone"),
+                "pending_during": (self.claim_evidence.health.get("pending_items")
+                                   if isinstance(self.claim_evidence, SessionClaimEvidence) else None),
+            }
             outcome = self.pipeline.tick()
             observation = outcome.observation
+            self._persist_gift_visual_events()
+            if isinstance(self.claim_evidence, SessionClaimEvidence) and self.activity.gift_attempt:
+                attempt = self.activity.gift_attempt
+                evidence = self.claim_evidence.evidence
+                if (observation is not None and "after_frame_id" not in attempt
+                        and "preview_after_frame_id" not in attempt
+                        and (datetime.fromisoformat(observation.timestamp)
+                             - datetime.fromisoformat(attempt["claim_started_at"])).total_seconds() >= 1.0):
+                    attempt["preview_after_frame_id"] = observation.source_frame_id
+                    attempt["preview_after_screen"] = observation.screen.value
+                key = (attempt["before_frame_id"], attempt.get("after_frame_id"),
+                       attempt.get("preview_after_frame_id"), attempt["status"])
+                if key != self._gift_attempt_artifact_key:
+                    self.diagnostics.save_frame(attempt["before_frame_id"], evidence / "before.png")
+                    after = attempt.get("after_frame_id") or attempt.get("preview_after_frame_id")
+                    if after:
+                        self.diagnostics.save_frame(after, evidence / "after.png")
+                    durable_json(evidence / "attempt.json", attempt)
+                    self._gift_attempt_artifact_key = key
             if observation is not None:
+                self.stationary.observe(observation)
                 self.locomotion.observe(observation, self._effective_mode() == WorkerMode.ACTIVE)
                 self._last_observation = observation.as_dict()
                 self._last_observation_at = observation.timestamp
@@ -703,23 +810,43 @@ class DSTGameWorker:
                     else self.claim_evidence.observe(observation) if observation else None
                 )
                 if receipt:
+                    self.stationary.cleared(receipt, observation.timestamp, observation.observed_monotonic)
                     if isinstance(self.claim_evidence, SessionClaimEvidence):
+                        attempt = self.activity.gift_attempt or {}
+                        detected_at = receipt.get("detection_timestamp")
+                        confirmed_at = receipt["claim_timestamp"]
                         receipt = {**receipt, "gift_sequence_in_run": self._experiment_gift_sequence,
-                                   "receipt_path": str(self.claim_evidence.provider.result_path)}
+                                   "receipt_path": str(self.claim_evidence.provider.result_path),
+                                   "claim_started_at": attempt.get("claim_started_at"),
+                                   "claim_confirmed_at": confirmed_at,
+                                   "gift_first_detected_at": detected_at,
+                                   "gift_pending_unclaimed_seconds": max(0.0,
+                                       (datetime.fromisoformat(confirmed_at)
+                                        - datetime.fromisoformat(detected_at)).total_seconds()) if detected_at else None,
+                                   "before_screenshot": str(self.claim_evidence.evidence / "before.png"),
+                                   "detected_screenshot": str(self.claim_evidence.evidence / "detection.png"),
+                                   "claimed_screenshot": str(self.claim_evidence.evidence / "completion.png")}
                         durable_json(self.claim_evidence.provider.result_path, receipt)
                         self.diagnostics.save_frame(
                             receipt["evidence_frame_id"], self.claim_evidence.evidence / "completion.png"
                         )
                     from runtime_agent.gameworker.activity import InWorldGiftState
                     self.activity.inworld_gift_confirmation = receipt
+                    self.activity.gift_claim_state = "CLAIM_CONFIRMED"
+                    self.activity.intervention_required = False
                     self.activity.inworld_gift_state = InWorldGiftState.CONFIRMED
                     self.activity.counters["gift_claimed"] += 1
                     if self._experiment_continue_after_claim:
                         self._experiment_gift_sequence += 1
                         self.claim_evidence = self._new_gift_claim_evidence()
                         self.activity.begin_next_gift_cycle(self.claim_evidence)
-                    if self.locomotion.until_gift:
+                    if self.locomotion.until_gift and not self._experiment_continue_after_claim:
                         return self.set_mode(WorkerMode.DISABLED)
+            self._persist_stationary_events()
+            if self.stationary.recovery_blocker and self.locomotion.profile:
+                self._error_code = "STATIONARY_RECOVERY_BLOCKER"
+                return self.set_mode(WorkerMode.DISABLED)
+            self._log_gift_zone_state(observation)
             stop_reason = self.locomotion.stop_reason
             if stop_reason:
                 self._error_code = stop_reason
@@ -932,7 +1059,7 @@ class DSTGameWorker:
         if self.pipeline is not None and self.pipeline.verification_pending:
             return self.VERIFY_OBSERVATION_INTERVAL_SECONDS
         if self.locomotion.profile:
-            return 2.0
+            return 0.1
         if self._last_observation and self._last_observation.get("screen") == "IN_WORLD_IDLE":
             configured = min(15.0, max(2.0, self.config.observation_interval))
         else:
@@ -941,11 +1068,33 @@ class DSTGameWorker:
 
     @property
     def next_tick_interval(self) -> float:
-        if self.pipeline is not None and self.pipeline.verification_pending:
+        if self.locomotion.profile or (self.pipeline is not None and self.pipeline.verification_pending):
             return min(self.config.tick_interval, self.VERIFY_TICK_INTERVAL_SECONDS)
         return self.config.tick_interval
 
     def _record_action(self, result) -> None:
+        if result.status == ActionStatus.VERIFYING:
+            timestamp = datetime.now(timezone.utc).isoformat()
+            if result.action == ActionName.CLICK_GIFT_ICON:
+                self.stationary.clicked(result, timestamp)
+            elif result.action == ActionName.CLICK_INWORLD_USE_LATER:
+                self.stationary.reveal_completed(timestamp)
+            elif result.action in {
+                ActionName.CLICK_HOST_GAME, ActionName.SELECT_EXISTING_WORLD,
+                ActionName.START_EXISTING_WORLD, ActionName.SELECT_SURVIVOR,
+                ActionName.START_SURVIVOR, ActionName.RESUME_WORLD,
+            }:
+                self.stationary.emit("JOIN_OR_RECOVERY_ACTION", timestamp,
+                                     action=result.action.value, action_id=result.action_id)
+        if result.action in {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
+                              ActionName.TURN_LEFT, ActionName.TURN_RIGHT,
+                              ActionName.CLICK_LOCAL_TARGET}:
+            if result.status in {ActionStatus.SENT, ActionStatus.VERIFYING, ActionStatus.COMPLETED}:
+                self.stationary.movement_count += 1
+            self.stationary.emit("MOVEMENT_ACTION", datetime.now(timezone.utc).isoformat(),
+                                 action=result.action.value, status=result.status.value,
+                                 action_id=result.action_id, reason=result.reason)
+        self._persist_stationary_events()
         action, dry_run = result.action, result.dry_run
         summary = f"{action} {result.duration:.2f}s {result.result}"
         if result.reason:
@@ -1094,7 +1243,7 @@ class DSTGameWorker:
     def _permitted_active_actions(self) -> frozenset[ActionName]:
         # Reusable canonical capabilities shared by production and validation
         # ActivityController policies.
-        return frozenset(
+        permitted = frozenset(
             {
                 ActionName.OPEN_CRAFTING_MENU,
                 ActionName.OPEN_INVENTORY,
@@ -1114,6 +1263,7 @@ class DSTGameWorker:
                 ActionName.MOVE_BACKWARD,
                 ActionName.TURN_LEFT,
                 ActionName.TURN_RIGHT,
+                ActionName.CLICK_LOCAL_TARGET,
                 ActionName.CANCEL,
                 ActionName.PAUSE_WORLD,
                 ActionName.RESUME_WORLD,
@@ -1123,6 +1273,11 @@ class DSTGameWorker:
                 ActionName.CLICK_INWORLD_USE_LATER,
             }
         )
+        if self.locomotion.profile:
+            permitted -= {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
+                          ActionName.TURN_LEFT, ActionName.TURN_RIGHT,
+                          ActionName.CLICK_LOCAL_TARGET, ActionName.INTERACT}
+        return permitted
 
     def _sync_action_mode(self) -> None:
         effective_mode = self._effective_mode()
@@ -1131,6 +1286,8 @@ class DSTGameWorker:
             and effective_mode == WorkerMode.ACTIVE
         )
         if self.actions:
+            if hasattr(self.actions, "executor"):
+                self.actions.executor.allowed_actions = self._permitted_active_actions()
             state = self.machine.state
             self.actions.set_safety(
                 configured_mode=self.mode,
@@ -1144,6 +1301,80 @@ class DSTGameWorker:
                 stopping=self._shutting_down
                 or state in {WorkerState.SHUTTING_DOWN, WorkerState.STOPPED},
             )
+
+    def _persist_stationary_events(self):
+        if not self.context or not self.stationary.events:
+            return
+        session_id = self.locomotion.session_id or (
+            f"stationary-r{self.context.runtime_id}-w{self.worker_generation}"
+        )
+        root = self.config.diagnostic_directory.parent / "experiments" / session_id
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / "stationary-events.jsonl"
+        # Bounded segment files preserve old experiment evidence. A full disk
+        # raises through the existing worker failure/release path.
+        if path.exists() and path.stat().st_size >= 4 * 1024 * 1024:
+            index = 1
+            while path.with_name(f"stationary-events-{index:04d}.jsonl").exists():
+                index += 1
+            if index > 15:
+                raise OSError("stationary experiment event budget exhausted")
+            path.rename(path.with_name(f"stationary-events-{index:04d}.jsonl"))
+        with path.open("a", encoding="utf-8") as stream:
+            while self.stationary.events:
+                record = {**self.stationary.events[0],
+                          "account_id": self.context.account_id,
+                          "runtime_id": self.context.runtime_id,
+                          "worker_generation": self.worker_generation,
+                          "session_id": session_id, "policy": "STATIONARY"}
+                stream.write(json.dumps(record, sort_keys=True) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+                self.stationary.events.popleft()
+                logger.info("stationary_event %s", json.dumps(record, sort_keys=True))
+
+    def _log_gift_zone_state(self, observation):
+        """Bounded state events, not per-frame recording, for a local run."""
+        if not self.locomotion.profile or not self.locomotion.session_id.startswith("gift_zone_run_"):
+            return
+        movement = self.locomotion.telemetry()
+        gift = self.activity.gift_availability_evidence or {}
+        attempt = self.activity.gift_attempt
+        receipt = self.activity.inworld_gift_confirmation
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "run_id": self.locomotion.session_id.rsplit("_a", 1)[0],
+            "session_id": self.locomotion.session_id,
+            "account": self.context.account_id, "runtime_id": self.context.runtime_id,
+            "worker_generation": self.worker_generation,
+            "worker_state": self.machine.state.value,
+            "screen": observation.screen.value if observation else "UNKNOWN",
+            "anchor": [0, 0], "movement": movement,
+            "stationary": self.stationary.telemetry(),
+            "gift": gift, "gift_latched": self.locomotion.gift_latched,
+            "attempt": attempt, "receipt": receipt,
+            "run_collected": self._experiment_gift_sequence - 1,
+            "last_action": self._last_action,
+            "recoveries": self._recoveries, "capture_errors": self._capture_errors,
+            "perception_errors": self._perception_errors,
+        }
+        signature = (record["worker_state"], record["screen"], movement["movement_commands"],
+                     movement["moving_seconds"], movement["movement_failures"],
+                     movement["station_zone"]["anchor_lost"], gift.get("availability"),
+                     gift.get("icon_state"), record["gift_latched"],
+                     json.dumps(attempt, sort_keys=True), record["run_collected"],
+                     self._recoveries, self._capture_errors, self._perception_errors)
+        now = time.monotonic()
+        if (signature == getattr(self, "_zone_event_signature", None)
+                and now - getattr(self, "_zone_event_at", 0) < 60):
+            return
+        record["event"] = "STATE_CHANGE" if signature != getattr(self, "_zone_event_signature", None) else "SUMMARY"
+        self._zone_event_signature, self._zone_event_at = signature, now
+        root = self.config.diagnostic_directory.parent / "experiments" / self.locomotion.session_id
+        root.mkdir(parents=True, exist_ok=True)
+        with (root / "events.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True) + "\n")
+        logger.info("gift_zone_event %s", json.dumps(record, sort_keys=True))
 
     def status(self) -> WorkerReport:
         state = self.machine.state
@@ -1163,9 +1394,33 @@ class DSTGameWorker:
                 self._active_seconds += elapsed
             active_seconds = self._active_seconds
             pause_seconds = self._pause_seconds
+        pipeline_health = self.pipeline.health() if self.pipeline else {}
+        liveness_reasons = []
+        # Observe freshness, never the time since movement, gifts or proposals.
+        if (self.mode in {WorkerMode.ACTIVE, WorkerMode.OBSERVE}
+                and state not in {WorkerState.PAUSED, WorkerState.STOPPED,
+                                  WorkerState.SHUTTING_DOWN, WorkerState.INITIALIZING,
+                                  WorkerState.WAITING_FOR_GAME}):
+            if not self._game_ready:
+                liveness_reasons.append("SESSION_NOT_READY")
+            elif self.pipeline is not None:
+                now = time.monotonic()
+                if self._liveness_started_at is None:
+                    self._liveness_started_at = now
+                for key, reason in (
+                    ("last_capture_success_monotonic", "CAPTURE_STALE"),
+                    ("last_valid_observation_monotonic", "OBSERVATION_STALE"),
+                ):
+                    last = pipeline_health.get(key)
+                    if now - (last if last is not None else self._liveness_started_at) > self.LIVENESS_TIMEOUT_SECONDS:
+                        liveness_reasons.append(reason)
+            elif state not in {WorkerState.INITIALIZING, WorkerState.WAITING_FOR_GAME}:
+                liveness_reasons.append("OBSERVATION_PIPELINE_UNAVAILABLE")
         healthy = (
             state not in {WorkerState.ERROR, WorkerState.NEEDS_ATTENTION}
             and not self._cleanup_failed
+            and not liveness_reasons
+            and self.stationary.recovery_blocker is None
         )
         recording = (
             self.recorder.snapshot()
@@ -1180,7 +1435,6 @@ class DSTGameWorker:
                 "write_failures": int(self._recording_error is not None),
             }
         )
-        pipeline_health = self.pipeline.health() if self.pipeline else {}
         return WorkerReport(
             plugin=self.plugin,
             version=self.version,
@@ -1194,6 +1448,10 @@ class DSTGameWorker:
             error_code=self._error_code,
             would_execute=self._would_execute,
             telemetry={
+                "liveness": {"healthy": healthy, "reasons": liveness_reasons,
+                             "freshness_timeout_seconds": self.LIVENESS_TIMEOUT_SECONDS,
+                             "last_capture_success_monotonic": pipeline_health.get("last_capture_success_monotonic"),
+                             "last_valid_observation_monotonic": pipeline_health.get("last_valid_observation_monotonic")},
                 "worker_active_seconds": round(active_seconds, 3),
                 "pause_seconds": round(pause_seconds, 3),
                 "actions_count": self._actions_count,
@@ -1205,6 +1463,11 @@ class DSTGameWorker:
                 if isinstance(self.claim_evidence, SessionClaimEvidence) else None,
                 "inworld_gift_state": self.activity.inworld_gift_state.value,
                 "gift_availability_evidence": self.activity.gift_availability_evidence,
+                "gift_claim_state": self.activity.gift_claim_state,
+                "stationary": self.stationary.telemetry(),
+                "gift_visual_temporal": self.activity.gift_visual.telemetry(),
+                "gift_claim_attempt": self.activity.gift_attempt,
+                "gift_retry_after_seconds": max(0.0, self.activity._gift_retry_at - time.monotonic()),
                 "inworld_gift_confirmation": self.activity.inworld_gift_confirmation,
                 "daily_gift_confirmation": (
                     self.activity.daily_gift_confirmation.as_dict()

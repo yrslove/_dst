@@ -9,6 +9,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from runtime_agent.gameworker.gift_icon import GiftTemporalEvidence
 from runtime_agent.gameworker.vision import DSTScreen, GameObservation
 
 ACK = re.compile(rb"\[SetItemOpened_Complete Success:200\] (\{[^\r\n]+\})")
@@ -73,6 +74,23 @@ class SessionClaimEvidence:
                         "detection_timestamp": saved["detected_at"],
                     }
         self._last_frame = None
+        self.temporal = GiftTemporalEvidence()
+        self.attempt = None
+        attempt_path = self.evidence / "claim-attempt.json"
+        if attempt_path.exists():
+            attempt = json.loads(attempt_path.read_bytes())
+            if all(attempt.get(k) == v for k, v in identity.items()):
+                self.attempt = attempt
+
+    def start_attempt(self, observation, action_id):
+        if not self.ready:
+            return
+        self.attempt = {**self.identity, "action_id": action_id,
+                        "claim_attempt_at": datetime.now(UTC).isoformat(),
+                        "evidence_frame_id": observation.source_frame_id,
+                        "evidence_sequence": observation.source_sequence,
+                        "worker_generation": observation.worker_generation}
+        durable_json(self.evidence / "claim-attempt.json", self.attempt)
 
     @property
     def ready(self):
@@ -105,14 +123,44 @@ class SessionClaimEvidence:
             self.health = {"state": "NATIVE_INVENTORY_UNAVAILABLE"}
 
     def observe(self, observation):
+        world_clear = bool(
+            observation is not None and observation.production_ready and observation.is_fresh()
+            and observation.runtime_id == self.identity["runtime_id"]
+            and observation.screen == DSTScreen.IN_WORLD_IDLE
+            and not any(d.detected and d.verified
+                        and dict(getattr(d, "metadata", ())).get("availability") in {
+                            "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"}
+                        for d in observation.detections if d.kind == "gift_icon")
+            and not any(d.detected and d.verified for d in observation.detections
+                        if d.kind in {"inworld_gift_received_title", "inworld_gift_use_later"}))
+        if self.provider is not None and self.attempt is not None and world_clear:
+            receipt = self.provider.confirm_native({**self.attempt,
+                "active_gift_icon_disappeared": True,
+                "evidence_frame_id": observation.source_frame_id,
+                "evidence_sequence": observation.source_sequence,
+                "worker_generation": observation.worker_generation,
+                "first_transient_visual_at": self.temporal.first_transient_visual_at,
+                "confirmed_persistent_visual_at": self.temporal.confirmed_persistent_visual_at,
+                "detection_timestamp": self.temporal.confirmed_first_detection,
+                "visual_state": observation.screen.value if observation else "UNKNOWN"})
+            if receipt:
+                self.temporal.observe(observation, receipt=True)
+                return receipt
         if observation is None:
             return None
         if observation.runtime_id != self.identity["runtime_id"]:
             return None
+        fresh_pending = None
+        updated = self.health.get("cache_updated_at")
+        if updated and time.time() - datetime.fromisoformat(updated).timestamp() <= 30:
+            fresh_pending = self.health.get("pending_items")
+        self.temporal.observe(observation, pending=fresh_pending)
         if self.detection is None and observation.production_ready and observation.is_fresh():
             icon = next((d for d in observation.detections if d.kind == "gift_icon"), None)
             if (icon and icon.detected and icon.verified and icon.confidence >= .94
                     and dict(icon.metadata).get("availability") in {"GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"}
+                    and (self.temporal.candidate
+                         or dict(icon.metadata).get("availability") == "GIFT_AVAILABLE")
                     and self.health.get("state") == "OK"):
                 if self.provider is None and self.inventory is not None:
                     baseline = self.evidence / "inventory-before.json"
@@ -126,7 +174,7 @@ class SessionClaimEvidence:
                     # An uncached item still requires a fresh received/closed UI,
                     # this user's native ACK, and a new item ID after detection.
                     self.provider.allow_uncached_gift = True
-                self.detection = {**self.identity, "detected_at": observation.timestamp,
+                self.detection = {**self.identity, "detected_at": self.temporal.confirmed_first_detection or observation.timestamp,
                                   "observation": observation.as_dict()}
                 durable_json(self.evidence / "detection.json", self.detection)
         if self.provider is not None:
@@ -164,6 +212,7 @@ class SessionClaimEvidence:
 class InWorldClaimEvidence:
     def __init__(self, inventory_before: Path, client_log: Path, result_path: Path):
         self.client_log = client_log
+        self.source_client_log = client_log
         self.user_id = None
         self.allow_uncached_gift = False
         self.result_path = result_path
@@ -185,11 +234,8 @@ class InWorldClaimEvidence:
         self._world_frames = 0
 
     def archive_ack(self, path: Path) -> None:
-        if path.exists():
-            self.client_log = path
-            return
         try:
-            with self.client_log.open("rb") as stream:
+            with self.source_client_log.open("rb") as stream:
                 stream.seek(max(0, os.fstat(stream.fileno()).st_size - MAX_LOG_BYTES))
                 tail = stream.read(MAX_LOG_BYTES)
             for match in reversed(list(ACK.finditer(tail))):
@@ -276,6 +322,10 @@ class InWorldClaimEvidence:
             and observation.screen_confidence >= .94
             and observation.runtime_generation == self.pending_close["runtime_generation"]
             and observation.runtime_id == self.pending_close["runtime_id"]
+            and not any(d.kind == "gift_icon" and d.detected and d.verified
+                        and dict(getattr(d, "metadata", ())).get("availability") in {
+                            "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"}
+                        for d in observation.detections)
             and not any(d.detected and d.verified for d in observation.detections
                         if d.kind in {"inworld_gift_received_title", "inworld_gift_use_later"})
         ):
@@ -292,10 +342,23 @@ class InWorldClaimEvidence:
             "worker_generation": observation.worker_generation,
         })
 
-    def confirm(self, closed: dict) -> dict | None:
+    def confirm_native(self, attempt: dict) -> dict | None:
+        if not self.user_id or not attempt.get("action_id") or not attempt.get("claim_attempt_at"):
+            return None
+        try:
+            attempted = datetime.fromisoformat(attempt["claim_attempt_at"]).timestamp()
+        except (ValueError, TypeError):
+            return None
+        if not self.started_at <= attempted <= time.time() + 1:
+            return None
+        return self.confirm({**attempt, "received_at": attempt["claim_attempt_at"],
+                             "observed_at": datetime.now(UTC).isoformat(),
+                             "verification": "NATIVE_ACK_AFTER_CANONICAL_CLICK"}, native_only=True)
+
+    def confirm(self, closed: dict, *, native_only=False) -> dict | None:
         if self.receipt:
             return self.receipt
-        if not (
+        if not native_only and not (
             isinstance(closed.get("received_sequence"), int)
             and isinstance(closed.get("evidence_sequence"), int)
             and (closed.get("received_worker_generation", 1) != closed.get("worker_generation", 1)
@@ -331,7 +394,7 @@ class InWorldClaimEvidence:
                 and (item_id in self.pending or (self.allow_uncached_gift
                      and self.user_id is not None and item_id not in self.known_item_ids))
                 and isinstance(modified, (int, float))
-                and self.started_at <= modified <= observed + 60
+                and max(self.started_at, received if native_only else self.started_at) <= modified <= observed + 60
             ):
                 continue
             receipt = {
@@ -347,6 +410,8 @@ class InWorldClaimEvidence:
                 },
                 "inventory_before_sha256": self.baseline_sha256,
                 "claim_timestamp": datetime.fromtimestamp(modified, UTC).isoformat(),
+                "SetItemOpened_Complete_at": datetime.fromtimestamp(modified, UTC).isoformat(),
+                "claim_confirmed_at": datetime.now(UTC).isoformat(),
             }
             self.result_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.result_path.with_suffix(".tmp")

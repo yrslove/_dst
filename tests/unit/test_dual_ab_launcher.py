@@ -82,6 +82,29 @@ def test_native_baseline_rejects_daily_or_other_account_receipts():
     assert dual_ab.confirmed_claim_timestamp(None, 2) is None
 
 
+def test_baseline_gift_requires_persistent_visual_or_fresh_item_service():
+    import time
+    from datetime import UTC, datetime
+
+    now = time.time()
+    observed = datetime.fromtimestamp(now, UTC).isoformat()
+    report = {
+        "details": {"observation": {"screen": "IN_WORLD_IDLE", "validity": "VALID"}},
+        "telemetry": {"gift_availability_evidence": {
+            "observed_at": observed, "availability": "GIFT_AVAILABLE",
+            "icon_present": True, "temporal_state": "SEEN_ONCE",
+        }},
+    }
+    assert dual_ab.fresh_baseline_gift(report, now - 1) is None
+    report["telemetry"]["gift_availability_evidence"]["temporal_state"] = "PERSISTENT"
+    assert dual_ab.fresh_baseline_gift(report, now - 1)
+    report["telemetry"]["gift_availability_evidence"]["temporal_state"] = "SEEN_ONCE"
+    report["telemetry"]["item_service"] = {
+        "state": "OK", "pending_items": 1, "cache_updated_at": observed,
+    }
+    assert dual_ab.fresh_baseline_gift(report, now - 1)
+
+
 def test_failed_preexisting_claim_preserves_other_account_run(monkeypatch, tmp_path):
     import json
     from datetime import UTC, datetime

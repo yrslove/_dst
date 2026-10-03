@@ -345,11 +345,10 @@ def _worker_main(
         tick_interval = config.tick_interval
         while not stop.wait(tick_interval):
             with worker_lock:
-                publish_report(
-                    worker.tick(current_context)
-                    if game_ready.is_set()
-                    else worker.status()
-                )
+                report = (worker.tick(current_context)
+                          if game_ready.is_set() else worker.status())
+                report.telemetry["worker_loop_monotonic"] = time.monotonic()
+                publish_report(report)
                 recommended_interval = getattr(
                     worker, "next_tick_interval", config.tick_interval
                 )
@@ -366,6 +365,13 @@ def _worker_main(
                     shutdown_complete.set()
         stop.set()
         control.join(timeout=1)
+        # The parent joins this process before draining status. A large queued
+        # telemetry frame can otherwise keep the Queue feeder alive forever and
+        # turn a clean STOP into a forced stop/full runtime restart. Status is
+        # replaceable; the independent command ACK queue must still flush.
+        cancel_status_join = getattr(reports, "cancel_join_thread", None)
+        if cancel_status_join is not None:
+            cancel_status_join()
 
 
 class WorkerProcessState(StrEnum):
@@ -390,7 +396,7 @@ class WorkerProcessHost:
         max_restarts: int = 3,
         restart_backoff_seconds: float = 0.0,
         ready_timeout: float = 10.0,
-        stop_timeout: float = 3.0,
+        stop_timeout: float = 10.0,
         stable_run_seconds: float = 30.0,
         clock=time.monotonic,
     ):
@@ -422,6 +428,7 @@ class WorkerProcessHost:
         self._worker_generation = 0
         self._started_at: float | None = None
         self._ready_at: float | None = None
+        self._last_loop_report_at: float | None = None
         self._next_restart_at: float | None = None
         self._state = WorkerProcessState.CREATED
         self._lock = threading.RLock()
@@ -652,6 +659,7 @@ class WorkerProcessHost:
         self._worker_generation += 1
         self._started_at = self._clock()
         self._ready_at = None
+        self._last_loop_report_at = None
         self._next_restart_at = None
         self._state = WorkerProcessState.STARTING
         assert self._commands is not None
@@ -782,6 +790,9 @@ class WorkerProcessHost:
                     continue
                 self._last_report = WorkerReport(**payload.report)
                 self._last_report.restart_count = self.restart_count
+                self._last_loop_report_at = payload.report.get("telemetry", {}).get(
+                    "worker_loop_monotonic", self._clock()
+                )
                 if self._ready_at is None:
                     self._ready_at = self._clock()
                     if self._state == WorkerProcessState.STARTING:
@@ -930,6 +941,8 @@ class WorkerProcessHost:
         if self._may_have_live_input():
             emergency_release_all(self.context.display, self.config.bindings)
         self._fail_pending_commands(WorkerCommandResult.WORKER_CRASHED)
+        self._last_report.healthy = False
+        self._last_report.error_code = "WORKER_CRASHED"
         self._process = None
         self._close_queues()
         self._schedule_restart()
@@ -988,6 +1001,15 @@ class WorkerProcessHost:
                 "runtime_generation": self.context.runtime_generation,
                 "stale_ipc_messages": self._stale_messages,
             }
+            if (self._process is not None and self._process.is_alive()
+                    and self._last_loop_report_at is not None
+                    and not self._stopped):
+                age = max(0.0, self._clock() - self._last_loop_report_at)
+                self._last_report.details["worker_report_age_seconds"] = age
+                self._last_report.details["worker_report_timeout_seconds"] = 30.0
+                if age > 30.0:
+                    self._last_report.healthy = False
+                    self._last_report.error_code = "WORKER_HEARTBEAT_STALE"
             return self._last_report
 
     def command(self, command: str, *, command_id: int | None = None, **values) -> None:
@@ -1218,6 +1240,10 @@ class WorkerProcessHost:
                 self._process.join(timeout=self.stop_timeout)
                 if self._process.is_alive():
                     forced = True
+                    logger.error(
+                        "worker_stop_timeout runtime_id=%s generation=%s timeout_seconds=%s",
+                        self.context.runtime_id, self._worker_generation, self.stop_timeout,
+                    )
                     self._force_stop_child()
                 if self._process.is_alive():
                     self._mark_crashed()
@@ -1229,6 +1255,7 @@ class WorkerProcessHost:
                 emergency_release_all(self.context.display, self.config.bindings)
             if self._process is not None and not self._process.is_alive():
                 self._process.join(timeout=min(0.1, self.stop_timeout))
+                forced = forced or getattr(self._process, "exitcode", 0) not in {0, None}
             self._drain()
             self._fail_pending_commands(
                 WorkerCommandResult.WORKER_CRASHED

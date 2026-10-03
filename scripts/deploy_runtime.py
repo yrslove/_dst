@@ -128,6 +128,19 @@ def require_revision(actual: str, expected: str) -> None:
         raise DeployError(f"guest revision mismatch: expected {expected}, got {actual}")
 
 
+def agent_loaded_since(instance: str, revision: str, since: float) -> bool:
+    # Older agents read DEPLOYMENT.json on every heartbeat. A new metadata
+    # revision alone therefore cannot prove that reload actually completed.
+    # Adoption reuses the existing PID, so it emits the explicit preservation
+    # event instead of runtime_agent_started.
+    output = run([
+        "incus", "exec", instance, "--", "journalctl", "-u", SERVICE,
+        "--since", f"@{since:.6f}", "--no-pager", "-o", "cat",
+    ])
+    return (f"runtime_agent_started deployed_revision={revision}" in output
+            or "runtime_agent_reload_preserving_managed_processes" in output)
+
+
 def write_archive(repo: Path, files: Sequence[Path], metadata: dict[str, object], destination: Path) -> str:
     inventory = {
         path.relative_to(repo).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -488,6 +501,7 @@ def deploy(instance: str, repo: Path, *, cold: bool = False) -> None:
                         after.get("heartbeat_fresh")
                         and heartbeat.get("revision") == revision
                         and heartbeat.get("timestamp_unix", 0) >= reload_started
+                        and agent_loaded_since(instance, revision, reload_started)
                     ):
                         adopted = True
                         break
@@ -510,6 +524,7 @@ def deploy(instance: str, repo: Path, *, cold: bool = False) -> None:
                     and after.get("heartbeat_fresh")
                     and heartbeat.get("revision") == revision
                     and heartbeat.get("timestamp_unix", 0) >= reload_started
+                    and agent_loaded_since(instance, revision, reload_started)
                 ):
                     run([
                         "incus", "exec", instance, "--", "python3", "-c",

@@ -100,6 +100,53 @@ def reconcile_world_profile(
     }
 
 
+def reconcile_idle_timeout(*, user_root: Path = DEFAULT_USER_ROOT) -> dict:
+    """Set only the prepared cluster's NETWORK idle timeout, preserving bytes.
+
+    Hosted DST reads this when starting the server; writing a running cluster
+    does not establish that the current server has applied it.
+    """
+    paths = sorted(user_root.glob("*/Cluster_1/cluster.ini"))
+    if not paths:
+        return {"status": "WORLD_UNAVAILABLE", "changed": False}
+    if len(paths) != 1:
+        raise RuntimeError("idle timeout requires exactly one prepared cluster")
+    path = paths[0]
+    original = path.read_bytes().decode("utf-8")
+    lines = original.splitlines(keepends=True)
+    newline = "\r\n" if b"\r\n" in path.read_bytes() else "\n"
+    sections = [i for i, line in enumerate(lines)
+                if line.strip().upper() == "[NETWORK]"]
+    if len(sections) > 1:
+        raise ValueError("ambiguous duplicate NETWORK sections")
+    if sections:
+        start = sections[0] + 1
+        end = next((i for i in range(start, len(lines))
+                    if lines[i].lstrip().startswith("[")), len(lines))
+        keys = [i for i in range(start, end)
+                if re.match(r"\s*idle_timeout\s*=", lines[i], re.IGNORECASE)]
+        if len(keys) > 1:
+            raise ValueError("ambiguous duplicate idle_timeout settings")
+        if keys:
+            lines[keys[0]] = "idle_timeout = 0" + newline
+        else:
+            if end and not lines[end - 1].endswith(("\n", "\r")):
+                lines[end - 1] += newline
+            lines.insert(end, "idle_timeout = 0" + newline)
+    else:
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines[-1] += newline
+        lines.extend(["[NETWORK]" + newline, "idle_timeout = 0" + newline])
+    desired = "".join(lines).encode("utf-8")
+    changed = desired != path.read_bytes()
+    if changed:
+        _atomic_write(path, desired, mode=path.stat().st_mode & 0o777)
+    if path.read_bytes() != desired:
+        raise RuntimeError("idle timeout write verification failed")
+    return {"status": "CONFIG_PRESENT", "path": str(path), "changed": changed,
+            "idle_timeout": 0, "loaded_server_verified": False}
+
+
 def record_process_evidence(
     *,
     reconciliation: dict,

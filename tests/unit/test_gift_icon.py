@@ -17,7 +17,12 @@ from runtime_agent.gameworker.activity import (
     InWorldGiftState,
 )
 from runtime_agent.gameworker.geometry import CalibrationProfile
-from runtime_agent.gameworker.gift_icon import UNKNOWN, classify_icon, hover_response
+from runtime_agent.gameworker.gift_icon import (
+    UNKNOWN,
+    GiftTemporalEvidence,
+    classify_icon,
+    hover_response,
+)
 from runtime_agent.gameworker.transitions import (
     action_precondition_error,
     click_request,
@@ -144,22 +149,41 @@ def test_active_gift_click_anchor_accepts_displaced_live_banner():
     assert result.status == ActionStatus.SENT
 
 
-def test_gray_gift_approaches_station_once_before_any_gift_click():
+def test_gray_gift_requires_temporal_persistence_and_never_claims_without_active_icon():
     _, observation = gray_observation()
     policy = ActivityController()
     policy.set_production_actions_enabled(True)
-    assert policy.propose(observation) is None  # two-frame hysteresis
-    next_frame = replace(
-        observation, source_frame_id="gray-live-next", source_sequence=2
-    )
-    proposal = policy.propose(next_frame)
-    assert proposal is not None and proposal.action == ActionName.TURN_RIGHT
-    assert proposal.duration == 0.45
+    for sequence in range(1, 4):
+        next_frame = replace(observation, source_frame_id=f"gray-live-{sequence}",
+                             source_sequence=sequence)
+        proposal = policy.propose(next_frame)
+    assert proposal is None
+    assert policy.gift_claim_state == "GIFT_PENDING"
     assert policy.inworld_gift_state == InWorldGiftState.PENDING_STATION
     assert policy.daily_gift_state == DailyGiftState.UNKNOWN
     assert policy.daily_gift_confirmation is None
     assert policy.counters["gift_claimed"] == 0
     assert action_precondition_error(ActionName.CLICK_GIFT_ICON, next_frame)
+
+
+def test_one_frame_gift_flash_is_diagnostic_and_three_fresh_frames_persist():
+    temporal = GiftTemporalEvidence()
+    first = active_observation(1)
+    temporal.observe(first)
+    assert temporal.state == "SEEN_ONCE"
+    absent = replace(first, source_frame_id="gift-absent-2", source_sequence=2,
+                     detections=tuple(d for d in first.detections if d.kind != "gift_icon"))
+    temporal.observe(absent)
+    assert temporal.state == "ABSENT"
+    assert temporal.events[-1]["event"] == "GIFT_VISUAL_FLASH"
+    assert temporal.confirmed_first_detection is None
+
+    temporal.observe(active_observation(3))
+    temporal.observe(active_observation(4))
+    assert temporal.state == "SEEN_ONCE"
+    temporal.observe(active_observation(5))
+    assert temporal.state == "PERSISTENT"
+    assert temporal.confirmed_first_detection is not None
 
 
 def test_missing_icon_is_unknown():
@@ -270,7 +294,8 @@ def test_active_gift_retry_is_bounded_and_reacquires_fresh_evidence():
     policy = ActivityController()
     policy.set_production_actions_enabled(True)
     assert policy.propose(active_observation(1)) is None
-    proposal = policy.propose(active_observation(2))
+    assert policy.propose(active_observation(2)) is None
+    proposal = policy.propose(active_observation(3))
     assert proposal is not None and proposal.action == ActionName.CLICK_GIFT_ICON
     sent = Action(
         "gift-open", ActionName.CLICK_GIFT_ICON, 1, 1, runtime_id=1
@@ -282,13 +307,16 @@ def test_active_gift_retry_is_bounded_and_reacquires_fresh_evidence():
     policy.on_verified(
         active_observation(3), replace(verifying, status=ActionStatus.TIMED_OUT)
     )
+    policy._gift_retry_at = 0
     retry = policy.propose(active_observation(4))
     assert retry is not None and retry.action == ActionName.CLICK_GIFT_ICON
     policy.on_action_result(active_observation(4), verifying)
     policy.on_verified(
         active_observation(5), replace(verifying, status=ActionStatus.TIMED_OUT)
     )
-    assert policy.intervention_required
+    assert not policy.intervention_required
+    assert policy.gift_claim_state == "CLAIM_UNKNOWN"
+    assert policy._gift_retry_at > time.monotonic()
     assert policy.propose(active_observation(6)) is None
 
 
@@ -296,7 +324,8 @@ def test_transition_timeout_allows_the_existing_single_production_gift_retry():
     policy = ActivityController()
     policy.set_production_actions_enabled(True)
     assert policy.propose(active_observation(1)) is None
-    proposal = policy.propose(active_observation(2))
+    assert policy.propose(active_observation(2)) is None
+    proposal = policy.propose(active_observation(3))
     assert proposal is not None and proposal.action == ActionName.CLICK_GIFT_ICON
     verifying = ActionResult(
         "gift-open", ActionName.CLICK_GIFT_ICON, ActionStatus.VERIFYING, 0.1, 1, 1, 1
@@ -311,12 +340,15 @@ def test_transition_timeout_allows_the_existing_single_production_gift_retry():
     policy.on_action_result(active_observation(3), timeout)
     assert not policy.intervention_required
     policy.on_verified(active_observation(3), timeout)
+    policy._gift_retry_at = 0
     retry = policy.propose(active_observation(4))
     assert retry is not None and retry.action == ActionName.CLICK_GIFT_ICON
 
     policy.on_action_result(active_observation(4), verifying)
     policy.on_action_result(active_observation(5), timeout)
-    assert policy.intervention_required
+    policy.on_verified(active_observation(5), timeout)
+    assert not policy.intervention_required
+    assert policy.gift_claim_state == "CLAIM_UNKNOWN"
 
 
 def test_opening_gift_ui_does_not_confirm_daily_gift():

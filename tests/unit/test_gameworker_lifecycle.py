@@ -938,3 +938,133 @@ def test_clean_shutdown_clears_prior_gameplay_intervention_health():
     assert report.state == 'STOPPED'
     assert report.healthy
     assert host._process is None
+
+
+def test_worker_stop_does_not_wait_for_undrained_large_status_queue(monkeypatch):
+    from runtime_agent.gameworker.noop import NoopGameWorker
+
+    class LargeStatusWorker(NoopGameWorker):
+        def prepare(self, context):
+            report = super().prepare(context)
+            report.telemetry = {'padding': 'x' * 262144}
+            return report
+
+    monkeypatch.setattr('runtime_agent.gameworker.process.NoopGameWorker', LargeStatusWorker)
+    ctx = mp.get_context('fork')
+    commands, reports, acknowledgements = (ctx.Queue(maxsize=64) for _ in range(3))
+    # Fill the pipe with replaceable status before STOP; the parent deliberately
+    # does not drain it while joining, matching Runtime Agent reload.
+    process = ctx.Process(target=_worker_main, args=(
+        WorkerConfig(plugin='noop', autostart=False), context(), 1,
+        commands, reports, acknowledgements,
+    ))
+    process.start()
+    try:
+        commands.put(WorkerIPCCommand(1, 'STOP', 77))
+        ack = acknowledgements.get(timeout=5)
+        assert ack.command_id == 77 and ack.result == 'OK'
+        process.join(timeout=5)
+        assert not process.is_alive()
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=2)
+        for channel in (commands, reports, acknowledgements):
+            channel.cancel_join_thread()
+            channel.close()
+
+
+def stationary_health_worker(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr('runtime_agent.gameworker.dst.worker.time.monotonic', lambda: now[0])
+    worker = DSTGameWorker(WorkerConfig(plugin='dst', mode=WorkerMode.ACTIVE))
+    worker.machine._state = WorkerState.WAITING
+    worker._game_ready = True
+    worker._liveness_started_at = now[0]
+    worker.stationary.state = 'STATIONARY_WAIT'
+    health = {'last_capture_success_monotonic': now[0],
+              'last_valid_observation_monotonic': now[0]}
+    worker.pipeline = SimpleNamespace(health=lambda: dict(health))
+    return worker, now, health
+
+
+def test_stationary_eight_hours_fresh_hud_without_actions_is_healthy(monkeypatch):
+    worker, now, health = stationary_health_worker(monkeypatch)
+    for seconds in range(0, 8 * 3600, 4):
+        now[0] = 100 + seconds
+        health.update(last_capture_success_monotonic=now[0],
+                      last_valid_observation_monotonic=now[0])
+        report = worker.status()
+        assert report.healthy
+        assert report.telemetry['actions_count'] == 0
+        assert report.telemetry['stationary']['movement_count'] == 0
+        assert report.telemetry['stationary']['state'] == 'STATIONARY_WAIT'
+
+
+@pytest.mark.parametrize('stale_key,reason', [
+    ('last_capture_success_monotonic', 'CAPTURE_STALE'),
+    ('last_valid_observation_monotonic', 'OBSERVATION_STALE'),
+])
+def test_stationary_stale_capture_or_hud_is_unhealthy(monkeypatch, stale_key, reason):
+    worker, now, health = stationary_health_worker(monkeypatch)
+    now[0] += worker.LIVENESS_TIMEOUT_SECONDS + .01
+    for key in health:
+        if key != stale_key:
+            health[key] = now[0]
+    report = worker.status()
+    assert not report.healthy
+    assert reason in report.telemetry['liveness']['reasons']
+
+
+def test_worker_loop_reports_timeout_without_action_activity(monkeypatch):
+    now = [100.0]
+    host = fake_host(monkeypatch, clock=lambda: now[0])
+    host.start()
+    for seconds in range(0, 8 * 3600, 4):
+        now[0] = 100 + seconds
+        report = report_payload('WAITING')
+        report['telemetry'] = {'worker_loop_monotonic': now[0], 'actions_count': 0}
+        host._reports.put(WorkerIPCReport(host.worker_generation, report))
+        assert host.tick().healthy
+    now[0] += 30.01
+    result = host.tick()
+    assert not result.healthy
+    assert result.error_code == 'WORKER_HEARTBEAT_STALE'
+
+
+def test_cooperative_stop_has_bounded_grace_without_masking_hang(monkeypatch):
+    host = fake_host(monkeypatch)
+    host.start()
+    child = host._process
+    def cooperative_join(timeout=None):
+        if timeout >= 4:
+            child.alive = False
+    child.join = cooperative_join
+    result = host.shutdown()
+    assert result.healthy
+    assert not child.terminate_called
+    stuck = fake_host(monkeypatch)
+    stuck.start()
+    child = stuck._process
+    result = stuck.shutdown()
+    assert child.terminate_called
+    assert not result.healthy
+    assert result.error_code == 'WORKER_CRASHED'
+
+
+def test_unexpected_exit_during_stop_is_not_healthy(monkeypatch):
+    host = fake_host(monkeypatch)
+    host.start()
+    host._process.alive = False
+    host._process.exitcode = 1
+    assert not host.shutdown().healthy
+
+
+def test_dead_worker_is_unhealthy_during_restart_backoff(monkeypatch):
+    host = fake_host(monkeypatch, restart_backoff_seconds=10)
+    host.start()
+    host._process.alive = False
+    report = host.tick()
+    assert not report.healthy
+    assert report.error_code == 'WORKER_CRASHED'

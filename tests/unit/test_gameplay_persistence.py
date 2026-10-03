@@ -428,3 +428,27 @@ def test_success_check_and_indexes_exist_on_sqlite_migration(tmp_path):
         item.get("name") for item in inspector.get_indexes("gameplay_tasks")
     }
     db.dispose()
+
+
+@pytest.mark.parametrize("missing_postcondition,ack_before_click", [(False, False), (True, False), (False, True)])
+def test_native_receipt_requires_postclick_ack_and_fresh_world(missing_postcondition, ack_before_click):
+    from app.services.gameplay import _inworld_confirmation_parts
+
+    proof = _inworld_confirmation(1)
+    proof.pop("received_frame_id")
+    observed = datetime.now(timezone.utc)
+    attempted = observed - timedelta(seconds=10)
+    proof.update(verification="NATIVE_ACK_AFTER_CANONICAL_CLICK",
+                 active_gift_icon_disappeared=not missing_postcondition,
+                 visual_state="IN_WORLD_IDLE", claim_attempt_at=attempted.isoformat(),
+                 observed_at=observed.isoformat())
+    proof["backend"]["modified"] = (attempted - timedelta(seconds=1) if ack_before_click
+                                     else observed - timedelta(seconds=1)).timestamp()
+    result = _inworld_confirmation_parts(proof, 1)
+    if missing_postcondition or ack_before_click:
+        assert result is None
+    else:
+        assert result is not None
+        assert result == _inworld_confirmation_parts(proof, 1)
+        assert result[1]["item_id"] == proof["item_id"]
+        assert result[1]["received_frame_id"] is None

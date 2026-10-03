@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime
 
 from sqlalchemy import select
@@ -91,6 +92,21 @@ def _inworld_confirmation_parts(value: object, runtime_id: int):
     observed_at = value.get("observed_at")
     backend = value.get("backend")
     item_id = value.get("item_id")
+    native = value.get("verification") == "NATIVE_ACK_AFTER_CANONICAL_CLICK"
+    if native:
+        attempted = _parse_timestamp(value.get("claim_attempt_at"))
+        observed = _parse_timestamp(observed_at)
+        modified = backend.get("modified") if isinstance(backend, dict) else None
+        if not (
+            value.get("active_gift_icon_disappeared") is True
+            and value.get("visual_state") == "IN_WORLD_IDLE"
+            and attempted is not None and observed is not None
+            and attempted <= observed
+            and isinstance(modified, (int, float)) and not isinstance(modified, bool)
+            and math.isfinite(modified)
+            and attempted.timestamp() <= modified <= observed.timestamp() + 60
+        ):
+            return None
     if (
         not isinstance(action_id, str)
         or not action_id
@@ -98,15 +114,14 @@ def _inworld_confirmation_parts(value: object, runtime_id: int):
         or not isinstance(frame_id, str)
         or not frame_id
         or len(frame_id) > 256
-        or not isinstance(received_frame_id, str)
-        or not received_frame_id
-        or len(received_frame_id) > 256
+        or (not native and (not isinstance(received_frame_id, str)
+                            or not received_frame_id or len(received_frame_id) > 256))
         or not isinstance(sequence, int)
         or isinstance(sequence, bool)
         or sequence < 1
         or _parse_timestamp(observed_at) is None
         or value.get("runtime_id") != runtime_id
-        or value.get("verification") != "RECORDED_CANONICAL_CLOSE_FRESH_WORLD"
+        or (not native and value.get("verification") != "RECORDED_CANONICAL_CLOSE_FRESH_WORLD")
         or not isinstance(item_id, int)
         or isinstance(item_id, bool)
         or item_id < 1
@@ -119,11 +134,12 @@ def _inworld_confirmation_parts(value: object, runtime_id: int):
         or any(char not in "0123456789abcdef" for char in backend["ack_sha256"])
     ):
         return None
-    identity = inworld_claim_identity(action_id, received_frame_id)
+    identity = inworld_claim_identity(action_id, frame_id if native else received_frame_id)
     return hashlib.sha256(identity.encode("utf-8")).hexdigest(), {
         "semantic": INWORLD_CONFIRMED_SEMANTIC,
         "action_id": action_id,
         "received_frame_id": received_frame_id,
+        "verification": value.get("verification"),
         "evidence_frame_id": frame_id,
         "evidence_sequence": sequence,
         "observed_at": observed_at,

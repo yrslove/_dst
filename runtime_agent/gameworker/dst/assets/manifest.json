@@ -62,7 +62,7 @@
       "id": "world_present_banner",
       "filename": "world_present_banner.png",
       "expected_region": [
-        0.115,
+        0.035,
         0.0,
         0.36,
         0.14
@@ -76,7 +76,7 @@
       "id": "gift_icon_active",
       "filename": "samples/gift_icon_active_live.png",
       "expected_region": [
-        0.115,
+        0.035,
         0.0,
         0.36,
         0.14
@@ -565,7 +565,12 @@
     {
       "id": "death_world_reset_text",
       "filename": "death_world_reset_text.png",
-      "expected_region": [0.28, 0.91, 0.56, 1.0],
+      "expected_region": [
+        0.28,
+        0.91,
+        0.56,
+        1.0
+      ],
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Everyone is dead and world reset message on a real ghost frame",
@@ -574,7 +579,12 @@
     {
       "id": "death_reset_now_button",
       "filename": "death_reset_now_button.png",
-      "expected_region": [0.56, 0.91, 0.75, 1.0],
+      "expected_region": [
+        0.56,
+        0.91,
+        0.75,
+        1.0
+      ],
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Reset Now button on the real world reset frame; perception only",
@@ -635,7 +645,12 @@
       "version": 2,
       "verified": true,
       "expected_use": "Live in-world GiftItemPopUp structural anchor",
-      "matching_region": [0.25, 0.24242424242424243, 0.75, 0.7878787878787878]
+      "matching_region": [
+        0.25,
+        0.24242424242424243,
+        0.75,
+        0.7878787878787878
+      ]
     },
     {
       "id": "inworld_gift_use_now",
@@ -677,6 +692,20 @@
       "threshold": 0.94,
       "version": 1,
       "expected_use": "Next arrow on the first-login promotional reward result",
+      "verified": true
+    },
+    {
+      "id": "gift_icon_active_singlebanner",
+      "filename": "samples/gift_icon_active_singlebanner_live.png",
+      "expected_region": [
+        0.035,
+        0.0,
+        0.36,
+        0.14
+      ],
+      "threshold": 0.94,
+      "version": 1,
+      "expected_use": "Verified live active gift crop with single-banner HUD; localized afresh per observation",
       "verified": true
     }
   ]
