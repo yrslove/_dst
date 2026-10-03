@@ -5,7 +5,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from runtime_agent.gameworker.actions import ActionName, ActionResult, ActionStatus
+from runtime_agent.gameworker.actions import (
+    CLICK_REGIONS,
+    ActionName,
+    ActionResult,
+    ActionStatus,
+)
 from runtime_agent.gameworker.fixed_ui import (
     DST_FIXED_1280X720,
     FIXED_UI_ACTION_TARGETS,
@@ -526,6 +531,11 @@ def click_request(action: ActionName, observation: GameObservation):
     contract = CONTRACTS.get(action)
     if contract is None:
         raise ValueError("action has no visual anchor contract")
+    if action in {ActionName.CLICK_GIFT_ICON, ActionName.CLICK_INWORLD_USE_LATER}:
+        if not observation.is_fresh(time.monotonic()):
+            raise ValueError("gift UI anchor is stale; reacquire before clicking")
+        if observation.validity.value != "VALID" or observation.screen not in contract.source:
+            raise ValueError("gift UI anchor requires a fresh valid screen")
     fixed_target = FIXED_UI_ACTION_TARGETS.get(action.value)
     if fixed_target is not None:
         point = DST_FIXED_1280X720.point(
@@ -533,8 +543,6 @@ def click_request(action: ActionName, observation: GameObservation):
         )
         return point, Viewport(observation.frame_width, observation.frame_height)
     if action == ActionName.CLICK_GIFT_ICON:
-        if not observation.is_fresh(time.monotonic()):
-            raise ValueError("gift detection is stale; reacquire before clicking")
         detection = next(
             (
                 item for item in observation.detections
@@ -551,6 +559,10 @@ def click_request(action: ActionName, observation: GameObservation):
             raise ValueError("fresh claimable gift detection is unavailable")
         bounds = detection.bounds
         assert bounds is not None
+        left, top, right, bottom = CLICK_REGIONS[action]
+        if not (left <= bounds.left < bounds.right <= right
+                and top <= bounds.top < bounds.bottom <= bottom):
+            raise ValueError("gift anchor bounds are outside the verified HUD region")
         return NormalizedPoint(
             (bounds.left + bounds.right) / 2,
             (bounds.top + bounds.bottom) / 2,
@@ -563,6 +575,11 @@ def click_request(action: ActionName, observation: GameObservation):
     if detection is None or detection.bounds is None:
         raise ValueError("verified action anchor is unavailable")
     bounds = detection.bounds
+    if action == ActionName.CLICK_INWORLD_USE_LATER:
+        left, top, right, bottom = CLICK_REGIONS[action]
+        if not (left <= bounds.left < bounds.right <= right
+                and top <= bounds.top < bounds.bottom <= bottom):
+            raise ValueError("Use Later bounds are outside the verified modal region")
     point_x, point_y = contract.anchor_point
     return NormalizedPoint(
         bounds.left + point_x * (bounds.right - bounds.left),

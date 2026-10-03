@@ -6,6 +6,7 @@ from app.models import utcnow
 from app.runtime.world_profile import (
     SAFE_PROFILE,
     desired_profile_hash,
+    reconcile_idle_timeout,
     reconcile_world_profile,
     render_profile,
 )
@@ -44,6 +45,20 @@ def test_profile_reconciliation_rejects_ambiguous_worlds(tmp_path):
     (tmp_path / "456" / "Cluster_1").mkdir(parents=True)
     with pytest.raises(RuntimeError, match="exactly one"):
         reconcile_world_profile(user_root=tmp_path)
+
+
+def test_generated_new_cluster_gets_zero_network_idle_timeout(tmp_path):
+    # Model a freshly generated account/cluster, with no prior config to repair.
+    cluster = tmp_path / "new-account" / "Cluster_1"
+    cluster.mkdir(parents=True)
+    config = cluster / "cluster.ini"
+    config.write_text("[SHARD]\nname = Master\n")
+
+    result = reconcile_idle_timeout(user_root=tmp_path)
+
+    assert result["changed"] is True
+    assert result["idle_timeout"] == 0
+    assert "[NETWORK]\nidle_timeout = 0\n" in config.read_text()
 
 
 def test_death_process_stale_and_input_fail_closed():

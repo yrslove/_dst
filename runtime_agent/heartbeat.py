@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 import httpx
@@ -11,6 +13,42 @@ import httpx
 from runtime_agent.config import RuntimeAgentSettings
 
 logger = logging.getLogger("runtime_agent.heartbeat")
+
+
+class VerificationState(StrEnum):
+    VERIFIED_TRUE = "VERIFIED_TRUE"
+    VERIFIED_FALSE = "VERIFIED_FALSE"
+    VERIFICATION_UNKNOWN = "VERIFICATION_UNKNOWN"
+
+
+@dataclass(slots=True)
+class RuntimeVerification:
+    """Keep transport loss distinct from an explicit control-plane revocation."""
+
+    grace_seconds: float
+    state: VerificationState = VerificationState.VERIFICATION_UNKNOWN
+    last_verified_at: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.grace_seconds <= 0:
+            raise ValueError("verification grace must be positive")
+
+    def observe(self, response: dict, *, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        explicit = response.get("runtime_verified")
+        if isinstance(explicit, bool):
+            if explicit:
+                self.state = VerificationState.VERIFIED_TRUE
+                self.last_verified_at = now
+            else:
+                self.state = VerificationState.VERIFIED_FALSE
+                self.last_verified_at = None
+            return explicit
+        self.state = VerificationState.VERIFICATION_UNKNOWN
+        return bool(
+            self.last_verified_at is not None
+            and now - self.last_verified_at <= self.grace_seconds
+        )
 
 
 def _record_accepted_heartbeat(settings, *, phase: str, healthy: bool) -> None:

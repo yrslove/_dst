@@ -137,9 +137,11 @@ def test_active_gift_click_anchor_accepts_displaced_live_banner():
                 parameters=(
                     ("x", target.x),
                     ("y", target.y),
-                    ("width", viewport.width),
-                    ("height", viewport.height),
-                    ("evidence_sequence", observation.source_sequence),
+                        ("width", viewport.width),
+                        ("height", viewport.height),
+                        ("evidence_sequence", observation.source_sequence),
+                        ("anchor_verified", True),
+                        ("anchor_frame_id", observation.source_frame_id),
                 ),
             )
         )
@@ -186,13 +188,30 @@ def test_one_frame_gift_flash_is_diagnostic_and_three_fresh_frames_persist():
     assert temporal.confirmed_first_detection is not None
 
 
-def test_missing_icon_is_unknown():
+def test_obscured_gift_roi_remains_unknown():
     image, _ = gray_observation()
     image.paste((25, 25, 25), (147, 0, 256, 101))
     observation = analyze_image(image, "gift-missing", 1)
     icon = next(d for d in observation.detections if d.kind == "gift_icon")
     assert not icon.detected
     assert dict(icon.metadata)["availability"] == UNKNOWN
+    assert dict(icon.metadata)["negative_evidence"] == "HUD_ROI_OBSCURED"
+
+
+def test_overlay_then_clean_real_hud_recovers_from_unknown():
+    image, _ = gray_observation()
+    image.paste((25, 25, 25), (147, 0, 256, 101))
+    obscured = analyze_image(image, "overlay-gift-roi", 1)
+    obscured_icon = next(d for d in obscured.detections if d.kind == "gift_icon")
+    assert dict(obscured_icon.metadata)["availability"] == UNKNOWN
+
+    clean_image = Image.open(
+        ASSETS / "samples/in_world_wilson_live.png"
+    ).convert("RGB")
+    clean = analyze_image(clean_image, "overlay-cleared-clean-real-hud", 2)
+    clean_icon = next(d for d in clean.detections if d.kind == "gift_icon")
+    assert clean.production_ready
+    assert dict(clean_icon.metadata)["availability"] == "NO_REWARD_AVAILABLE"
 
 
 def test_ambiguous_chroma_and_hover_alone_remain_unknown():
@@ -269,8 +288,10 @@ def test_active_gift_click_uses_detected_center_through_canonical_input():
                     ("x", target.x),
                     ("y", target.y),
                     ("width", viewport.width),
-                    ("height", viewport.height),
-                    ("evidence_sequence", observation.source_sequence),
+                        ("height", viewport.height),
+                        ("evidence_sequence", observation.source_sequence),
+                        ("anchor_verified", True),
+                        ("anchor_frame_id", observation.source_frame_id),
                 ),
             )
         )
@@ -297,6 +318,7 @@ def test_active_gift_retry_is_bounded_and_reacquires_fresh_evidence():
     assert policy.propose(active_observation(2)) is None
     proposal = policy.propose(active_observation(3))
     assert proposal is not None and proposal.action == ActionName.CLICK_GIFT_ICON
+    correlation = policy.gift_attempt["claim_correlation_id"]
     sent = Action(
         "gift-open", ActionName.CLICK_GIFT_ICON, 1, 1, runtime_id=1
     )
@@ -304,12 +326,14 @@ def test_active_gift_retry_is_bounded_and_reacquires_fresh_evidence():
         sent.action_id, sent.name, ActionStatus.VERIFYING, 0.1, 1, 1, 1
     )
     policy.on_action_result(active_observation(2), verifying)
+    assert policy.propose(active_observation(4)) is None
     policy.on_verified(
         active_observation(3), replace(verifying, status=ActionStatus.TIMED_OUT)
     )
     policy._gift_retry_at = 0
     retry = policy.propose(active_observation(4))
     assert retry is not None and retry.action == ActionName.CLICK_GIFT_ICON
+    assert policy.gift_attempt["claim_correlation_id"] == correlation
     policy.on_action_result(active_observation(4), verifying)
     policy.on_verified(
         active_observation(5), replace(verifying, status=ActionStatus.TIMED_OUT)
@@ -349,6 +373,15 @@ def test_transition_timeout_allows_the_existing_single_production_gift_retry():
     policy.on_verified(active_observation(5), timeout)
     assert not policy.intervention_required
     assert policy.gift_claim_state == "CLAIM_UNKNOWN"
+
+
+def test_native_confirmation_pending_never_reopens_gift_on_a_fresh_active_hud():
+    policy = ActivityController()
+    policy.set_production_actions_enabled(True)
+    policy.claim_confirmation_pending = True
+    for sequence in range(1, 5):
+        proposal = policy.propose(active_observation(sequence))
+        assert proposal is None or proposal.action != ActionName.CLICK_GIFT_ICON
 
 
 def test_opening_gift_ui_does_not_confirm_daily_gift():

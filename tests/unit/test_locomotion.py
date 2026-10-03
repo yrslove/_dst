@@ -144,11 +144,11 @@ def test_profile_survives_canonical_enable_and_runtime_loss_resumes_only_its_own
     worker.set_mode(WorkerMode.ACTIVE)
     assert worker.activity.locomotion is worker.locomotion
     assert worker.activity.locomotion.profile == "HIGH_ACTIVITY"
-    worker.on_game_lost()
+    worker.set_runtime_verified(False)
     assert worker.machine.state == WorkerState.PAUSED
-    worker.on_game_ready(context)
+    worker.set_runtime_verified(True)
     assert worker.machine.state == WorkerState.OBSERVING
     worker.pause()
-    worker.on_game_lost()
-    worker.on_game_ready(context)
+    worker.set_runtime_verified(False)
+    worker.set_runtime_verified(True)
     assert worker.machine.state == WorkerState.PAUSED

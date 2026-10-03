@@ -529,8 +529,13 @@ class ObservePipeline:
                     {
                         "valid_until": observation.fresh_until,
                         "evidence_sequence": observation.source_sequence,
+                        "anchor_verified": True,
+                        "anchor_frame_id": observation.source_frame_id,
                     }
-                    if proposal.action == ActionName.CLICK_GIFT_ICON
+                    if proposal.action in {
+                        ActionName.CLICK_GIFT_ICON,
+                        ActionName.CLICK_INWORLD_USE_LATER,
+                    }
                     else {}
                 ),
             )

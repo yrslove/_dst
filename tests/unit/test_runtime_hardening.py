@@ -5,6 +5,7 @@ import os
 import queue
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,7 +19,7 @@ from runtime_agent.gameworker.base import WorkerContext
 from runtime_agent.gameworker.config import WorkerConfig, WorkerMode
 from runtime_agent.gameworker.dst.worker import DSTGameWorker
 from runtime_agent.gameworker.process import WorkerProcessHost
-from runtime_agent.main import _handoff_environment
+from runtime_agent.main import _handoff_environment, _managed_runtime_is_adoptable
 from runtime_agent.process_supervisor import ProcessSupervisor, RestartPolicy
 from runtime_agent.processes.dst import DSTProcess, DSTState
 from runtime_agent.processes.steam import SteamProcess, SteamState
@@ -246,6 +247,70 @@ def test_reload_handoff_requires_identity_for_every_managed_process(monkeypatch)
         Managed((21, 101)), Managed(None), Managed((23, 303)),
         runtime_token=settings.runtime_token,
     ) is None
+
+
+def test_worker_only_stop_failure_does_not_block_identity_valid_agent_reload():
+    class Managed:
+        alive = True
+
+        def status(self):
+            return "READY"
+
+    display = SimpleNamespace(status=lambda: SimpleNamespace(value="READY"))
+    steam_process = SimpleNamespace(status=lambda: SteamState.READY)
+    dst_process = SimpleNamespace(status=lambda: DSTState.READY)
+    identities = {
+        "RUNTIME_ADOPT_DISPLAY": "11:101",
+        "RUNTIME_ADOPT_STEAM": "12:102",
+        "RUNTIME_ADOPT_DST": "13:103",
+    }
+    # A bounded-force-stop may report worker unhealthy. Managed-process
+    # adoption remains gated by each process's own readiness and identity.
+    worker_healthy = False
+    assert worker_healthy is False
+    assert _managed_runtime_is_adoptable(
+        display, steam_process, dst_process, Managed(), Managed(), identities
+    )
+    assert not _managed_runtime_is_adoptable(
+        display, steam_process, dst_process, Managed(), Managed(), None
+    )
+
+
+def test_process_supervisor_logs_crash_attempt_exhaustion_and_downtime(caplog):
+    clock = [0.0]
+    processes = []
+
+    def popen(*_args, **_kwargs):
+        process = FakeProcess()
+        processes.append(process)
+        return process
+
+    supervisor = ProcessSupervisor(
+        "dst",
+        ("dst-launcher",),
+        restart_policy=RestartPolicy(
+            max_attempts=1,
+            window_seconds=30,
+            initial_backoff_seconds=1,
+            max_backoff_seconds=1,
+        ),
+        clock=lambda: clock[0],
+        popen=popen,
+    )
+    supervisor.request_start()
+    processes[-1].exit_code = 1
+    supervisor.tick()
+    clock[0] = 1.0
+    supervisor.tick()
+    assert supervisor.status.restart_count == 1
+    assert "managed_process_crash name=dst" in caplog.text
+    assert "managed_process_restart_attempt name=dst" in caplog.text
+    assert "managed_process_restart_started name=dst" in caplog.text
+
+    processes[-1].exit_code = 2
+    supervisor.tick()
+    assert supervisor.status.exhausted
+    assert "managed_process_restart_exhausted name=dst" in caplog.text
 
 
 def test_stale_readiness_marker_is_removed_before_spawn(tmp_path):
@@ -520,9 +585,11 @@ def test_xpra_view_shadow_does_not_launch_xsession_commands():
         DisplayEnvironment(":100"), 14500
     )
 
-    assert argv[:4] == ("/usr/bin/env", "DISPLAY=:100", "xpra", "shadow")
-    assert "--start=" in argv
-    assert "--start-child=" in argv
+    assert argv[:2] == ("/usr/bin/env", "DISPLAY=:100")
+    assert "XPRA_SYSTEM_CONF_DIRS=/dev/null" in argv
+    assert argv[argv.index("xpra"):argv.index("xpra") + 2] == ("xpra", "shadow")
+    assert "--start=" not in argv
+    assert "--start-child=" not in argv
     assert all("=true" not in value for value in argv)
 
 

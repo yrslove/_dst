@@ -95,6 +95,22 @@ def test_stationary_wait_uses_operator_precondition_without_anchor_calibration()
     assert session.wait_started_at is None
 
 
+def test_stationary_worker_rearms_after_game_process_rejoin_without_movement():
+    session = StationarySession()
+    session.observe(observation(1, 100))
+    session.lost_world("110", "GAME_LOST")
+    session.observe(observation(2, 120))
+    assert session.state == "STATIONARY_WAIT"
+    assert session.recovery_blocker is None
+    assert session.movement_count == 0
+    assert any(event["event"] == "GAME_REJOINED" for event in session.events)
+
+    session.lost_world("130", "DEAD")
+    session.observe(observation(3, 140))
+    assert session.state == "RECOVERY_BLOCKER"
+    assert session.recovery_blocker == "DEAD"
+
+
 def test_stationary_executor_whitelist_excludes_all_gameplay_movement():
     from runtime_agent.gameworker.config import WorkerConfig
     from runtime_agent.gameworker.dst.worker import DSTGameWorker
@@ -106,6 +122,31 @@ def test_stationary_executor_whitelist_excludes_all_gameplay_movement():
     assert not worker._permitted_active_actions() & forbidden
     assert ActionName.CLICK_GIFT_ICON in worker._permitted_active_actions()
     assert ActionName.CLICK_INWORLD_USE_LATER in worker._permitted_active_actions()
+
+
+def test_production_stationary_invariant_holds_for_ten_simulated_hours(monkeypatch):
+    from runtime_agent.gameworker.config import WorkerConfig
+    from runtime_agent.gameworker.dst.worker import DSTGameWorker
+
+    worker = DSTGameWorker(WorkerConfig())
+    worker.locomotion.configure("CONTROL", "ten-hour-stationary-invariant", 10 * 3600)
+
+    def forbidden(_observation):
+        pytest.fail("stationary production attempted periodic movement")
+
+    monkeypatch.setattr(worker.locomotion, "proposal", forbidden)
+    for sequence in range(1, 1201):
+        sample = observation(sequence, 100 + sequence * 30,
+                             "GIFT_AVAILABLE" if sequence % 173 == 0 else None)
+        worker.stationary.observe(sample)
+    assert worker.stationary.movement_count == 0
+    assert worker.locomotion.telemetry()["movement_commands"] == 0
+    forbidden_actions = {
+        ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
+        ActionName.TURN_LEFT, ActionName.TURN_RIGHT,
+        ActionName.CLICK_LOCAL_TARGET, ActionName.INTERACT,
+    }
+    assert not worker._permitted_active_actions() & forbidden_actions
 
 
 def test_stationary_events_preserve_next_gift_intervals():

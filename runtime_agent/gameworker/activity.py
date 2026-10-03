@@ -213,6 +213,7 @@ class ActivityController:
         self.daily_gift_confirmation: DailyGiftConfirmation | None = None
         self.inworld_gift_confirmation: dict | None = None
         self.inworld_close_evidence: dict | None = None
+        self.claim_confirmation_pending = False
         self._inworld_received_evidence: dict | None = None
         self._inworld_close_attempts = 0
         self._gift_clicked_monotonic: float | None = None
@@ -221,6 +222,7 @@ class ActivityController:
         self.gift_claim_state = "NO_GIFT"
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
+        self._gift_claim_correlation_id: str | None = None
         self.claim_not_actionable = False
         self._gift_retry_at = 0.0
         self.gift_attempt: dict | None = None
@@ -258,11 +260,13 @@ class ActivityController:
         self.gift_claim_ready = evidence.ready
         self.inworld_gift_state = InWorldGiftState.UNKNOWN
         self.inworld_close_evidence = None
+        self.claim_confirmation_pending = False
         self._inworld_received_evidence = None
         self._inworld_close_attempts = 0
         self._gift_clicked_monotonic = None
         self._gift_hover_attempted = False
         self._gift_icon_click_attempts = 0
+        self._gift_claim_correlation_id = None
         self.claim_not_actionable = False
         self._gift_retry_at = 0.0
         self.gift_attempt = None
@@ -470,10 +474,17 @@ class ActivityController:
             and (active_gift or self.gift_visual.candidate)
             and self.gift_claim_ready
             and not self.claim_not_actionable
+            and not self.claim_confirmation_pending
             and self._gift_icon_click_attempts < 3
         ):
             self._gift_icon_click_attempts += 1
+            if self._gift_claim_correlation_id is None:
+                self._gift_claim_correlation_id = (
+                    f"gift:{observation.runtime_id}:{observation.runtime_generation}:"
+                    f"{observation.worker_generation}:{observation.source_sequence}"
+                )
             self.gift_attempt = {
+                "claim_correlation_id": self._gift_claim_correlation_id,
                 "before_frame_id": observation.source_frame_id,
                 "claim_started_at": observation.timestamp,
                 "claim_attempt_count": self._gift_icon_click_attempts,
@@ -1125,6 +1136,7 @@ class ActivityController:
         if result.action == ActionName.CLICK_INWORLD_USE_LATER:
             self._awaiting_reward_transition = False
             if result.status == ActionStatus.SUCCEEDED and self._inworld_received_evidence:
+                self.claim_confirmation_pending = True
                 self.inworld_gift_state = InWorldGiftState.UI_CLOSED
                 self.inworld_close_evidence = {
                     **self._inworld_received_evidence,
@@ -1166,6 +1178,7 @@ class ActivityController:
         if result.action == ActionName.CLICK_GIFT_ICON:
             if self.gift_attempt:
                 self.gift_attempt.update(
+                    action_id=result.action_id,
                     after_frame_id=observation.source_frame_id,
                     after_screen=observation.screen.value,
                     status=result.status.value,

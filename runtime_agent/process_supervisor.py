@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
@@ -14,6 +15,7 @@ from app.subprocess_env import sanitized_subprocess_environment
 
 Clock = Callable[[], float]
 BeforeStart = Callable[[], None]
+logger = logging.getLogger("runtime_agent.process_supervisor")
 
 
 @dataclass(slots=True)
@@ -79,6 +81,7 @@ class ProcessSupervisor:
         self._next_start_at = 0.0
         self.status = ManagedProcess(name=name)
         self._restart_times: list[float] = []
+        self._outage_started_monotonic: float | None = None
 
     @property
     def alive(self) -> bool:
@@ -231,6 +234,12 @@ class ProcessSupervisor:
     def _spawn(self, *, is_restart: bool) -> None:
         if is_restart:
             self.status.restart_count += 1
+            logger.warning(
+                "managed_process_restart_attempt name=%s restart_count=%s pid=%s",
+                self.name,
+                self.status.restart_count,
+                self.status.pid,
+            )
         try:
             if self.before_start:
                 self.before_start()
@@ -267,6 +276,16 @@ class ProcessSupervisor:
             else None
         )
         self.status.exit_code = None
+        if is_restart and self._outage_started_monotonic is not None:
+            logger.warning(
+                "managed_process_restart_started name=%s pid=%s restart_count=%s "
+                "process_downtime_seconds=%.3f",
+                self.name,
+                self.status.pid,
+                self.status.restart_count,
+                max(0.0, self.clock() - self._outage_started_monotonic),
+            )
+            self._outage_started_monotonic = None
 
     def _register_failure(self) -> None:
         now = self.clock()
@@ -276,6 +295,8 @@ class ProcessSupervisor:
             if now - t <= self.restart_policy.window_seconds
         ]
         self._restart_times.append(now)
+        if self._outage_started_monotonic is None:
+            self._outage_started_monotonic = now
         self.status.exhausted = (
             len(self._restart_times) > self.restart_policy.max_attempts
         )
@@ -284,6 +305,25 @@ class ProcessSupervisor:
             self.restart_policy.max_backoff_seconds,
             self.restart_policy.initial_backoff_seconds * (2**exponent),
         )
+        logger.error(
+            "managed_process_crash name=%s exit_code=%s restart_count=%s "
+            "restart_attempts_in_window=%s restart_exhausted=%s "
+            "backoff_seconds=%.3f",
+            self.name,
+            self.status.exit_code,
+            self.status.restart_count,
+            len(self._restart_times),
+            self.status.exhausted,
+            max(0.0, self._next_start_at - now),
+        )
+        if self.status.exhausted:
+            logger.critical(
+                "managed_process_restart_exhausted name=%s restart_count=%s "
+                "attempts_in_window=%s",
+                self.name,
+                self.status.restart_count,
+                len(self._restart_times),
+            )
 
     def tick(self) -> ManagedProcess:
         if self._adopted_pid is not None:

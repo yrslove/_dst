@@ -11,6 +11,7 @@ from runtime_agent.gameworker.fixed_ui import (
     DST_FIXED_1280X720,
     FIXED_UI_ACTION_TARGETS,
 )
+from runtime_agent.gameworker.geometry import NormalizedRegion
 from runtime_agent.gameworker.transitions import (
     CONTRACTS,
     ActionLifecycle,
@@ -108,6 +109,69 @@ def test_gift_click_requires_fresh_active_detection_and_reacquisition():
     fresh = active_gift_frame(2)
     point, _ = click_request(ActionName.CLICK_GIFT_ICON, fresh)
     assert 0 < point.x < .25 and 0 < point.y < .2
+
+
+@pytest.mark.parametrize(
+    "action_name,sample,anchor_kind,bounds",
+    [
+        (
+            ActionName.CLICK_GIFT_ICON,
+            "gift",
+            "gift_icon",
+            NormalizedRegion(.45, .45, .55, .55),
+        ),
+        (
+            ActionName.CLICK_INWORLD_USE_LATER,
+            "received",
+            "inworld_gift_use_later",
+            NormalizedRegion(.10, .10, .20, .20),
+        ),
+    ],
+)
+def test_gift_and_modal_clicks_reject_untrusted_anchor_bounds(
+    action_name, sample, anchor_kind, bounds
+):
+    observation = (
+        active_gift_frame(3)
+        if sample == "gift"
+        else frame("inworld_gift_received_live.png", 4)
+    )
+    detections = tuple(
+        replace(item, bounds=bounds) if item.kind == anchor_kind else item
+        for item in observation.detections
+    )
+    invalid = replace(observation, detections=detections)
+    with pytest.raises(ValueError, match="bounds"):
+        click_request(action_name, invalid)
+
+
+@pytest.mark.parametrize(
+    "action_name,sample,anchor_kind",
+    [
+        (ActionName.CLICK_GIFT_ICON, "gift", "gift_icon"),
+        (
+            ActionName.CLICK_INWORLD_USE_LATER,
+            "received",
+            "inworld_gift_use_later",
+        ),
+    ],
+)
+def test_gift_and_modal_clicks_fail_closed_when_anchor_is_missing(
+    action_name, sample, anchor_kind
+):
+    observation = (
+        active_gift_frame(5)
+        if sample == "gift"
+        else frame("inworld_gift_received_live.png", 6)
+    )
+    missing = replace(
+        observation,
+        detections=tuple(
+            item for item in observation.detections if item.kind != anchor_kind
+        ),
+    )
+    with pytest.raises(ValueError, match="anchor|detection"):
+        click_request(action_name, missing)
 
 
 def test_open_crafting_menu_requires_fresh_verified_gift_toast_to_hide():

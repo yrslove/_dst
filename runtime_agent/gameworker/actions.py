@@ -439,17 +439,28 @@ class ActionExecutor:
                 viewport = Viewport(int(values["width"]), int(values["height"]))
                 left, top, right, bottom = CLICK_REGIONS[action.name]
                 expected_keys = {"x", "y", "width", "height"}
-                if action.name == ActionName.CLICK_GIFT_ICON:
-                    expected_keys.add("evidence_sequence")
+                if action.name in {
+                    ActionName.CLICK_GIFT_ICON,
+                    ActionName.CLICK_INWORLD_USE_LATER,
+                }:
+                    expected_keys.update(
+                        {"anchor_verified", "anchor_frame_id", "evidence_sequence"}
+                    )
                 if set(values) != expected_keys or not (
                     left < point.x < right and top < point.y < bottom
                 ):
                     raise ValueError("anchor outside guarded UI region")
-                if action.name == ActionName.CLICK_GIFT_ICON and (
-                    not isinstance(values["evidence_sequence"], int)
+                if action.name in {
+                    ActionName.CLICK_GIFT_ICON,
+                    ActionName.CLICK_INWORLD_USE_LATER,
+                } and (
+                    values["anchor_verified"] is not True
+                    or not isinstance(values["anchor_frame_id"], str)
+                    or not values["anchor_frame_id"].strip()
+                    or not isinstance(values["evidence_sequence"], int)
                     or values["evidence_sequence"] < 1
                 ):
-                    raise ValueError("gift detection sequence is invalid")
+                    raise ValueError("verified UI anchor evidence is invalid")
                 if (
                     not 640 <= viewport.width <= 4096
                     or not 480 <= viewport.height <= 2160
@@ -982,6 +993,8 @@ class GameActions:
         viewport: Viewport | None = None,
         valid_until: float | None = None,
         evidence_sequence: int | None = None,
+        anchor_verified: bool = False,
+        anchor_frame_id: str | None = None,
     ) -> ActionResult:
         parameters = ()
         if action in CLICK_REGIONS:
@@ -993,10 +1006,21 @@ class GameActions:
                 ("width", viewport.width),
                 ("height", viewport.height),
             )
-            if action == ActionName.CLICK_GIFT_ICON:
-                if valid_until is None or evidence_sequence is None:
-                    raise ValueError("gift click requires fresh detection evidence")
-                parameters += (("evidence_sequence", evidence_sequence),)
+            if action in {
+                ActionName.CLICK_GIFT_ICON,
+                ActionName.CLICK_INWORLD_USE_LATER,
+            }:
+                if (
+                    valid_until is None
+                    or evidence_sequence is None
+                    or anchor_frame_id is None
+                ):
+                    raise ValueError("gift UI click requires fresh anchor evidence")
+                parameters += (
+                    ("evidence_sequence", evidence_sequence),
+                    ("anchor_verified", anchor_verified),
+                    ("anchor_frame_id", anchor_frame_id),
+                )
         return self.execute_action(
             self._new_action(
                 action,
@@ -1029,6 +1053,8 @@ class ObserveActions:
         viewport: Viewport | None = None,
         valid_until: float | None = None,
         evidence_sequence: int | None = None,
+        anchor_verified: bool = False,
+        anchor_frame_id: str | None = None,
     ) -> ActionResult:
         self._sequence += 1
         return ActionResult(

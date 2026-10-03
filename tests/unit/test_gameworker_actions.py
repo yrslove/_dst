@@ -133,7 +133,7 @@ def test_open_crafting_menu_uses_the_canonical_build_key():
     assert not controller.has_held_inputs
 
 
-def test_pause_resume_and_movement_capabilities_are_available_without_validation():
+def test_production_stationary_worker_rejects_pause_resume_and_movement_actions():
     worker = DSTGameWorker(
         WorkerConfig(
             plugin="dst",
@@ -141,7 +141,7 @@ def test_pause_resume_and_movement_capabilities_are_available_without_validation
             validation_flow_enabled=False,
         )
     )
-    value, controller, _driver, _deadman = executor(
+    value, controller, driver, _deadman = executor(
         allowed_actions=worker._permitted_active_actions()
     )
 
@@ -152,11 +152,8 @@ def test_pause_resume_and_movement_capabilities_are_available_without_validation
     )
     value.shutdown()
 
-    assert [result.status for result in results] == [
-        ActionStatus.SENT,
-        ActionStatus.SENT,
-        ActionStatus.SENT,
-    ]
+    assert [result.status for result in results] == [ActionStatus.REJECTED] * 3
+    assert driver.events == []
     assert not controller.has_held_inputs
 
 
@@ -508,6 +505,34 @@ def test_reward_close_click_uses_canonical_executor_and_allowed_anchor():
     assert driver.events[1].value == (640, 633)
 
 
+@pytest.mark.parametrize(
+    "name,x,y",
+    [
+        (ActionName.CLICK_GIFT_ICON, 0.20, 0.05),
+        (ActionName.CLICK_INWORLD_USE_LATER, 0.42, 0.84),
+    ],
+)
+def test_gift_ui_click_without_verified_anchor_reaches_no_input_driver(name, x, y):
+    value, controller, driver, _deadman = executor(
+        allowed_actions=frozenset({name})
+    )
+    request = replace(
+        action("unanchored-ui-click", name),
+        parameters=(
+            ("x", x), ("y", y), ("width", 1280), ("height", 720),
+            ("evidence_sequence", 1), ("anchor_verified", False),
+            ("anchor_frame_id", "unknown-frame"),
+        ),
+    )
+    try:
+        result = value.execute(request)
+        assert result.status == ActionStatus.REJECTED
+        assert driver.events == []
+        assert not controller.has_held_inputs
+    finally:
+        value.shutdown()
+
+
 def test_each_allowed_host_game_attempt_refreshes_pointer_and_focus():
     value, _controller, driver, _deadman = executor(
         allowed_actions=frozenset({ActionName.CLICK_HOST_GAME})
@@ -780,7 +805,8 @@ def test_click_deadline_cancellation_releases_input_and_allows_next_action():
                      deadline=time.monotonic() + 0.1)
     request = replace(request, parameters=(
         ('x', 0.2), ('y', 0.05), ('width', 1280), ('height', 720),
-        ('evidence_sequence', 1)))
+        ('evidence_sequence', 1), ('anchor_verified', True),
+        ('anchor_frame_id', 'gift-frame-1')))
     try:
         result = value.execute(request)
         assert result.status == ActionStatus.TIMED_OUT
@@ -805,7 +831,8 @@ def test_click_timeout_does_not_reopen_concurrent_pause():
         action('paused-click', ActionName.CLICK_GIFT_ICON,
                deadline=time.monotonic() + 0.1),
         parameters=(('x', 0.2), ('y', 0.05), ('width', 1280), ('height', 720),
-                    ('evidence_sequence', 1)))
+                    ('evidence_sequence', 1), ('anchor_verified', True),
+                    ('anchor_frame_id', 'gift-frame-1')))
     thread = threading.Thread(target=lambda: value.execute(request))
     try:
         thread.start()

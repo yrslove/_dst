@@ -78,6 +78,22 @@ def test_world_hud_allows_occupied_starting_inventory_slots():
     assert observation.screen == DSTScreen.IN_WORLD_IDLE
 
 
+def test_fresh_clean_real_hud_reports_no_gift_when_verified_gift_template_is_absent():
+    # This is a retained real DST capture, not a rendered/synthetic screenshot.
+    image = Image.open(ASSETS / "samples/in_world_wilson_live.png").convert("RGB")
+    observation = analyze_image(
+        image, "clean-hud-negative-gift", 1,
+        profile_id="dst-1280x720-linux-v1",
+    )
+    assert observation.production_ready
+    assert observation.screen == DSTScreen.IN_WORLD_IDLE
+    gift = next(item for item in observation.detections if item.kind == "gift_icon")
+    assert gift.verified
+    assert not gift.detected
+    assert dict(gift.metadata)["availability"] == "NO_REWARD_AVAILABLE"
+    assert dict(gift.metadata)["negative_evidence"] == "VERIFIED_TEMPLATE_ABSENCE"
+
+
 def test_real_perception_corpus_replays_ground_truth():
     corpus_path = ASSETS / "samples/perception_corpus.json"
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))

@@ -7,7 +7,7 @@ from collections import deque
 
 import numpy as np
 
-from runtime_agent.gameworker.geometry import Viewport
+from runtime_agent.gameworker.geometry import NormalizedRegion, Viewport
 
 GIFT_ROI = (0.035, 0.0, 0.36, 0.14)
 HOVER_ROI = (0.10, 0.10, 0.32, 0.23)
@@ -72,7 +72,7 @@ class GiftTemporalEvidence:
                     self.first_transient_visual_at = observation.timestamp
             self.frames += 1
             self.state = "SEEN_ONCE"
-            if self.frames >= 3 or (pending is not None and pending > 0):
+            if self.frames >= 3:
                 self.state = "PERSISTENT"
                 self.episode_confirmed_at = observation.timestamp
                 if self.confirmed_first_detection is None:
@@ -93,15 +93,6 @@ class GiftTemporalEvidence:
                     "SetItemOpened_Complete": True, "receipt": True,
                 })
                 self.confirmed_receipt_logged = True
-            return
-        if pending is not None and pending > 0:
-            self.state = "PERSISTENT"
-            self.frames = 0
-            self.confirmed_first_detection = self.confirmed_first_detection or observation.timestamp
-            self.confirmed_persistent_visual_at = (
-                self.confirmed_persistent_visual_at or observation.timestamp
-            )
-            self.episode_confirmed_at = observation.timestamp
             return
         if self.state != "ABSENT":
             self.event_sequence += 1
@@ -142,6 +133,36 @@ def classify_icon(image, detection, template, *, active=None, hover_verified=Fal
         "hover_verified": hover_verified,
         "active_reference_verified": bool(active and active.verified),
     }
+    if (
+        detection.verified
+        and detection.detector_id == "opencv-template"
+        and not detection.detected
+        and detection.bounds is not None
+        and template is not None
+    ):
+        roi = np.asarray(
+            image.crop(
+                Viewport(*image.size).region(NormalizedRegion(*GIFT_ROI))
+            ).convert("L")
+        )
+        quiet_tiles = 0
+        tile_count = 0
+        for y in range(0, roi.shape[0] - 15, 16):
+            for x in range(0, roi.shape[1] - 15, 16):
+                tile_count += 1
+                quiet_tiles += int(float(roi[y:y + 16, x:x + 16].std()) < 2.0)
+        if tile_count and quiet_tiles / tile_count > 0.40:
+            evidence["negative_evidence"] = "HUD_ROI_OBSCURED"
+            return evidence
+        # Called only for a fresh, valid IN_WORLD_IDLE observation. A verified
+        # negative template match means the HUD ROI was inspected and the icon
+        # is absent; missing/failed detector assets remain UNKNOWN.
+        evidence.update(
+            icon_state="ABSENT",
+            availability="NO_REWARD_AVAILABLE",
+            negative_evidence="VERIFIED_TEMPLATE_ABSENCE",
+        )
+        return evidence
     if (
         not detection.verified
         or detection.bounds is None

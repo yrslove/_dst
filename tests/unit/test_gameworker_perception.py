@@ -895,9 +895,15 @@ def test_planner_timeout_discards_proposal_before_action():
 
 def test_capture_failure_updates_bounded_health_without_observation():
     now = [10.0]
+    recovered = make_frame(1, captured_monotonic=10.1)
     pipeline = make_pipeline(
         FakeCaptureSource(
-            [CaptureError("synthetic timeout", failure=CaptureFailure.TIMEOUT)],
+            [
+                CaptureError("synthetic timeout 1", failure=CaptureFailure.TIMEOUT),
+                CaptureError("synthetic timeout 2", failure=CaptureFailure.TIMEOUT),
+                CaptureError("synthetic timeout 3", failure=CaptureFailure.TIMEOUT),
+                recovered,
+            ],
             runtime_generation=7,
             worker_generation=3,
         ),
@@ -909,8 +915,12 @@ def test_capture_failure_updates_bounded_health_without_observation():
     pipeline.on_game_ready()
 
     assert pipeline.tick().status == "CAPTURE_FAILED"
+    assert pipeline.tick().status == "CAPTURE_FAILED"
+    assert pipeline.tick().status == "CAPTURE_FAILED"
     assert pipeline.latest_observation is None
-    assert pipeline.health()["capture_errors"] == 1
+    assert pipeline.health()["capture_errors"] == 3
+    assert pipeline.tick().status != "CAPTURE_FAILED"
+    assert pipeline.health()["capture_success_total"] == 1
     pipeline.close()
 
 

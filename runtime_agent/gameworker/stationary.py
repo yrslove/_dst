@@ -53,6 +53,15 @@ class StationarySession:
             if self.world_entered_at is None:
                 self.world_entered_at = observation.timestamp
                 self.emit("WORLD_ENTERED", observation.timestamp)
+            if self.recovery_blocker == "GAME_LOST":
+                self.recovery_blocker = None
+                self.state = "JOIN_WORLD"
+                self.emit(
+                    "GAME_REJOINED",
+                    observation.timestamp,
+                    recovery="SAVED_WORLD_REENTRY",
+                    movement_count=self.movement_count,
+                )
             if self.recovery_blocker:
                 self.state = "RECOVERY_BLOCKER"
                 return

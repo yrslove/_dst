@@ -128,14 +128,17 @@ def test_failed_preexisting_claim_preserves_other_account_run(monkeypatch, tmp_p
             account = int(path.split('/')[1])
             preparing = account == 1 and modes.get(account) == 'ACTIVE'
             running = account == 2 and modes.get(account) == 'ACTIVE'
-            report = {"mode": modes.get(account, "DISABLED"), "state": "WAITING",
+            report = {"mode": modes.get(account, "DISABLED"),
+                      "state": "NEEDS_ATTENTION" if preparing else "WAITING",
                       "last_tick_at": datetime.now(UTC).isoformat(),
                       "error_code": "WORKER_INTERVENTION_REQUIRED" if preparing else None,
                       "details": {"observation": {"screen": "IN_WORLD_IDLE", "validity": "VALID"}},
                       "telemetry": {"gift_availability_evidence": {
-                          "observed_at": datetime.now(UTC).isoformat(), "icon_present": account == 1,
-                          "availability": "IN_WORLD_GIFT_PENDING" if account == 1 else "NO_REWARD_AVAILABLE",
-                          "identity_confidence": 1}, "inworld_gift_confirmation": prior if account == 2 and not running else None,
+                          "observed_at": datetime.now(UTC).isoformat(),
+                              "availability": "GIFT_AVAILABLE" if account == 1 else "NO_REWARD_AVAILABLE",
+                          "icon_present": account == 1,
+                          "identity_confidence": 1,
+                          "temporal_state": "PERSISTENT"}, "inworld_gift_confirmation": prior if account == 2 and not running else None,
                           "locomotion": {"session_id": sessions.get(account), "valid_online_world_elapsed": 3601 if running else 0}}}
             return {"details": {"diagnostics": {"worker": report}}}
 
@@ -164,7 +167,9 @@ def test_failed_preexisting_claim_preserves_other_account_run(monkeypatch, tmp_p
 def test_baseline_rejects_stale_gift_even_when_cached_observation_is_valid(monkeypatch):
     monkeypatch.setattr(dual_ab.time, 'time', lambda: 100)
     report = {"details": {"observation": {"screen": "IN_WORLD_IDLE", "validity": "VALID"}},
-              "telemetry": {"gift_availability_evidence": {"observed_at": "1970-01-01T00:01:10Z"}}}
+              "telemetry": {"gift_availability_evidence": {
+                  "observed_at": "1970-01-01T00:01:10Z",
+                  "availability": "NO_REWARD_AVAILABLE", "icon_present": False}}}
     assert dual_ab.fresh_baseline_gift(report, 60) is None
     report['telemetry']['gift_availability_evidence']['observed_at'] = '1970-01-01T00:01:35Z'
     assert dual_ab.fresh_baseline_gift(report, 90)

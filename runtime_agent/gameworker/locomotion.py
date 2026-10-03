@@ -219,6 +219,23 @@ class Locomotion:
         self.next_at = time.monotonic() + PROFILES[self.profile][1]
 
     def telemetry(self):
+        station_zone = {
+            "displacement": self.displacement,
+            "anchor_lost": self.anchor_lost,
+            "gift_latched": self.gift_latched,
+            "target": self.target,
+            "blocked_targets": [list(t) for t, expiry in self.blocked_until.items() if expiry > self.cycle],
+            "no_displacement_safety_hold": self.anchor_lost and self.click_anchor is None,
+        }
+        if self.profile or self.click_anchor is not None:
+            station_zone.update({
+                "strategy": "local_click_cycle" if self.click_anchor else "takeover_anchor_local_targets",
+                "click_anchor": self.click_anchor,
+                "click_target": self.click_target,
+                "target_offsets_viewport_pixels": CLICK_TARGETS if self.click_anchor else TARGETS,
+                "soft_boundary_viewport_pixels": (32, 20),
+                "max_pulse_seconds": .10,
+            })
         return {
             "profile": self.profile, "session_id": self.session_id,
             "movement_commands": self.movement_commands,
@@ -232,20 +249,7 @@ class Locomotion:
             "valid_online_world_elapsed": round(self.valid_elapsed, 3),
             "target_valid_seconds": self.target_valid_seconds,
             "stop_reason": self.stop_reason,
-            "station_zone": {
-                "strategy": "local_click_cycle" if self.click_anchor else "takeover_anchor_local_targets",
-                "click_anchor": self.click_anchor,
-                "click_target": self.click_target,
-                "target_offsets_viewport_pixels": CLICK_TARGETS if self.click_anchor else TARGETS,
-                "soft_boundary_viewport_pixels": (32, 20),
-                "max_pulse_seconds": .10,
-                "displacement": self.displacement,
-                "anchor_lost": self.anchor_lost,
-                "gift_latched": self.gift_latched,
-                "target": self.target,
-                "blocked_targets": [list(t) for t, expiry in self.blocked_until.items() if expiry > self.cycle],
-                "no_displacement_safety_hold": self.anchor_lost and self.click_anchor is None,
-            },
+            "station_zone": station_zone,
             "elapsed_seconds": round(max(0.0, time.monotonic() - self.started), 3)
             if self.profile else 0.0,
         }

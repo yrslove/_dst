@@ -132,6 +132,8 @@ class DSTGameWorker:
         self._experiment_gift_sequence = 0
         self._gift_attempt_artifact_key = None
         self._gift_visual_event_cursor = 0
+        self._claim_confirmation_pending_since: float | None = None
+        self._claim_confirmation_anomaly_logged = False
 
     @staticmethod
     def _release_partial(
@@ -678,7 +680,8 @@ class DSTGameWorker:
             self.pipeline.on_game_lost()
         report = self.pause(runtime_loss=True)
         self._sync_action_mode()
-        self._persist_stationary_events()
+        if self.mode != WorkerMode.REPLAY:
+            self._persist_stationary_events()
         return report
 
     def execute_action(self, action: Action) -> ActionResult:
@@ -833,6 +836,9 @@ class DSTGameWorker:
                     from runtime_agent.gameworker.activity import InWorldGiftState
                     self.activity.inworld_gift_confirmation = receipt
                     self.activity.gift_claim_state = "CLAIM_CONFIRMED"
+                    self.activity.claim_confirmation_pending = False
+                    self._claim_confirmation_pending_since = None
+                    self._claim_confirmation_anomaly_logged = False
                     self.activity.intervention_required = False
                     self.activity.inworld_gift_state = InWorldGiftState.CONFIRMED
                     self.activity.counters["gift_claimed"] += 1
@@ -842,6 +848,23 @@ class DSTGameWorker:
                         self.activity.begin_next_gift_cycle(self.claim_evidence)
                     if self.locomotion.until_gift and not self._experiment_continue_after_claim:
                         return self.set_mode(WorkerMode.DISABLED)
+            if self.activity.claim_confirmation_pending:
+                if self._claim_confirmation_pending_since is None:
+                    self._claim_confirmation_pending_since = time.monotonic()
+                    self.activity.gift_claim_state = "CLAIM_CONFIRMATION_PENDING"
+                pending_age = time.monotonic() - self._claim_confirmation_pending_since
+                if pending_age >= 120 and not self._claim_confirmation_anomaly_logged:
+                    self._claim_confirmation_anomaly_logged = True
+                    self.activity.gift_claim_state = "CLAIM_CONFIRMATION_ANOMALY"
+                    logger.error(
+                        "gift_claim_confirmation_pending_timeout runtime_id=%s "
+                        "worker_generation=%s age_seconds=%.1f action_id=%s; "
+                        "continuing safe observation",
+                        context.runtime_id,
+                        self.worker_generation,
+                        pending_age,
+                        (self.activity.inworld_close_evidence or {}).get("action_id"),
+                    )
             self._persist_stationary_events()
             if self.stationary.recovery_blocker and self.locomotion.profile:
                 self._error_code = "STATIONARY_RECOVERY_BLOCKER"
@@ -961,7 +984,15 @@ class DSTGameWorker:
         except CaptureError as exc:
             logger.warning("worker capture failed runtime_id=%s failure=%s",
                            context.runtime_id, exc.failure, exc_info=True)
-            self._fail("WORKER_CAPTURE_FAILED")
+            self._capture_errors += 1
+            self._error_code = "WORKER_CAPTURE_FAILED"
+            if self.actions:
+                self.actions.release_all()
+            if self.recorder:
+                self.recorder.record_event(
+                    RecordingEventType.CAPTURE_ERROR,
+                    payload={"failure": exc.failure, "transient": True},
+                )
         except InputError:
             self._fail("WORKER_INPUT_FAILED")
         except Exception:  # noqa: BLE001 - plugin boundary must not kill the agent
@@ -1094,7 +1125,8 @@ class DSTGameWorker:
             self.stationary.emit("MOVEMENT_ACTION", datetime.now(timezone.utc).isoformat(),
                                  action=result.action.value, status=result.status.value,
                                  action_id=result.action_id, reason=result.reason)
-        self._persist_stationary_events()
+        if self.mode != WorkerMode.REPLAY:
+            self._persist_stationary_events()
         action, dry_run = result.action, result.dry_run
         summary = f"{action} {result.duration:.2f}s {result.result}"
         if result.reason:
@@ -1243,8 +1275,7 @@ class DSTGameWorker:
     def _permitted_active_actions(self) -> frozenset[ActionName]:
         # Reusable canonical capabilities shared by production and validation
         # ActivityController policies.
-        permitted = frozenset(
-            {
+        permitted = {
                 ActionName.OPEN_CRAFTING_MENU,
                 ActionName.OPEN_INVENTORY,
                 ActionName.CLICK_REWARD_OPEN,
@@ -1271,13 +1302,26 @@ class DSTGameWorker:
                 ActionName.HOVER_GIFT_ICON,
                 ActionName.CLICK_GIFT_ICON,
                 ActionName.CLICK_INWORLD_USE_LATER,
+        }
+        if not self.config.validation_flow_enabled or self.locomotion.profile:
+            # Production world behavior is stationary. Startup and saved-world
+            # navigation remain available, while no planner proposal can reach
+            # a movement key, world click, or generic interaction.
+            permitted -= {
+                ActionName.MOVE_FORWARD,
+                ActionName.MOVE_BACKWARD,
+                ActionName.TURN_LEFT,
+                ActionName.TURN_RIGHT,
+                ActionName.CLICK_LOCAL_TARGET,
+                ActionName.INTERACT,
+                ActionName.OPEN_CRAFTING_MENU,
+                ActionName.OPEN_INVENTORY,
+                ActionName.PAUSE_WORLD,
+                ActionName.RESUME_WORLD,
+                ActionName.CLICK_OPTIONS,
+                ActionName.DISCARD_OPTIONS,
             }
-        )
-        if self.locomotion.profile:
-            permitted -= {ActionName.MOVE_FORWARD, ActionName.MOVE_BACKWARD,
-                          ActionName.TURN_LEFT, ActionName.TURN_RIGHT,
-                          ActionName.CLICK_LOCAL_TARGET, ActionName.INTERACT}
-        return permitted
+        return frozenset(permitted)
 
     def _sync_action_mode(self) -> None:
         effective_mode = self._effective_mode()
@@ -1467,6 +1511,22 @@ class DSTGameWorker:
                 "stationary": self.stationary.telemetry(),
                 "gift_visual_temporal": self.activity.gift_visual.telemetry(),
                 "gift_claim_attempt": self.activity.gift_attempt,
+                "gift_claim_confirmation": {
+                    "state": (
+                        "PENDING"
+                        if self.activity.claim_confirmation_pending
+                        else "CONFIRMED"
+                        if self.activity.inworld_gift_confirmation
+                        else "NONE"
+                    ),
+                    "age_seconds": (
+                        max(0.0, time.monotonic() - self._claim_confirmation_pending_since)
+                        if self._claim_confirmation_pending_since is not None
+                        else 0.0
+                    ),
+                    "diagnostic_timeout_seconds": 120,
+                    "anomaly_logged": self._claim_confirmation_anomaly_logged,
+                },
                 "gift_retry_after_seconds": max(0.0, self.activity._gift_retry_at - time.monotonic()),
                 "inworld_gift_confirmation": self.activity.inworld_gift_confirmation,
                 "daily_gift_confirmation": (

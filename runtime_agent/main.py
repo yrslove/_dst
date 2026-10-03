@@ -13,7 +13,7 @@ from app.runtime.display import GRAPHICAL_ENVIRONMENT_KEYS
 from app.subprocess_env import purge_sensitive_environment
 from runtime_agent.config import RuntimeAgentSettings
 from runtime_agent.display import DisplayEnvironment, DisplayManager
-from runtime_agent.heartbeat import send_heartbeat
+from runtime_agent.heartbeat import RuntimeVerification, send_heartbeat
 from runtime_agent.process_supervisor import ProcessSupervisor
 from runtime_agent.processes import DSTProcess, SteamProcess
 from runtime_agent.processes.dst import DSTState
@@ -67,6 +67,20 @@ def _handoff_environment(display, steam, dst, *, runtime_token: str) -> dict[str
         assert identity is not None
         environment[f"RUNTIME_ADOPT_{name}"] = f"{identity[0]}:{identity[1]}"
     return environment
+
+
+def _managed_runtime_is_adoptable(
+    display, steam_process, dst_process, steam, dst, identities
+) -> bool:
+    """Worker shutdown health is not evidence about managed game process identity."""
+    return bool(
+        identities is not None
+        and display.status().value == "READY"
+        and steam_process.status() == SteamState.READY
+        and dst_process.status() == DSTState.READY
+        and steam.alive
+        and dst.alive
+    )
 
 
 def main() -> int:
@@ -162,6 +176,12 @@ def main() -> int:
     phase = "BOOTING"
     worker_initialized = False
     worker_report = worker.tick()
+    verification = RuntimeVerification(
+        grace_seconds=max(
+            settings.heartbeat_seconds * 3,
+            settings.heartbeat_seconds + settings.request_timeout_seconds,
+        )
+    )
     try:
         while not stop_event.is_set():
             game_ready_now = False
@@ -257,7 +277,7 @@ def main() -> int:
                     "worker_process_isolated": True,
                 },
             )
-            worker.set_runtime_verified(bool(response.get("runtime_verified", False)))
+            worker.set_runtime_verified(verification.observe(response))
             worker.apply_commands(response.get("commands", []))
             stop_event.wait(settings.heartbeat_seconds)
     finally:
@@ -271,14 +291,13 @@ def main() -> int:
                 identities = _handoff_environment(
                     display, steam, dst, runtime_token=settings.runtime_token
                 )
-                runtime_ready = (
-                    worker_report is not None
-                    and worker_report.healthy
-                    and display.status().value == "READY"
-                    and steam_process.status() == SteamState.READY
-                    and dst_process.status() == DSTState.READY
-                    and steam.alive
-                    and dst.alive
+                runtime_ready = _managed_runtime_is_adoptable(
+                    display,
+                    steam_process,
+                    dst_process,
+                    steam,
+                    dst,
+                    identities,
                 )
                 if runtime_ready and identities is not None:
                     logger.info(

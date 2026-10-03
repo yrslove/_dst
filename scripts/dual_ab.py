@@ -324,12 +324,14 @@ def fresh_baseline_gift(report, requested_at):
     server_pending = (item_service.get("state") == "OK"
                       and item_service.get("pending_items", 0) > 0
                       and 0 <= time.time() - cache_at <= 30)
+    clean_no_gift = (gift.get("availability") == "NO_REWARD_AVAILABLE"
+                     and gift.get("icon_present") is False)
     persistent_visual = (gift.get("temporal_state") == "PERSISTENT"
                          and gift.get("availability") in {
                              "GIFT_AVAILABLE", "IN_WORLD_GIFT_PENDING"})
     if (observation.get("screen") != "IN_WORLD_IDLE" or observation.get("validity") != "VALID"
             or observed_at < requested_at or not 0 <= time.time() - observed_at <= 20
-            or not (persistent_visual or server_pending)):
+            or not (clean_no_gift or persistent_visual or server_pending)):
         return None
     return gift
 

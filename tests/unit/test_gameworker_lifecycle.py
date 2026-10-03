@@ -31,7 +31,11 @@ from runtime_agent.gameworker.process import (
 )
 from runtime_agent.gameworker.state import WorkerState
 from runtime_agent.gameworker.xpra_input import InputError
-from runtime_agent.heartbeat import send_heartbeat
+from runtime_agent.heartbeat import (
+    RuntimeVerification,
+    VerificationState,
+    send_heartbeat,
+)
 from runtime_agent.worker_bridge import WorkerBridge
 
 
@@ -264,6 +268,31 @@ def test_control_plane_submission_logs_terminal_ack_failure(monkeypatch, caplog)
     assert response == {"ok": False, "commands": []}
     assert "worker_ack_control_plane_failed" in caplog.text
     assert "test-token" not in caplog.text
+
+
+def test_runtime_verification_transport_failure_has_bounded_grace_and_recovers():
+    verification = RuntimeVerification(grace_seconds=15)
+    assert verification.observe({"runtime_verified": True}, now=100) is True
+    assert verification.observe({"ok": False}, now=101) is True
+    assert verification.state == VerificationState.VERIFICATION_UNKNOWN
+    assert verification.observe({"ok": False}, now=116) is False
+    assert verification.state == VerificationState.VERIFICATION_UNKNOWN
+    assert verification.observe({"runtime_verified": True}, now=117) is True
+    assert verification.state == VerificationState.VERIFIED_TRUE
+
+
+def test_explicit_verification_false_bypasses_transport_grace():
+    verification = RuntimeVerification(grace_seconds=15)
+    assert verification.observe({"runtime_verified": True}, now=100) is True
+    assert verification.observe({"runtime_verified": False}, now=101) is False
+    assert verification.state == VerificationState.VERIFIED_FALSE
+    assert verification.observe({"ok": False}, now=102) is False
+
+
+def test_transport_failure_does_not_invent_runtime_verification():
+    verification = RuntimeVerification(grace_seconds=15)
+    assert verification.observe({"ok": False, "commands": []}, now=100) is False
+    assert verification.state == VerificationState.VERIFICATION_UNKNOWN
 
 
 def test_crash_release_finishes_before_replacement_generation_starts(monkeypatch):
@@ -682,7 +711,7 @@ def test_configured_active_mode_reports_safe_effective_mode_without_gate():
     assert result.error_code == "WORKER_DISABLED"
 
 
-def test_reusable_action_permissions_do_not_depend_on_validation_flow():
+def test_production_action_permissions_preserve_entry_and_gifts_but_deny_world_activity():
     worker = DSTGameWorker(
         WorkerConfig(
             plugin="dst",
@@ -694,12 +723,21 @@ def test_reusable_action_permissions_do_not_depend_on_validation_flow():
     permitted = worker._permitted_active_actions()
 
     assert {
-        # Canonical capabilities remain available to the production policy.
+        ActionName.CLICK_HOST_GAME,
+        ActionName.SELECT_EXISTING_WORLD,
+        ActionName.CLICK_GIFT_ICON,
+        ActionName.CLICK_INWORLD_USE_LATER,
+    } <= permitted
+    assert not {
         ActionName.MOVE_FORWARD,
+        ActionName.MOVE_BACKWARD,
+        ActionName.TURN_LEFT,
+        ActionName.TURN_RIGHT,
+        ActionName.CLICK_LOCAL_TARGET,
+        ActionName.INTERACT,
         ActionName.PAUSE_WORLD,
         ActionName.RESUME_WORLD,
-        ActionName.INTERACT,
-    } <= permitted
+    } & permitted
 
 
 def test_worker_only_enables_production_world_entry_when_configured_and_effective_active():
