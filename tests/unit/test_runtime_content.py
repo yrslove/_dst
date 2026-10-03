@@ -262,11 +262,15 @@ def test_bootstrap_content_failure_is_resumable_and_service_starts_last(client, 
     fail = False
     commands.clear()
     assert service.bootstrap(descriptor, config) == BootstrapPhase.BOOTSTRAP_COMPLETE
-    assert [c[-1] for c in commands[:2]] == ["steam", "dst"]
+    assert commands[0][-1] == "steam"
+    assert commands[-3][-1] == "dst"
+    assert any("apparmor_parser" in c[0] for c in commands)
+    assert any("--unshare-user" in c for c in commands)
     assert "reload-or-restart" in commands[-1]
     commands.clear()
     service.bootstrap(descriptor, config)
-    assert [c[-1] for c in commands] == ["steam", "dst"]
+    assert commands[0][-1] == "steam"
+    assert commands[-1][-1] == "dst"
     assert not any("reload-or-restart" in c for c in commands)
 
 
@@ -282,3 +286,26 @@ def test_reconcile_repairs_deleted_client_binary_after_completed_seed(tmp_path):
     provision(home, assets, "steam")
     assert prerequisites(home)
     assert session.read_text() == "private"
+
+
+def test_missing_system_dependencies_are_installed_once(monkeypatch):
+    from app.runtime import content
+
+    installed = False
+    calls = []
+    monkeypatch.setattr(
+        content.shutil, "which", lambda _name: "/usr/bin/tool" if installed else None
+    )
+
+    def run(command, **kwargs):
+        nonlocal installed
+        calls.append((command, kwargs))
+        if "install" in command:
+            installed = True
+
+    monkeypatch.setattr(content.subprocess, "run", run)
+    content.ensure_system_dependencies()
+    content.ensure_system_dependencies()
+    assert len(calls) == 2
+    assert calls[1][0][-2:] == ["apparmor", "dbus-x11"]
+    assert all(kwargs["timeout"] <= 240 and kwargs["check"] for _, kwargs in calls)

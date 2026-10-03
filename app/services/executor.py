@@ -351,7 +351,7 @@ class JobExecutor(LongSessionMixin):
             ),
             dst_readiness_timeout=self.settings.runtime_dst_readiness_timeout_seconds,
         )
-        RuntimeBootstrapService(self.db, self.provider, version=9).bootstrap(
+        RuntimeBootstrapService(self.db, self.provider, version=10).bootstrap(
             descriptor, config, correlation_id=job.request_id
         )
 

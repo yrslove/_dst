@@ -46,6 +46,21 @@ WantedBy=multi-user.target
 """
 
 
+STEAM_APPARMOR = """abi <abi/4.0>,
+include <tunables/global>
+profile steam /usr/{lib/steam/bin_steam.sh,games/steam} flags=(unconfined) {
+  userns,
+  include if exists <local/steam>
+}
+"""
+BWRAP_APPARMOR = """abi <abi/4.0>,
+include <tunables/global>
+profile dst-steam-bwrap /home/dst/.steam/debian-installation/ubuntu12_32/steam-runtime/usr/libexec/steam-runtime-tools-0/srt-bwrap flags=(unconfined) {
+  userns,
+}
+"""
+
+
 class RuntimeBootstrapService:
     """Versioned, resumable runtime bootstrap without retaining runtime secrets.
 
@@ -226,6 +241,42 @@ class RuntimeBootstrapService:
                         "steam",
                     ),
                     timeout=600,
+                    correlation_id=correlation_id,
+                )
+                # Ubuntu 24.04 restricts unprivileged namespaces. Reuse the narrow
+                # Steam/bwrap exceptions proven on the existing runtimes; never
+                # disable the host-wide restriction or the Incus security profile.
+                for name, profile in (
+                    ("steam", STEAM_APPARMOR),
+                    ("dst-steam-bwrap", BWRAP_APPARMOR),
+                ):
+                    path = "/etc/apparmor.d/" + name
+                    self.provider.put_file(
+                        runtime,
+                        path,
+                        profile.encode(),
+                        mode=0o644,
+                        correlation_id=correlation_id,
+                    )
+                    self.provider.execute(
+                        runtime,
+                        ("/sbin/apparmor_parser", "-r", path),
+                        correlation_id=correlation_id,
+                    )
+                self.provider.execute(
+                    runtime,
+                    (
+                        "/usr/sbin/runuser",
+                        "-u",
+                        "dst",
+                        "--",
+                        "/home/dst/.steam/debian-installation/ubuntu12_32/steam-runtime/usr/libexec/steam-runtime-tools-0/srt-bwrap",
+                        "--unshare-user",
+                        "--ro-bind",
+                        "/",
+                        "/",
+                        "/bin/true",
+                    ),
                     correlation_id=correlation_id,
                 )
         elif phase == BootstrapPhase.DST_RUNTIME_PREPARED:

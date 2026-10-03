@@ -10,6 +10,7 @@ import json
 import os
 import pwd
 import shutil
+import subprocess
 from pathlib import Path
 
 ASSETS = Path("/opt/dst-runtime-assets")
@@ -144,6 +145,34 @@ def prepare(home: Path, assets: Path, stage: str, *, uid: int, gid: int) -> None
             os.chown(path, uid, gid, follow_symlinks=False)
 
 
+def ensure_system_dependencies() -> None:
+    required = ("apparmor_parser", "dbus-launch")
+    if all(shutil.which(name) for name in required):
+        return
+    environment = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    subprocess.run(
+        ["/usr/bin/apt-get", "-o", "Acquire::Retries=2", "update"],
+        env=environment,
+        check=True,
+        timeout=120,
+    )
+    subprocess.run(
+        [
+            "/usr/bin/apt-get",
+            "install",
+            "-y",
+            "--no-install-recommends",
+            "apparmor",
+            "dbus-x11",
+        ],
+        env=environment,
+        check=True,
+        timeout=240,
+    )
+    if not all(shutil.which(name) for name in required):
+        raise RuntimeError("Steam system dependencies are incomplete")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=("steam", "dst"))
@@ -151,6 +180,8 @@ def main() -> None:
     user = pwd.getpwnam("dst")
     if user.pw_dir != "/home/dst" or user.pw_uid == 0:
         raise RuntimeError("invalid runtime user/home contract")
+    if args.stage == "steam":
+        ensure_system_dependencies()
     prepare(Path(user.pw_dir), ASSETS, args.stage, uid=user.pw_uid, gid=user.pw_gid)
     print(args.stage.upper() + "_RUNTIME_PREPARED")
 

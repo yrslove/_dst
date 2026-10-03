@@ -6,9 +6,11 @@ the sole code-only exception. One Ubuntu 24.04 Incus runtime has now completed
 real OBSERVE recording and offline REPLAY; see `LINUX_VALIDATION_2026-09-26.md`.
 The current base image is still not production verified.
 
-## Canonical fresh-runtime provisioning (bootstrap v9)
+## Canonical fresh-runtime provisioning (bootstrap v10)
 
 The versioned base provides OS packages, the graphical stack and Python venv.
+Steam bootstrap idempotently supplies missing `apparmor`/`dbus-x11` packages
+with bounded apt operations; future base builds should include these dependencies.
 Bootstrap installs the committed Runtime Agent using the existing deployment
 archive/inventory; it rejects upgrading an active older agent instead of silently
 terminating a live authenticated session. Existing failed runtimes need an explicit
@@ -36,6 +38,9 @@ Existing stages now perform actual preparation:
 `DISPLAY_CONFIGURED -> STEAM_RUNTIME_PREPARED -> DST_RUNTIME_PREPARED -> BOOTSTRAP_COMPLETE`.
 Steam preparation creates a writable private Debian installation under `/home/dst`,
 seeds only client program files, sets ownership and the conventional Steam links.
+On Ubuntu 24.04, Steam preparation also installs the existing narrow Steam/srt-bwrap
+AppArmor user-namespace profiles and verifies bwrap as the runtime user. The
+host-wide restriction and Incus isolation remain enabled.
 DST preparation links shared executable/data and creates private library metadata.
 The agent starts only after both checks succeed; its Steam supervisor independently
 gates startup on those prerequisites. Completed bootstrap rechecks/repairs content
