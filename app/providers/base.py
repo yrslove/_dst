@@ -116,6 +116,18 @@ class RuntimeProvider(ABC):
         """Run an argv-only command inside a runtime; implementations must bound output."""
         raise NotImplementedError
 
+    def install_agent(
+        self, runtime: RuntimeDescriptor, *, correlation_id: str | None = None
+    ) -> None:
+        """Install the canonical runtime package before starting a fresh agent."""
+        return
+
+    def prepare_assets(
+        self, runtime: RuntimeDescriptor, *, correlation_id: str | None = None
+    ) -> None:
+        """Attach provider-owned immutable content before private runtime bootstrap."""
+        return
+
     @abstractmethod
     def put_file(
         self,

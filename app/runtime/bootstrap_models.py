@@ -50,6 +50,7 @@ class RuntimeAgentConfig:
     def environment_file(self) -> bytes:
         # Explicit allow-list: this file is the only bootstrap secret carrier.
         values = {
+            "HOME": "/home/dst",
             "CONTROL_PLANE_URL": self.orchestrator_url,
             "RUNTIME_ID": self.runtime_id,
             "RUNTIME_GENERATION": self.runtime_generation,

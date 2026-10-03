@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 
@@ -24,6 +25,7 @@ class SteamProcess:
         *,
         needs_login_file: Path | None = None,
         readiness_timeout_seconds: float = 120,
+        prerequisites_ready: Callable[[], bool] | None = None,
     ):
         self.supervisor, self.readiness_file, self._state = (
             supervisor,
@@ -33,6 +35,7 @@ class SteamProcess:
         self.needs_login_file = needs_login_file
         self.readiness_timeout_seconds = readiness_timeout_seconds
         self._terminal_error = False
+        self.prerequisites_ready = prerequisites_ready
         previous_before_start = supervisor.before_start
 
         def reset_markers() -> None:
@@ -50,6 +53,8 @@ class SteamProcess:
     def start(self):
         if self._terminal_error:
             return SteamState.ERROR
+        if self.prerequisites_ready and not self.prerequisites_ready():
+            return SteamState.STOPPED
         self.supervisor.request_start()
         self._state = SteamState.STARTING
         return self._state

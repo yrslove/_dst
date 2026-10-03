@@ -9,6 +9,7 @@ import sys
 import threading
 from pathlib import Path
 
+from app.runtime.content import prerequisites
 from app.runtime.display import GRAPHICAL_ENVIRONMENT_KEYS
 from app.subprocess_env import purge_sensitive_environment
 from runtime_agent.config import RuntimeAgentSettings
@@ -179,6 +180,9 @@ def main() -> int:
         steam,
         settings.steam_ready_file,
         needs_login_file=settings.steam_needs_login_file,
+        prerequisites_ready=lambda: prerequisites(
+            Path.home(), require_dst=settings.auto_launch_dst
+        ),
         readiness_timeout_seconds=settings.steam_readiness_timeout_seconds,
     )
     dst_process = DSTProcess(
@@ -218,11 +222,21 @@ def main() -> int:
             else:
                 phase = "DISPLAY_READY"
                 if settings.auto_launch_steam:
-                    steam_process.start()
+                    steam_start = steam_process.start()
                     steam.tick()
                     phase = "STEAM_STARTING"
                     steam_state = steam_process.status()
-                    if steam_state in {SteamState.ERROR, SteamState.NEEDS_LOGIN}:
+                    if steam_start == SteamState.STOPPED:
+                        phase = (
+                            "STEAM_RUNTIME_PREPARED"
+                            if prerequisites(Path.home(), require_dst=False)
+                            else "DISPLAY_READY"
+                        )
+                        dst.shutdown(timeout=3)
+                    elif steam_state == SteamState.NEEDS_LOGIN:
+                        phase = "NEEDS_LOGIN"
+                        dst.shutdown(timeout=3)
+                    elif steam_state == SteamState.ERROR:
                         phase = "NEEDS_ATTENTION"
                         dst.shutdown(timeout=3)
                     elif steam_state == SteamState.READY:
@@ -267,7 +281,8 @@ def main() -> int:
                 phase=phase,
                 steam_running=steam.alive,
                 dst_running=dst.alive,
-                healthy=phase in {"DISPLAY_READY", "STEAM_READY", "GAME_READY"},
+                healthy=phase
+                in {"DISPLAY_READY", "STEAM_READY", "GAME_READY", "NEEDS_LOGIN"},
                 details={
                     "display": display.diagnostics(),
                     "steam": steam.status.as_dict(),

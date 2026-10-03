@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from app.db import Database
 from app.models import RuntimeInstance, utcnow
@@ -70,6 +71,26 @@ class RuntimeBootstrapService:
         phases = list(BootstrapPhase)
         start = phases.index(phase) + 1 if phase else 0
         try:
+            # A durable completed phase is not proof that files still exist.
+            # Repair missing prerequisites on reconcile without restarting Steam.
+            if phase and phases.index(phase) >= phases.index(
+                BootstrapPhase.STEAM_RUNTIME_PREPARED
+            ):
+                self._apply(
+                    BootstrapPhase.STEAM_RUNTIME_PREPARED,
+                    descriptor,
+                    config,
+                    correlation_id,
+                )
+            if phase and phases.index(phase) >= phases.index(
+                BootstrapPhase.DST_RUNTIME_PREPARED
+            ):
+                self._apply(
+                    BootstrapPhase.DST_RUNTIME_PREPARED,
+                    descriptor,
+                    config,
+                    correlation_id,
+                )
             for next_phase in phases[start:]:
                 self._apply(next_phase, descriptor, config, correlation_id)
                 self._record(descriptor.id, next_phase, correlation_id)
@@ -130,8 +151,9 @@ class RuntimeBootstrapService:
                 correlation_id=correlation_id,
             )
         elif phase == BootstrapPhase.AGENT_FILES_INSTALLED:
-            # Runtime image owns package installation; validate the exact paths used
-            # by ExecStart instead of an unrelated compatibility launcher.
+            # OS/venv dependencies belong to the image; agent code uses the
+            # existing canonical deployment archive rather than an old image snapshot.
+            self.provider.install_agent(runtime, correlation_id=correlation_id)
             self.provider.execute(
                 runtime,
                 ("/usr/bin/test", "-x", "/opt/dst-orchestrator/.venv/bin/python"),
@@ -186,14 +208,38 @@ class RuntimeBootstrapService:
                 mode=0o644,
                 correlation_id=correlation_id,
             )
-        elif phase in {
-            BootstrapPhase.STEAM_RUNTIME_PREPARED,
-            BootstrapPhase.DST_RUNTIME_PREPARED,
-        }:
-            # Presence only: readiness remains an agent-reported, real-node concern.
-            self.provider.execute(
-                runtime, ("/usr/bin/true",), correlation_id=correlation_id
-            )
+        elif phase == BootstrapPhase.STEAM_RUNTIME_PREPARED:
+            if config.steam_enabled:
+                self.provider.prepare_assets(runtime, correlation_id=correlation_id)
+                self.provider.put_file(
+                    runtime,
+                    "/etc/dst-runtime/content-bootstrap.py",
+                    Path(__file__).with_name("content.py").read_bytes(),
+                    mode=0o644,
+                    correlation_id=correlation_id,
+                )
+                self.provider.execute(
+                    runtime,
+                    (
+                        "/usr/bin/python3",
+                        "/etc/dst-runtime/content-bootstrap.py",
+                        "steam",
+                    ),
+                    timeout=600,
+                    correlation_id=correlation_id,
+                )
+        elif phase == BootstrapPhase.DST_RUNTIME_PREPARED:
+            if config.steam_enabled:
+                self.provider.execute(
+                    runtime,
+                    (
+                        "/usr/bin/python3",
+                        "/etc/dst-runtime/content-bootstrap.py",
+                        "dst",
+                    ),
+                    timeout=120,
+                    correlation_id=correlation_id,
+                )
         elif phase == BootstrapPhase.BOOTSTRAP_COMPLETE:
             # Start only after every prerequisite is committed. Repeating this
             # operation after a partial failure is safe and refreshes changed env.

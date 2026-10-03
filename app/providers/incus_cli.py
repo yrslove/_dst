@@ -4,8 +4,10 @@ import json
 import logging
 import re
 import subprocess
+import tempfile
 import time
 from dataclasses import replace
+from pathlib import Path
 
 from app.providers.base import (
     InstanceNotFound,
@@ -230,6 +232,127 @@ class IncusCLIProvider(RuntimeProvider):
                 "stdout": (process.stdout or "")[:4096],
                 "stderr": (process.stderr or "")[:4096],
             },
+        )
+
+    def install_agent(self, runtime, *, correlation_id=None) -> None:
+        # Reuse the existing validated runtime archive/installer and inventory.
+        from scripts.deploy_runtime import (
+            GUEST_INSTALLER,
+            assert_clean_tree,
+            make_metadata,
+            run,
+            runtime_files,
+            write_archive,
+        )
+
+        repo = Path(__file__).resolve().parents[2]
+        assert_clean_tree(
+            run(
+                ["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=repo
+            ).splitlines()
+        )
+        revision = run(["git", "rev-parse", "HEAD"], cwd=repo)
+        installed = self._run(
+            "exec",
+            self._target(runtime),
+            "--",
+            "cat",
+            "/opt/dst-orchestrator/DEPLOYMENT.json",
+            allow_failure=True,
+            correlation_id=correlation_id,
+        )
+        try:
+            if json.loads(installed.stdout).get("commit") == revision:
+                return
+        except (ValueError, TypeError):
+            pass
+        active = self._run(
+            "exec",
+            self._target(runtime),
+            "--",
+            "systemctl",
+            "is-active",
+            "--quiet",
+            "dst-runtime-agent.service",
+            allow_failure=True,
+            correlation_id=correlation_id,
+        )
+        if active.returncode == 0:
+            raise ProvisionFailed(
+                "agent upgrade requires an explicitly stopped runtime agent; managed processes are preserved"
+            )
+        files = runtime_files(repo)
+        remote = "/tmp/dst-provision-agent.tar.gz"
+        with tempfile.TemporaryDirectory(prefix="dst-provision-") as temporary:
+            archive = Path(temporary) / "agent.tar.gz"
+            write_archive(repo, files, make_metadata(revision, files, repo), archive)
+            self._run(
+                "file",
+                "push",
+                str(archive),
+                f"{self._target(runtime)}{remote}",
+                "--mode",
+                "0600",
+                correlation_id=correlation_id,
+            )
+            try:
+                self._run(
+                    "exec",
+                    self._target(runtime),
+                    "--",
+                    "python3",
+                    "-c",
+                    GUEST_INSTALLER,
+                    remote,
+                    "/opt/dst-orchestrator",
+                    revision,
+                    "cold",
+                    timeout=120,
+                    correlation_id=correlation_id,
+                )
+            finally:
+                self._run(
+                    "exec",
+                    self._target(runtime),
+                    "--",
+                    "rm",
+                    "-f",
+                    remote,
+                    correlation_id=correlation_id,
+                )
+
+    def prepare_assets(self, runtime, *, correlation_id=None) -> None:
+        source = self.settings.incus_runtime_assets
+        if not re.fullmatch(r"/[A-Za-z0-9_./-]+", source) or ".." in source.split("/"):
+            raise ProvisionFailed("unsafe runtime assets source")
+        status = self.inspect(runtime, correlation_id=correlation_id)
+        devices = status.raw.get("expanded_devices", status.raw.get("devices", {}))
+        expected = {
+            "type": "disk",
+            "source": source,
+            "path": "/opt/dst-runtime-assets",
+            "readonly": "true",
+        }
+        existing = devices.get("runtime-assets")
+        if existing:
+            if any(existing.get(key) != value for key, value in expected.items()):
+                raise ProvisionFailed(
+                    "runtime assets device conflicts with cache contract"
+                )
+            return
+        if any(device.get("path") == expected["path"] for device in devices.values()):
+            raise ProvisionFailed("runtime assets path is already mounted")
+        self._run(
+            "config",
+            "device",
+            "add",
+            self._target(runtime),
+            "runtime-assets",
+            "disk",
+            f"source={source}",
+            "path=/opt/dst-runtime-assets",
+            "readonly=true",
+            correlation_id=correlation_id,
         )
 
     def put_file(

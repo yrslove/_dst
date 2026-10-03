@@ -6,25 +6,52 @@ the sole code-only exception. One Ubuntu 24.04 Incus runtime has now completed
 real OBSERVE recording and offline REPLAY; see `LINUX_VALIDATION_2026-09-26.md`.
 The current base image is still not production verified.
 
-Provisioning creates a persistent Incus instance from the configured versioned base image and leaves it NEEDS_LOGIN.
+## Canonical fresh-runtime provisioning (bootstrap v9)
 
-Inside the instance:
+The versioned base provides OS packages, the graphical stack and Python venv.
+Bootstrap installs the committed Runtime Agent using the existing deployment
+archive/inventory; it rejects upgrading an active older agent instead of silently
+terminating a live authenticated session. Existing failed runtimes need an explicit
+agent stop before the upgrade. A base containing only `/usr/games/steam` is not a
+complete Steam client installation.
 
-1. Install a graphical session and verify DISPLAY/X11 socket.
-2. Install Steam and DST.
-3. Install the repository/venv and runtime systemd unit.
-4. Rotate the runtime token through POST /api/v1/runtimes/{id}/token/rotate and store it mode 0600.
-5. Keep AUTO_LAUNCH_STEAM and AUTO_LAUNCH_DST disabled for initial manual validation.
-6. Queue `SETUP_RUNTIME` (or use the UI SETUP action). It consumes a normal Node slot and boots the otherwise unverified container.
-7. Run scripts/runtime_preflight.py INSTANCE --control-plane-url HTTPS_URL while that setup runtime is running.
-8. Manually authenticate Steam/Klei; do not bake session data into the base image.
-9. Install the repository's `runtime_agent.launchers` module in the guest and
-   configure `STEAM_COMMAND` and `DST_COMMAND` to run its `steam` and `dst`
-   entry points. They create generation-scoped readiness markers after Steam
-   logs on and DST has a visible X11 window. The current bootstrap validates
-   guest agent files but does not copy this new module into an older base image.
-10. Enable auto-launch if desired, confirm a fresh authenticated GAME_READY heartbeat, then queue VERIFY_RUNTIME. VERIFY does not accept only an Incus RUNNING state.
-11. STOP the verified runtime, then validate later START and host reboot persistence.
+Publish shared binaries once on the Incus node with:
+
+```sh
+sudo .venv/bin/python scripts/build_runtime_assets.py \
+  --steam-install /path/to/offline/Steam/installation \
+  --destination /var/lib/dst-orchestrator/runtime-assets/dst-BUILD-v1
+sudo ln -s dst-BUILD-v1 /var/lib/dst-orchestrator/runtime-assets/current
+```
+
+The source must be offline. The publisher copies an explicit program-file list,
+excludes config/userdata/logs/authentication files and generated runtime state,
+and constructs a fresh app manifest containing only common content metadata.
+It refuses to overwrite a published version. `INCUS_RUNTIME_ASSETS` selects the
+node-local cache (also on a remote Incus node); the provider mounts it read-only
+at `/opt/dst-runtime-assets`. Do not switch `current` underneath active runtimes;
+release content updates with a new cache path during explicit maintenance.
+
+Existing stages now perform actual preparation:
+`DISPLAY_CONFIGURED -> STEAM_RUNTIME_PREPARED -> DST_RUNTIME_PREPARED -> BOOTSTRAP_COMPLETE`.
+Steam preparation creates a writable private Debian installation under `/home/dst`,
+seeds only client program files, sets ownership and the conventional Steam links.
+DST preparation links shared executable/data and creates private library metadata.
+The agent starts only after both checks succeed; its Steam supervisor independently
+gates startup on those prerequisites. Completed bootstrap rechecks/repairs content
+without restarting the service or replacing account metadata.
+
+Steam client self-update remains private. The multi-gigabyte DST directory is one
+read-only node cache shared by all runtimes, with no per-account download or copy.
+Steam game updates must be published as a new common content version, not written
+through the read-only game link. Game execution follows authenticated Steam readiness.
+Before login the existing account state and agent operational phase are `NEEDS_LOGIN`;
+Incus/container lifecycle remains `RUNNING`. No new lifecycle enum is introduced.
+
+Steam login/session, config, userdata, Klei acceptance/data, cluster/world and
+worker/evidence remain private. Credentials never enter the cache or base image.
+Keep `WORKER_MODE=DISABLED` and `WORKER_AUTOSTART=0` until explicit operator takeover.
+Authenticate only after provisioning passes; Steam Guard requires operator input.
 
 For the first live recording, keep `WORKER_AUTOSTART=0`. A recording-configured
 OBSERVE worker is paused at game readiness; RESUME explicitly, then DISABLE it

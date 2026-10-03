@@ -88,6 +88,7 @@ def runtime_files(repo: Path) -> list[Path]:
             repo / "app/runtime/__init__.py",
             repo / "app/runtime/display.py",
             repo / "app/runtime/world_profile.py",
+            repo / "app/runtime/content.py",
         )
     )
     missing = [path for path in selected if not path.is_file()]
@@ -218,9 +219,10 @@ try:
             "app/runtime/__init__.py",
             "app/runtime/display.py",
             "app/runtime/world_profile.py",
+            "app/runtime/content.py",
         ):
             target, staged_file = root / name, stage / name
-            if not staged_file.is_file() or (not cold and not target.is_file()): raise RuntimeError("runtime module missing: " + name)
+            if not staged_file.is_file() or (not cold and not target.is_file() and name != "app/runtime/content.py"): raise RuntimeError("runtime module missing: " + name)
             old = backup / name
             old.parent.mkdir(parents=True, exist_ok=True)
             if target.is_file(): shutil.copy2(target, old)

@@ -46,6 +46,7 @@ class Settings:
     auto_migrate: bool = True
     incus_remote: str = "local"
     incus_base_instance: str = "dst-base-v1"
+    incus_runtime_assets: str = "/var/lib/dst-orchestrator/runtime-assets/current"
     incus_image: str = "images:ubuntu/24.04"
     incus_profile: str = "default"
     incus_command_timeout_seconds: int = 90
@@ -116,6 +117,10 @@ class Settings:
             auto_migrate=_bool("AUTO_MIGRATE", True),
             incus_remote=os.getenv("INCUS_REMOTE", "local"),
             incus_base_instance=os.getenv("INCUS_BASE_INSTANCE", "dst-base-v1"),
+            incus_runtime_assets=os.getenv(
+                "INCUS_RUNTIME_ASSETS",
+                "/var/lib/dst-orchestrator/runtime-assets/current",
+            ),
             incus_image=os.getenv("INCUS_IMAGE", "images:ubuntu/24.04"),
             incus_profile=os.getenv("INCUS_PROFILE", "default"),
             incus_command_timeout_seconds=int(
