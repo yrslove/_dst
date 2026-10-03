@@ -76,7 +76,7 @@ from app.services.views import ViewService, ViewSessionNotFound, ViewSessionNotR
 from app.services.watchdog import Watchdog
 from app.services.workers import WorkerControlError, WorkerControlService
 
-EXPECTED_SCHEMA_REVISION = "0012_schedule_pause"
+EXPECTED_SCHEMA_REVISION = "0013_durable_worker_intent"
 logger = logging.getLogger("control_plane")
 
 
