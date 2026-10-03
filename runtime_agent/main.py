@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shlex
 import shutil
 import signal
 import sys
@@ -24,7 +23,7 @@ from runtime_agent.worker_bridge import WorkerBridge
 logger = logging.getLogger("runtime_agent")
 stop_event = threading.Event()
 reload_event = threading.Event()
-RUNTIME_AGENT_ENV_FILE = Path("/etc/dst-runtime/agent.env")
+RUNTIME_IMAGE_VERSION_FILE = Path("/etc/dst-runtime/runtime-image-version")
 
 
 def _adoption_identity(name: str) -> tuple[int, int] | None:
@@ -74,12 +73,11 @@ def _handoff_environment(display, steam, dst, *, runtime_token: str) -> dict[str
     # Restore it only in the replacement agent's exec environment.
     environment["RUNTIME_TOKEN"] = runtime_token
     try:
-        for line in RUNTIME_AGENT_ENV_FILE.read_text(encoding="utf-8").splitlines():
-            if line.startswith("RUNTIME_IMAGE_VERSION="):
-                values = shlex.split(line.partition("=")[2], posix=True)
-                if len(values) == 1 and values[0]:
-                    environment["RUNTIME_IMAGE_VERSION"] = values[0]
-                break
+        image_version = RUNTIME_IMAGE_VERSION_FILE.read_text(
+            encoding="utf-8"
+        ).strip()
+        if image_version and len(image_version) <= 120 and "\n" not in image_version:
+            environment["RUNTIME_IMAGE_VERSION"] = image_version
     except (OSError, ValueError):
         logger.warning("could not read updated runtime image identity during reload")
     for name, identity in identities.items():

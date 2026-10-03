@@ -11,6 +11,7 @@ import pytest
 
 from app.providers.view.base import ViewUnavailable
 from app.providers.view.xpra import XpraRuntimeViewProvider
+from app.runtime.bootstrap import BootstrapPhase, RuntimeBootstrapService
 from app.runtime.bootstrap_models import RuntimeAgentConfig
 from app.runtime.display import DisplayEnvironment
 from node_agent.config import NodeAgentSettings
@@ -737,3 +738,37 @@ def test_bootstrap_environment_uses_runtime_agent_contract():
             protocol_version=1,
             heartbeat_interval=5,
         ).environment_file()
+
+
+def test_bootstrap_publishes_only_nonsecret_image_identity_for_agent_handoff():
+    config = RuntimeAgentConfig(
+        runtime_id=1,
+        account_id=2,
+        node_id=3,
+        runtime_token="secret-token",
+        orchestrator_url="https://control.example",
+        protocol_version=1,
+        heartbeat_interval=5,
+        runtime_image_version="dst-base-v2",
+    )
+
+    class Provider:
+        def __init__(self):
+            self.files = []
+
+        def put_file(self, runtime, path, content, *, mode, correlation_id):
+            self.files.append((path, content, mode))
+
+    provider = Provider()
+    service = RuntimeBootstrapService(None, provider)
+    service._apply(
+        BootstrapPhase.AGENT_CONFIGURED,
+        SimpleNamespace(id=1),
+        config,
+        correlation_id="test",
+    )
+
+    assert provider.files == [
+        ("/etc/dst-runtime/agent.env", config.environment_file(), 0o600),
+        ("/etc/dst-runtime/runtime-image-version", b"dst-base-v2\n", 0o644),
+    ]

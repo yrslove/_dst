@@ -49,9 +49,9 @@ class FakeQueue(queue.Queue):
 
 
 def test_agent_reload_hands_off_updated_image_identity(monkeypatch, tmp_path):
-    env_file = tmp_path / "agent.env"
-    env_file.write_text('RUNTIME_IMAGE_VERSION="dst-base-v2"\n')
-    monkeypatch.setattr("runtime_agent.main.RUNTIME_AGENT_ENV_FILE", env_file)
+    image_file = tmp_path / "runtime-image-version"
+    image_file.write_text("dst-base-v2\n")
+    monkeypatch.setattr("runtime_agent.main.RUNTIME_IMAGE_VERSION_FILE", image_file)
 
     class Managed:
         def adoption_identity(self):
