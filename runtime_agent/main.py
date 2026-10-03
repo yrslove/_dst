@@ -23,7 +23,7 @@ from runtime_agent.worker_bridge import WorkerBridge
 logger = logging.getLogger("runtime_agent")
 stop_event = threading.Event()
 reload_event = threading.Event()
-RUNTIME_IMAGE_VERSION_FILE = Path("/etc/dst-runtime/runtime-image-version")
+RUNTIME_IMAGE_VERSION_FILE = Path("/run/dst-runtime/runtime-image-version")
 
 
 def _adoption_identity(name: str) -> tuple[int, int] | None:

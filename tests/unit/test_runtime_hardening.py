@@ -755,20 +755,26 @@ def test_bootstrap_publishes_only_nonsecret_image_identity_for_agent_handoff():
     class Provider:
         def __init__(self):
             self.files = []
+            self.commands = []
 
         def put_file(self, runtime, path, content, *, mode, correlation_id):
             self.files.append((path, content, mode))
 
+        def execute(self, runtime, command, *, correlation_id):
+            self.commands.append(command)
+
     provider = Provider()
     service = RuntimeBootstrapService(None, provider)
     service._apply(
-        BootstrapPhase.AGENT_CONFIGURED,
+        BootstrapPhase.DISPLAY_CONFIGURED,
         SimpleNamespace(id=1),
         config,
         correlation_id="test",
     )
 
     assert provider.files == [
-        ("/etc/dst-runtime/agent.env", config.environment_file(), 0o600),
-        ("/etc/dst-runtime/runtime-image-version", b"dst-base-v2\n", 0o644),
+        ("/run/dst-runtime/runtime-image-version", b"dst-base-v2\n", 0o644),
+    ]
+    assert provider.commands == [
+        ("/usr/bin/install", "-d", "-o", "dst", "-g", "dst", "-m", "0700", "/run/dst-runtime")
     ]

@@ -150,13 +150,6 @@ class RuntimeBootstrapService:
                 mode=0o600,
                 correlation_id=correlation_id,
             )
-            self.provider.put_file(
-                runtime,
-                "/etc/dst-runtime/runtime-image-version",
-                (config.runtime_image_version + "\n").encode("utf-8"),
-                mode=0o644,
-                correlation_id=correlation_id,
-            )
         elif phase == BootstrapPhase.AGENT_SERVICE_INSTALLED:
             self.provider.put_file(
                 runtime,
@@ -184,6 +177,13 @@ class RuntimeBootstrapService:
                     "0700",
                     "/run/dst-runtime",
                 ),
+                correlation_id=correlation_id,
+            )
+            self.provider.put_file(
+                runtime,
+                "/run/dst-runtime/runtime-image-version",
+                (config.runtime_image_version + "\n").encode("utf-8"),
+                mode=0o644,
                 correlation_id=correlation_id,
             )
         elif phase in {
