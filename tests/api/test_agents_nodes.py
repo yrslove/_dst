@@ -557,3 +557,33 @@ def test_new_run_gets_first_heartbeat_window_after_old_heartbeat(client, app, se
     assert result["runtimes_stale"] == 0
     with app.state.db.session() as session:
         assert session.get(RuntimeInstance, account["runtime_id"]).state == RuntimeState.RUNNING
+
+
+def test_fresh_runtime_login_heartbeat_is_accepted_without_game_verification(client, app):
+    account = create_account(client, "fresh-login-heartbeat")
+    assert app.state.executor.execute_next()
+    token = client.post(f"/api/v1/runtimes/{account['runtime_id']}/token/rotate").json()["token"]
+    assert client.post(f"/api/v1/accounts/{account['id']}/setup").status_code == 202
+    assert app.state.executor.execute_next()
+    payload = heartbeat_payload(account["runtime_id"])
+    payload.update(phase="NEEDS_LOGIN", dst_running=False)
+    payload["process_identities"].pop("dst")
+    for _ in range(2):
+        response = send_heartbeat(client, account["runtime_id"], token, payload)
+        assert response.status_code == 200
+    with app.state.db.session() as session:
+        runtime = session.get(RuntimeInstance, account["runtime_id"])
+        worker = session.get(WorkerStatus, runtime.id)
+        assert runtime.state == RuntimeState.RUNNING
+        assert runtime.verified_at is None
+        assert session.get(Account, account["id"]).status == AccountState.NEEDS_LOGIN
+        assert worker.phase == "NEEDS_LOGIN"
+        assert worker.healthy
+        assert not worker.dst_running
+
+
+def test_content_preparation_phase_is_in_heartbeat_contract():
+    from app.schemas import RuntimeHeartbeatRequest
+    payload = heartbeat_payload(1)
+    payload.update(phase="STEAM_RUNTIME_PREPARED", steam_running=False, dst_running=False)
+    assert RuntimeHeartbeatRequest.model_validate(payload).phase == "STEAM_RUNTIME_PREPARED"
